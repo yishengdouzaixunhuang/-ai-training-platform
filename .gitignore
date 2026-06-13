@@ -1,0 +1,78 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Model weights
+*.pth
+*.pt
+*.onnx
+*.trt
+*.engine
+*.bin
+*.safetensors
+*.ckpt
+models/
+checkpoints/
+
+# Outputs / results
+outputs/
+runs/
+
+# YOLO datasets
+datasets/yolo/
+*.yaml
+
+# Training artifacts
+*.log
+tensorboard/
+lightning_logs/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Virtual environment
+venv/
+.venv/
+.venv*/
+env/
+.env
+*.venv*/
+
+# Temp
+tmp/
+temp/
+*.tmp
+
+# Environment
+.env
+.env.local
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# Images (keep only source, ignore generated)
+*.jpg
+*.jpeg
+*.png
+*.bmp
+!**/icons/**
+!**/assets/**
+
+# JSON annotations (keep project config)
+project.json.backup
+*.bak

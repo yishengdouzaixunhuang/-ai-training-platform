@@ -1,0 +1,10 @@
+{
+  "epochs": 500,
+  "batch_size": 24,
+  "model": "deeplabv3_r101",
+  "image_size": 512,
+  "k_folds": 1,
+  "loss": "ce+lovasz",
+  "augment": "medium",
+  "resume": true
+}
