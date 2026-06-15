@@ -10,6 +10,9 @@ class SegmentationDataset(Dataset):
     def __init__(self, project_dir, split="train", transform=None, image_size=(512, 512), augment_fn=None):
         self.project_dir = project_dir
         self.transform = transform
+        # Normalize: accept int (square) or tuple (w, h)
+        if isinstance(image_size, int):
+            image_size = (image_size, image_size)
         self.image_size = image_size
         self.split = split
 
