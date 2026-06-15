@@ -1843,6 +1843,8 @@ class MainWindow(QMainWindow):
                     self.infer_progress_signal.emit(i + 1, total)
                 self.log_signal.emit("Batch inference complete! Results: %s" % out_dir)
                 self.infer_status.setText("Complete")
+                self._pred_count_cache_key = None  # force re-scan outputs
+                threading.Thread(target=self._load_output_stats_async, args=(project_dir,), daemon=True).start()
             except Exception as e:
                 import traceback
                 self.log_signal.emit(f"Batch inference error: {e}")
@@ -1913,8 +1915,9 @@ class MainWindow(QMainWindow):
                     self.infer_progress_signal.emit(i + 1, total)
                 self.log_signal.emit("Batch detection complete! Results: %s" % out_dir)
                 self.infer_status.setText("Complete")
+                self._pred_count_cache_key = None  # force re-scan outputs
+                threading.Thread(target=self._load_output_stats_async, args=(project_dir,), daemon=True).start()
                 # Reload predictions for current image
-                self.refresh_list_signal.emit()
                 if self._detection_mode and self._box_manager is not None:
                     self._box_manager.load_predictions(out_dir)
                     self.image_load_signal.emit(None)  # trigger canvas update
