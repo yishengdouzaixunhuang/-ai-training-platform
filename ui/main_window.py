@@ -1821,6 +1821,8 @@ class MainWindow(QMainWindow):
         def run():
             try:
                 predictor = Predictor(project_dir, model_file, backend=self._backend_key())
+                if not hasattr(self, "_infer_times"):
+                    self._infer_times = {}
                 for i, img_path in enumerate(images):
                     t0 = time.time()
                     if self._stop_flag:
@@ -1839,6 +1841,7 @@ class MainWindow(QMainWindow):
                     overlay_out = os.path.join(out_dir, base + "_overlay.jpg")
                     Image.fromarray(overlay).save(overlay_out)
                     elapsed = time.time() - t0
+                    self._infer_times[base] = "%.1fs" % elapsed
                     self.log_signal.emit("[%d/%d] %s (%.1fs)" % (i + 1, total, base, elapsed))
                     self.infer_progress_signal.emit(i + 1, total)
                 self.log_signal.emit("Batch inference complete! Results: %s" % out_dir)
