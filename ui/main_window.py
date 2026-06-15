@@ -1592,7 +1592,7 @@ class MainWindow(QMainWindow):
                 self.trainer.train(
                     epochs=epochs, batch_size=batch_size,
                     image_size=image_size, loss_name=loss_name,
-                    augment=augment, cv_folds=cv_folds,
+                    augment=augment, k_folds=cv_folds,
                     stop_check=lambda: self._stop_flag,
                     log_callback=lambda msg: self.log_signal.emit(msg),
                     progress_callback=lambda c, t: self.progress_signal.emit(c, t),
@@ -1770,7 +1770,7 @@ class MainWindow(QMainWindow):
             dt = DetectionTrainer(project_dir)
             boxes = dt.predict(self.canvas.current_image_path)
             if boxes:
-                self._box_manager.clear()
+                self._box_manager.delete_all()
                 for b in boxes:
                     self._box_manager.add_box(
                         bbox=b["bbox"],
