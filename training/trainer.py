@@ -32,7 +32,22 @@ class Trainer:
         self.scaler = torch.amp.GradScaler('cuda') if torch.cuda.is_available() else None
         self._stop_requested = False
         self.history = {"train_loss": [], "val_loss": [], "val_miou": []}
-    
+
+    def cleanup(self):
+        """Release model, data and GPU memory."""
+        if self.model is not None:
+            del self.model
+            self.model = None
+        if self.optimizer is not None:
+            del self.optimizer
+            self.optimizer = None
+        self.train_loader = None
+        self.val_loader = None
+        import gc
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
     def _train_kfold(self, k, epochs, batch_size, image_size,
                      progress_callback, log_callback, stop_check,
                      plot_callback, batch_callback, loss_name="cross_entropy", augment="none"):
