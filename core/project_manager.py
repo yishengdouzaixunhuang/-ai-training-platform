@@ -9,7 +9,11 @@ class ProjectManager:
         self.workspace = Path(workspace)
         self.workspace.mkdir(parents=True, exist_ok=True)
     
+    VALID_TASK_TYPES = ("语义分割", "目标检测", "图像分类")
+
     def create_project(self, name, task_type="语义分割"):
+        if task_type not in self.VALID_TASK_TYPES:
+            raise ValueError(f"不支持的任务类型: {task_type}，可选: {self.VALID_TASK_TYPES}")
         project_dir = self.workspace / name
         if project_dir.exists():
             raise FileExistsError(f"工程 '{name}' 已存在")

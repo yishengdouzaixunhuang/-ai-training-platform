@@ -1,0 +1,10 @@
+﻿with open(r"C:\Users\Administrator\Documents\Codex\2026-06-04\c-users-administrator-documents-codex-2026\work\ai_training_platform\ui\main_window.py", "r", encoding="utf-8") as f:
+    c = f.read()
+print("Panel 7 (Cls Training):", "Classification Training" in c)
+print("Panel 8 (Cls Inference):", "Classification Inference" in c)
+print("Tab CL:", '"CL", "Cls Training"' in c)
+print("Tab CI:", '"CI", "Cls Inference"' in c)
+print("_start_cls_training:", "_start_cls_training" in c)
+print("_refresh_cls_model_list:", "_refresh_cls_model_list" in c)
+print("_start_cls_inference:", "_start_cls_inference" in c)
+print("_start_cls_batch_inference:", "_start_cls_batch_inference" in c)

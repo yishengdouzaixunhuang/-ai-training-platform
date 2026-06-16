@@ -483,6 +483,66 @@ class Predictor:
         count_map[count_map == 0] = 1
         return np.round(pred_sum / count_map).astype(np.int64)
 
+    @torch.inference_mode()
+    def classify(self, image, top_k=5):
+        """Classify a single image. Returns list of (class_name, confidence) tuples.
+        
+        Automatically detects task_type from project.json and loads the
+        appropriate classification model.
+        """
+        import json as _json
+        from pathlib import Path as _Path
+        
+        project_json = _Path(self.project_dir) / "project.json"
+        task_type = "语义分割"  # default
+        if project_json.exists():
+            with open(project_json, "r", encoding="utf-8") as f:
+                meta = _json.load(f)
+            task_type = meta.get("task_type", "语义分割")
+        
+        if task_type != "图像分类":
+            raise RuntimeError(
+                f"classify() is only available for 图像分类 projects, "
+                f"current project is '{task_type}'. Use predict() for segmentation."
+            )
+        
+        # Lazy-load classification model if not already loaded
+        if not hasattr(self, "_cls_model"):
+            from classification.trainer import ClassificationTrainer
+            self._cls_trainer = ClassificationTrainer(
+                self.project_dir, device=self.device
+            )
+            self._cls_trainer.load_model("best_model.pth")
+            self._cls_model = self._cls_trainer.model
+        
+        # Prepare image
+        import torchvision.transforms as _T
+        from classification.dataset import IMAGENET_MEAN, IMAGENET_STD
+        
+        if isinstance(image, np.ndarray):
+            image = Image.fromarray(image)
+        elif isinstance(image, str):
+            image = Image.open(image).convert("RGB")
+        
+        img_size = getattr(self, "_cls_image_size", 224)
+        transform = _T.Compose([
+            _T.Resize((img_size, img_size)),
+            _T.ToTensor(),
+            _T.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
+        ])
+        tensor = transform(image).unsqueeze(0).to(self.device)
+        
+        with torch.amp.autocast('cuda'):
+            output = self._cls_model(tensor)
+        probs = output.softmax(1).squeeze(0)
+        
+        num_classes = len(self._cls_trainer.class_names)
+        topk_probs, topk_ids = probs.topk(min(top_k, num_classes))
+        return [
+            (self._cls_trainer.class_names[idx], float(conf))
+            for conf, idx in zip(topk_probs.cpu().numpy(), topk_ids.cpu().numpy())
+        ]
+
     def _create_overlay(self, image, mask, alpha=0.5):
         import cv2
         from core.config import CLASS_COLORS
