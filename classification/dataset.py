@@ -112,7 +112,7 @@ class ClassificationDataset(Dataset):
     def __init__(self, project_dir, split="train", transform=None, image_size=224):
         self.project_dir = Path(project_dir)
         self.split = split
-        self.image_size = image_size if isinstance(image_size, (tuple, list)) else (image_size, image_size)
+        self.image_size = image_size if (image_size is None or isinstance(image_size, (tuple, list))) else (image_size, image_size)
 
         split_map = _default_split_map(project_dir)
         pairs, class_names = _list_images_mapping(project_dir, split, split_map)
@@ -124,7 +124,21 @@ class ClassificationDataset(Dataset):
         # Build default transforms
         if transform is None:
             import torchvision.transforms as T
-            if split == "train":
+            if self.image_size is None:
+                if split == "train":
+                    self.transform = T.Compose([
+                        T.RandomHorizontalFlip(p=0.5),
+                        T.RandomRotation(degrees=10),
+                        T.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
+                        T.ToTensor(),
+                        T.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
+                    ])
+                else:
+                    self.transform = T.Compose([
+                        T.ToTensor(),
+                        T.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
+                    ])
+            elif split == "train":
                 self.transform = T.Compose([
                     T.Resize(self.image_size),
                     T.RandomHorizontalFlip(p=0.5),

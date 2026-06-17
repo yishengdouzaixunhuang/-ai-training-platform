@@ -159,6 +159,21 @@ class ClassificationTrainer:
         self._image_size = 224
 
     # ── Public API ──────────────────────────────────────────────────
+
+    @staticmethod
+    def _pad_collate(batch):
+        """Collate function that pads images to max H/W in the batch."""
+        import torch.nn.functional as F
+        images, labels = zip(*batch)
+        max_h = max(img.shape[1] for img in images)
+        max_w = max(img.shape[2] for img in images)
+        padded = []
+        for img in images:
+            if img.shape[1] < max_h or img.shape[2] < max_w:
+                img = F.pad(img, (0, max_w - img.shape[2], 0, max_h - img.shape[1]))
+            padded.append(img)
+        return torch.stack(padded), torch.tensor(labels)
+
     def train(self, epochs=50, batch_size=32, image_size=224,
               loss_func="cross_entropy", optimizer="adam", lr=1e-4,
               pretrained=True, resume=False, k_folds=1,
@@ -346,14 +361,17 @@ class ClassificationTrainer:
             pass
 
         drop = len(train_ds) > batch_size
+        collate = self._pad_collate if image_size is None else None
         self.train_loader = DataLoader(
             train_ds, batch_size=batch_size, shuffle=True,
             num_workers=min(4, multiprocessing.cpu_count() or 4),
-            pin_memory=True, prefetch_factor=2, drop_last=drop
+            pin_memory=True, prefetch_factor=2, drop_last=drop,
+            collate_fn=collate
         )
         self.val_loader = DataLoader(
             val_ds, batch_size=min(batch_size, len(val_ds)), shuffle=False,
-            num_workers=2, pin_memory=True, prefetch_factor=2
+            num_workers=2, pin_memory=True, prefetch_factor=2,
+            collate_fn=collate
         )
 
     def _train_epoch(self, batch_callback=None):
@@ -488,13 +506,16 @@ class ClassificationTrainer:
             val_subset = torch.utils.data.Subset(all_ds, list(val_indices))
 
             drop = len(train_subset) > batch_size
+            collate = self._pad_collate if image_size is None else None
             self.train_loader = DataLoader(
                 train_subset, batch_size=batch_size, shuffle=True,
-                num_workers=4, pin_memory=True, prefetch_factor=2, drop_last=drop
+                num_workers=4, pin_memory=True, prefetch_factor=2, drop_last=drop,
+                collate_fn=collate
             )
             self.val_loader = DataLoader(
                 val_subset, batch_size=min(batch_size, len(val_subset)),
-                shuffle=False, num_workers=2, pin_memory=True, prefetch_factor=2
+                shuffle=False, num_workers=2, pin_memory=True, prefetch_factor=2,
+                collate_fn=collate
             )
 
             # Re-init model per fold
@@ -582,7 +603,8 @@ class ClassificationTrainer:
         models_dir = self.project_dir / "models" / "classification"
         models_dir.mkdir(parents=True, exist_ok=True)
 
-        dummy = torch.randn(1, 3, self._image_size, self._image_size).to(self.device)
+        img_sz = self._image_size if self._image_size is not None else 224
+        dummy = torch.randn(1, 3, img_sz, img_sz).to(self.device)
 
         # TorchScript
         try:
@@ -637,7 +659,7 @@ class ClassificationTrainer:
             images = [images]
 
         transform = T.Compose([
-            T.Resize((self._image_size, self._image_size)),
+            T.Resize((self._image_size, self._image_size)) if self._image_size is not None else T.Lambda(lambda x: x),
             T.ToTensor(),
             T.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
         ])

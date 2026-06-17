@@ -582,6 +582,9 @@ class MainWindow(QMainWindow):
         cfl.addRow("Batch:", self.cls_batch_spin)
         self.cls_img_size_spin = QSpinBox(); self.cls_img_size_spin.setRange(32, 512); self.cls_img_size_spin.setValue(224)
         cfl.addRow("Image Size:", self.cls_img_size_spin)
+        self.cls_full_img_check = QCheckBox("Full Image (no resize)")
+        self.cls_full_img_check.toggled.connect(lambda checked: self.cls_img_size_spin.setDisabled(checked))
+        cfl.addRow("", self.cls_full_img_check)
         self.cls_optim_combo = QComboBox()
         self.cls_optim_combo.addItems(["AdamW", "Adam", "SGD"])
         cfl.addRow("Optimizer:", self.cls_optim_combo)
@@ -604,6 +607,14 @@ class MainWindow(QMainWindow):
         cfl.addRow("", self.cls_resume_check)
         ctl.addLayout(cfl)
         ctl.addWidget(QPushButton("Start Training", clicked=self._start_cls_training))
+        ctl.addWidget(QLabel("<b>Loss / Accuracy Curve</b>"))
+        self.cls_loss_canvas = FigureCanvas(Figure(figsize=(4, 2.5), dpi=100))
+        self.cls_loss_ax = self.cls_loss_canvas.figure.subplots()
+        self.cls_loss_ax.set_xlabel("Epoch"); self.cls_loss_ax.set_ylabel("Loss / Acc")
+        self.cls_loss_ax.grid(True, alpha=0.3)
+        self.cls_loss_canvas.figure.tight_layout(pad=0.5)
+        ctl.addWidget(self.cls_loss_canvas)
+        self.cls_loss_canvas.setVisible(False)
         ctl.addStretch()
         self._right_stack.addWidget(panel_cls_train)  # 7
 
@@ -687,20 +698,48 @@ class MainWindow(QMainWindow):
         self.log_widget.append(f"[{ts}] {msg}")
 
     def _update_loss_chart(self, history):
-        """Update loss curve from training thread."""
+        """Update loss curve from training thread (seg or cls)."""
         try:
-            self.loss_ax.clear()
-            train_loss = history.get("train_loss", [])
-            val_loss = history.get("val_loss", [])
-            epochs = range(1, len(train_loss) + 1)
-            if len(epochs) > 0:
-                self.loss_ax.plot(epochs, train_loss, "b-", label="Train", linewidth=0.8, alpha=0.7)
-                self.loss_ax.plot(epochs, val_loss, "r-", label="Val", linewidth=0.8, alpha=0.7)
-                self.loss_ax.legend(fontsize=7)
-                self.loss_ax.set_xlabel("Epoch", fontsize=7)
-                self.loss_ax.set_ylabel("Loss", fontsize=7)
-                self.loss_ax.tick_params(labelsize=6)
-            self.loss_canvas.draw()
+            if self._cls_mode and hasattr(self, "cls_loss_ax"):
+                # Classification mode: show on CL panel
+                self.cls_loss_ax.clear()
+                train_loss = history.get("train_loss", [])
+                val_acc = history.get("val_acc", [])
+                epochs = range(1, len(train_loss) + 1)
+                if len(epochs) > 0:
+                    self.cls_loss_ax.plot(epochs, train_loss, "b-", label="Train Loss", linewidth=1)
+                    if val_acc and len(val_acc) == len(train_loss):
+                        ax2 = self.cls_loss_ax.twinx()
+                        ax2.plot(epochs, val_acc, "r-", label="Val Acc", linewidth=1)
+                        ax2.set_ylabel("Accuracy", color="r")
+                        ax2.tick_params(axis="y", labelcolor="r")
+                        ax2.set_ylim(0, 1.05)
+                        lines2, labels2 = ax2.get_legend_handles_labels()
+                    else:
+                        lines2, labels2 = [], []
+                    self.cls_loss_ax.set_xlabel("Epoch")
+                    self.cls_loss_ax.set_ylabel("Loss", color="b")
+                    self.cls_loss_ax.tick_params(axis="y", labelcolor="b")
+                    self.cls_loss_ax.grid(True, alpha=0.3)
+                    lines1, labels1 = self.cls_loss_ax.get_legend_handles_labels()
+                    self.cls_loss_ax.legend(lines1 + lines2, labels1 + labels2, loc="upper right", fontsize=7)
+                    self.cls_loss_ax.figure.tight_layout(pad=0.5)
+                self.cls_loss_canvas.setVisible(True)
+                self.cls_loss_canvas.draw()
+            else:
+                # Segmentation mode: show on Loss Curve panel
+                self.loss_ax.clear()
+                train_loss = history.get("train_loss", [])
+                val_loss = history.get("val_loss", [])
+                epochs = range(1, len(train_loss) + 1)
+                if len(epochs) > 0:
+                    self.loss_ax.plot(epochs, train_loss, "b-", label="Train", linewidth=0.8, alpha=0.7)
+                    self.loss_ax.plot(epochs, val_loss, "r-", label="Val", linewidth=0.8, alpha=0.7)
+                    self.loss_ax.legend(fontsize=7)
+                    self.loss_ax.set_xlabel("Epoch", fontsize=7)
+                    self.loss_ax.set_ylabel("Loss", fontsize=7)
+                    self.loss_ax.tick_params(labelsize=6)
+                self.loss_canvas.draw()
         except Exception:
             pass
 
@@ -1646,6 +1685,8 @@ class MainWindow(QMainWindow):
         epochs = self.cls_epochs_spin.value()
         batch_size = self.cls_batch_spin.value()
         image_size = self.cls_img_size_spin.value()
+        if self.cls_full_img_check.isChecked():
+            image_size = None
         lr = self.cls_lr_spin.value()
         optim_name = self.cls_optim_combo.currentText()
         loss_name = self.cls_loss_combo.currentText()
@@ -1679,8 +1720,10 @@ class MainWindow(QMainWindow):
                     augment=augment, k_folds=k_folds, resume=resume,
                     progress_callback=epoch_cb, stop_check=stop_check,
                     log_callback=lambda msg: self.log_signal.emit(msg),
+                    plot_callback=lambda h: self.chart_signal.emit(h),
                 )
                 self._refresh_cls_model_list()
+                self._update_cls_loss_curve()
                 self.log_signal.emit("Classification training complete!")
             except Exception as e:
                 import traceback
@@ -1812,6 +1855,53 @@ class MainWindow(QMainWindow):
                         self._cls_predictions[base] = info
                 self.refresh_list_signal.emit()
                 self.cls_infer_status.setText("Complete")
+                # Auto-evaluate confusion matrix
+                try:
+                    from classification.trainer import ClassificationTrainer
+                    ct2 = ClassificationTrainer(project_dir)
+                    ct2.load_model(model_file)
+                    from classification.eval import evaluate_classification
+                    eval_result = evaluate_classification(
+                        project_dir, split="val",
+                        model_path="classification/" + model_file,
+                        batch_size=32, image_size=ct2._image_size,
+                        compute_confusion=True,
+                    )
+                    cm = eval_result.get("confusion_matrix")
+                    class_names = eval_result.get("class_names", [])
+                    top1 = eval_result.get("top_k_results", {}).get("top1_acc", 0)
+                    top5 = eval_result.get("top_k_results", {}).get("top5_acc", 0)
+                    if cm and len(class_names) > 0:
+                        n = len(class_names)
+                        self.cls_cm_table.setRowCount(n + 1)
+                        self.cls_cm_table.setColumnCount(n + 1)
+                        headers = [""] + class_names + ["Total"]
+                        self.cls_cm_table.setHorizontalHeaderLabels(headers)
+                        self.cls_cm_table.setVerticalHeaderLabels(class_names + ["Total"])
+                        row_sums = [sum(row) for row in cm]
+                        col_sums = [sum(cm[r][c] for r in range(n)) for c in range(n)]
+                        total = sum(row_sums)
+                        for i in range(n):
+                            for j in range(n):
+                                item = QTableWidgetItem(str(cm[i][j]))
+                                item.setTextAlignment(Qt.AlignCenter)
+                                if i == j:
+                                    item.setBackground(QColor(180, 255, 180))
+                                self.cls_cm_table.setItem(i, j, item)
+                            item = QTableWidgetItem(str(row_sums[i]))
+                            item.setTextAlignment(Qt.AlignCenter)
+                            self.cls_cm_table.setItem(i, n, item)
+                        for j in range(n):
+                            item = QTableWidgetItem(str(col_sums[j]))
+                            item.setTextAlignment(Qt.AlignCenter)
+                            self.cls_cm_table.setItem(n, j, item)
+                        item = QTableWidgetItem(str(total))
+                        item.setTextAlignment(Qt.AlignCenter)
+                        self.cls_cm_table.setItem(n, n, item)
+                        self.cls_cm_table.resizeColumnsToContents()
+                    self.cls_eval_status.setText("Top-1: {:.2%}  Top-5: {:.2%}".format(top1, top5))
+                except Exception:
+                    pass
             except Exception as e:
                 import traceback
                 self.log_signal.emit(f"Batch classification error: {e}")
@@ -1819,6 +1909,72 @@ class MainWindow(QMainWindow):
                 self.cls_infer_status.setText("Failed")
             finally:
                 self.cls_infer_progress.setVisible(False)
+        import threading
+        threading.Thread(target=run, daemon=True).start()
+
+
+
+    def _eval_cls_model(self):
+        """Evaluate classification model and show confusion matrix."""
+        if not self.current_project:
+            return
+        project_dir = str(self.pm.get_project_dir(self.current_project["name"]))
+        self._refresh_cls_model_list()
+        model_file = self.cls_infer_model_combo.currentText()
+        if not model_file or "(no models" in model_file:
+            return QMessageBox.warning(self, "Error", "No classification model found.")
+        self.cls_eval_status.setText("Evaluating...")
+        def run():
+            try:
+                from classification.trainer import ClassificationTrainer
+                ct = ClassificationTrainer(project_dir)
+                ct.load_model(model_file)
+                from classification.eval import evaluate_classification
+                result = evaluate_classification(
+                    project_dir, split="val",
+                    model_path="classification/" + model_file,
+                    batch_size=32, image_size=ct._image_size,
+                    compute_confusion=True,
+                    log_callback=lambda msg: self.log_signal.emit(msg),
+                )
+                cm = result.get("confusion_matrix")
+                class_names = result.get("class_names", [])
+                top1 = result.get("top_k_results", {}).get("top1_acc", 0)
+                top5 = result.get("top_k_results", {}).get("top5_acc", 0)
+                self.log_signal.emit("Evaluation: Top-1={:.4f}, Top-5={:.4f}".format(top1, top5))
+                if cm and len(class_names) > 0:
+                    n = len(class_names)
+                    self.cls_cm_table.setRowCount(n + 1)
+                    self.cls_cm_table.setColumnCount(n + 1)
+                    headers = [""] + class_names + ["Total"]
+                    self.cls_cm_table.setHorizontalHeaderLabels(headers)
+                    self.cls_cm_table.setVerticalHeaderLabels(class_names + ["Total"])
+                    row_sums = [sum(row) for row in cm]
+                    col_sums = [sum(cm[r][c] for r in range(n)) for c in range(n)]
+                    total = sum(row_sums)
+                    for i in range(n):
+                        for j in range(n):
+                            item = QTableWidgetItem(str(cm[i][j]))
+                            item.setTextAlignment(Qt.AlignCenter)
+                            if i == j:
+                                item.setBackground(QColor(180, 255, 180))
+                            self.cls_cm_table.setItem(i, j, item)
+                        item = QTableWidgetItem(str(row_sums[i]))
+                        item.setTextAlignment(Qt.AlignCenter)
+                        self.cls_cm_table.setItem(i, n, item)
+                    for j in range(n):
+                        item = QTableWidgetItem(str(col_sums[j]))
+                        item.setTextAlignment(Qt.AlignCenter)
+                        self.cls_cm_table.setItem(n, j, item)
+                    item = QTableWidgetItem(str(total))
+                    item.setTextAlignment(Qt.AlignCenter)
+                    self.cls_cm_table.setItem(n, n, item)
+                    self.cls_cm_table.resizeColumnsToContents()
+                self.cls_eval_status.setText("Top-1: {:.2%}  Top-5: {:.2%}".format(top1, top5))
+            except Exception as e:
+                import traceback
+                self.log_signal.emit("Evaluation error: " + str(e))
+                self.cls_eval_status.setText("Error: " + str(e))
         import threading
         threading.Thread(target=run, daemon=True).start()
 
