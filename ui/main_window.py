@@ -9,7 +9,7 @@ from PyQt5.QtWidgets import (
     QButtonGroup,
     QMainWindow, QMenu, QAction, QSplitter, QTreeWidget, QTreeWidgetItem,
     QTextEdit, QFileDialog, QMessageBox, QInputDialog, QVBoxLayout, QHBoxLayout,
-    QWidget, QLabel, QPushButton, QComboBox, QSpinBox, QProgressBar, QGroupBox,
+    QWidget, QLabel, QPushButton, QComboBox, QSpinBox, QDoubleSpinBox, QProgressBar, QGroupBox,
     QListWidget, QListWidgetItem, QSlider, QDialog, QFormLayout, QDialogButtonBox,
     QLineEdit, QCheckBox, QTableWidget, QTableWidgetItem, QHeaderView
 ,
@@ -224,6 +224,7 @@ class MainWindow(QMainWindow):
         mm.addAction("Manage Train/Val/Test Split...", self._manage_split)
         mm.addAction("Start Seg Training...", self._start_training)
         mm.addAction("Start Det Training", self._start_det_training)
+        mm.addAction("Start Cls Training", self._start_cls_training)
         mm.addAction("Run Inference", self._start_inference)
         mm.addAction("Batch Inference (All Images)...", self._batch_inference)
         hm = mb.addMenu("Help(&H)")
@@ -625,6 +626,16 @@ class MainWindow(QMainWindow):
         ih.addWidget(QPushButton("Single Inference", clicked=self._start_cls_inference))
         ih.addWidget(QPushButton("Batch Inference", clicked=self._start_cls_batch_inference))
         cil.addLayout(ih)
+        # Confusion Matrix section
+        cil.addWidget(QLabel("<b>Confusion Matrix</b>"))
+        eh = QHBoxLayout()
+        eh.addWidget(QPushButton("Evaluate", clicked=self._eval_cls_model))
+        self.cls_eval_status = QLabel("")
+        eh.addWidget(self.cls_eval_status)
+        cil.addLayout(eh)
+        self.cls_cm_table = QTableWidget()
+        self.cls_cm_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        cil.addWidget(self.cls_cm_table)
         cil.addStretch()
         self._right_stack.addWidget(panel_cls_infer)  # 8
 
@@ -838,7 +849,9 @@ class MainWindow(QMainWindow):
             self.canvas._det_overlay = None
             self.canvas.update()
             self._load_classification_labels()
+            self._refresh_cls_model_list()
             self._filter_images(self.search_input.text())
+            self._right_stack.setCurrentIndex(7)
         else:
             self._detection_mode = False
             self._cls_mode = False
@@ -1155,15 +1168,27 @@ class MainWindow(QMainWindow):
                     pass
                 self._img_dims[cache_key] = (img_w, img_h)
 
-            # Prediction count
+            # Prediction count / classification result
             pred_cnt = getattr(self, "_pred_count", {}).get(base, 0)
-
+            cls_text = ""
+            if self._cls_mode:
+                cls_data = getattr(self, "_cls_predictions", {}).get(path, None) or getattr(self, "_cls_predictions", {}).get(fname, None)
+                if cls_data is not None:
+                    if isinstance(cls_data, dict):
+                        cls_text = cls_data.get("class", "")
+                        conf = cls_data.get("confidence", None)
+                        if conf is not None:
+                            score_str = f"{conf:.2f}"
+            
             # Inference time
             infer_ms = getattr(self, "_infer_times", {}).get(base, "")
 
             # Score
             raw_score = getattr(self, "_img_scores", {}).get(base, None)
             score_str = f"{raw_score:.2f}" if raw_score is not None else ""
+            if self._cls_mode and cls_data is not None:
+                if isinstance(cls_data, dict) and "confidence" in cls_data:
+                    score_str = f"{cls_data["confidence"]:.2f}"
 
             row = self.image_list_widget.rowCount()
             self.image_list_widget.insertRow(row)
@@ -1173,7 +1198,7 @@ class MainWindow(QMainWindow):
                 (f"{img_w}x{img_h}" if img_w else "", True),
                 (split_status.replace("[", "").replace("]", "").strip(), True),
                 (", ".join(shape_labels) if self._cls_mode else (str(shape_count) if shape_count > 0 else ""), True),
-                (str(pred_cnt) if pred_cnt > 0 else "", True),
+                (cls_text if self._cls_mode else (str(pred_cnt) if pred_cnt > 0 else ""), True),
                 (score_str, True),
                 (str(infer_ms) if infer_ms else "", True),
             ]
@@ -1640,21 +1665,20 @@ class MainWindow(QMainWindow):
             try:
                 from classification.trainer import ClassificationTrainer
                 self._cls_trainer = ClassificationTrainer(project_dir, model_name=model_name)
-                def epoch_cb(epoch, total, train_loss, val_acc):
+                def epoch_cb(epoch, total):
                     if self._stop_flag:
                         self._cls_trainer._stop_flag = True
-                    self.train_progress_signal.emit(epoch, total)
-                    self.log_signal.emit(
-                        f"Epoch {epoch}/{total} | Train Loss: {train_loss:.4f} | Val Acc: {val_acc:.4f}")
+                    self.progress_signal.emit(epoch, total)
                     self.cls_train_status.setText(f"Epoch {epoch}/{total}")
                 def stop_check():
                     return self._stop_flag
                 self._cls_trainer.train(
                     epochs=epochs, batch_size=batch_size, lr=lr,
-                    optim_name=optim_name, loss_name=loss_name,
+                    optimizer=optim_name, loss_func=loss_name,
                     image_size=image_size, use_amp=use_amp,
                     augment=augment, k_folds=k_folds, resume=resume,
-                    epoch_callback=epoch_cb, stop_check=stop_check,
+                    progress_callback=epoch_cb, stop_check=stop_check,
+                    log_callback=lambda msg: self.log_signal.emit(msg),
                 )
                 self._refresh_cls_model_list()
                 self.log_signal.emit("Classification training complete!")
@@ -1777,6 +1801,16 @@ class MainWindow(QMainWindow):
                 with open(out_path, "w", encoding="utf-8") as f:
                     _json.dump(results, f, indent=2, ensure_ascii=False)
                 self.log_signal.emit(f"Batch classification complete! {len(results)} results saved to {out_path}")
+                self._cls_predictions = {}
+                for base, info in results.items():
+                    for ext in (".bmp", ".png", ".jpg", ".jpeg"):
+                        img_path = os.path.join(img_dir, base + ext)
+                        if os.path.exists(img_path):
+                            self._cls_predictions[img_path] = info
+                            break
+                    if base not in [os.path.splitext(k)[0] for k in self._cls_predictions]:
+                        self._cls_predictions[base] = info
+                self.refresh_list_signal.emit()
                 self.cls_infer_status.setText("Complete")
             except Exception as e:
                 import traceback
@@ -2029,6 +2063,8 @@ class MainWindow(QMainWindow):
     def _start_inference(self):
         if not self.current_project:
             return QMessageBox.warning(self, "Warning", "Please open a project first")
+        if self._cls_mode:
+            return self._start_cls_inference()
         if self.canvas.image is None:
             return QMessageBox.warning(self, "Warning", "Please load an image first")
         project_dir = str(self.pm.get_project_dir(self.current_project["name"]))
@@ -2093,6 +2129,10 @@ class MainWindow(QMainWindow):
     def _batch_inference(self):
         if not self.current_project:
             return QMessageBox.warning(self, "Warning", "Please open a project first")
+        if self._cls_mode:
+            return self._start_cls_batch_inference()
+        if self._detection_mode:
+            return self._start_det_batch_inference()
         project_dir = str(self.pm.get_project_dir(self.current_project["name"]))
         
         if self._detection_mode:

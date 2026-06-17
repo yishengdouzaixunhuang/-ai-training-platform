@@ -63,6 +63,8 @@ def _list_images_mapping(project_dir, split, split_map):
                 label_id = None
                 if rel in mapping_dict:
                     label_id = mapping_dict[rel]
+                elif f"images/{rel}" in mapping_dict:
+                    label_id = mapping_dict[f"images/{rel}"]
                 elif rel_prefix and rel_prefix.strip("/").split("/")[-1] in class_names:
                     # ImageFolder mode: parent folder = class
                     cls_name = rel_prefix.rstrip("/").split("/")[-1]
