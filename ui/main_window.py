@@ -1137,6 +1137,10 @@ class MainWindow(QMainWindow):
                 except Exception:
                     pass
 
+            # CM cell click filter
+            cm_filter = getattr(self, "_cm_filter_bases", None)
+            if cm_filter is not None and base not in cm_filter:
+                continue
             # Search: match filename OR class label
             if text_lower and text_lower not in fname.lower():
                 # Check if any shape label matches
@@ -1867,6 +1871,8 @@ class MainWindow(QMainWindow):
                     n = len(class_names)
                     cm = [[0]*n for _ in range(n)]
                     matched = 0
+                    gt_map = {}  # base_name -> gt class name
+                    pred_map = {}  # base_name -> pred class name
                     for base, info in results.items():
                         pred_cls = info.get("class", "")
                         # Find ground truth
@@ -1883,6 +1889,8 @@ class MainWindow(QMainWindow):
                             cm[gt_idx][pred_idx] += 1
                             if pred_idx == gt_idx:
                                 matched += 1
+                        gt_map[base] = gt_cls
+                        pred_map[base] = pred_cls
                     total_matched = sum(sum(row) for row in cm)
                     acc = matched / total_matched if total_matched > 0 else 0
                     # Update table
@@ -1923,6 +1931,10 @@ class MainWindow(QMainWindow):
                     self.cls_cm_table.setItem(n, n, item)
                     self.cls_cm_table.resizeColumnsToContents()
                     self.cls_eval_status.setText("Acc: {:.2%}  ({}/{} matched)".format(acc, matched, total_matched))
+                    # Store per-image mapping for click-to-filter
+                    self._cls_cm_data = {"cm": cm_display, "names": display_names, "gt_map": gt_map, "pred_map": pred_map}
+                    self.cls_cm_table.cellClicked.disconnect() if self.cls_cm_table.receivers(self.cls_cm_table.cellClicked) > 0 else None
+                    self.cls_cm_table.cellClicked.connect(self._on_cm_cell_clicked)
                 except Exception as ex:
                     self.log_signal.emit("CM error: " + str(ex))
             except Exception as e:
@@ -2011,6 +2023,31 @@ class MainWindow(QMainWindow):
         import threading
         threading.Thread(target=run, daemon=True).start()
 
+
+
+    def _on_cm_cell_clicked(self, row, col):
+        """Filter image list when clicking a confusion matrix cell."""
+        import os
+        data = getattr(self, "_cls_cm_data", None)
+        if not data or row >= len(data["names"]) or col >= len(data["names"]):
+            return
+        gt_cls = data["names"][row]
+        pred_cls = data["names"][col]
+        matched = []
+        for base, gt in data["gt_map"].items():
+            pd = data["pred_map"].get(base, "")
+            if gt == gt_cls and pd == pred_cls:
+                for ext in (".bmp", ".png", ".jpg", ".jpeg"):
+                    p = os.path.join(getattr(self, "_project_dir", ""), "images", base + ext)
+                    if os.path.exists(p):
+                        matched.append(base)
+                        break
+        if matched:
+            self._cm_filter_bases = set(matched)
+            self.search_input.setText("")
+            self._filter_images("")
+            self._cm_filter_bases = None
+        self.log(f"CM click: {gt_cls}->{pred_cls} = {len(matched)} images")
 
     def _toggle_panel(self, side):
         """Toggle left or right panel visibility."""
