@@ -1,4 +1,4 @@
-"""Main Window - Optimized for large datasets"""
+﻿"""Main Window - Optimized for large datasets"""
 import os, json, re, sys, threading, shutil, cv2
 import torch
 from datetime import datetime
@@ -30,6 +30,7 @@ from annotation.version_manager import list_versions, restore_version, get_versi
 from training.trainer import Trainer
 from training.dataset import get_train_test_split, save_train_test_split
 from inference.predictor import Predictor
+from ui.system_monitor import SystemMonitor
 print("main_window imports OK")
 class TrainSettingsDialog(QDialog):
     SETTINGS_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "AI_Training_Platform", ".train_settings.json")
@@ -162,6 +163,16 @@ class MainWindow(QMainWindow):
         self._init_ui()
         self._refresh_projects()
 
+        # System monitor in status bar (bottom-right)
+        self._sys_monitor = SystemMonitor()
+        self.statusBar().addPermanentWidget(self._sys_monitor)
+
+
+    def closeEvent(self, event):
+        """Clean up system monitor on close."""
+        if hasattr(self, "_sys_monitor"):
+            self._sys_monitor.stop()
+        super().closeEvent(event)
     def _init_ui(self):
         central = QWidget(); self.setCentralWidget(central)
         main_layout = QVBoxLayout(central); main_layout.setContentsMargins(4, 4, 4, 4)
