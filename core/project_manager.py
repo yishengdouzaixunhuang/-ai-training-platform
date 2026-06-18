@@ -9,7 +9,7 @@ class ProjectManager:
         self.workspace = Path(workspace)
         self.workspace.mkdir(parents=True, exist_ok=True)
     
-    VALID_TASK_TYPES = ("语义分割", "目标检测", "图像分类")
+    VALID_TASK_TYPES = ("语义分割", "目标检测", "图像分类", "OCR文字识别", "OCV字符质检")
 
     def create_project(self, name, task_type="语义分割"):
         if task_type not in self.VALID_TASK_TYPES:

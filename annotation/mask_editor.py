@@ -78,6 +78,9 @@ class AnnotationCanvas(QWidget):
         self._prediction_qimage = None  # Separate storage for inference results
         self._heatmap_qimage = None     # Grad-CAM heatmap overlay
         self._show_heatmap = False      # Space toggles heatmap in cls mode
+        self._ocr_overlay = None          # OCR detection overlay
+        self._heatmap_qimage = None     # Grad-CAM heatmap overlay
+        self._show_heatmap = False      # Space toggles heatmap in cls mode
         
         self.mask_changed.connect(self._auto_save_json)
 
@@ -89,6 +92,8 @@ class AnnotationCanvas(QWidget):
         self.current_image_path = image_path
         self.image = Image.open(image_path).convert("RGB")
         self._cache_qimage()
+        self._heatmap_qimage = None
+        self._ocr_overlay = None
         self._heatmap_qimage = None
         w, h = self.image.size
 
@@ -855,6 +860,31 @@ class AnnotationCanvas(QWidget):
         """Clear Grad-CAM heatmap overlay."""
         self._heatmap_qimage = None
         self._show_heatmap = False
+        self.update()
+
+    def set_heatmap(self, qimage):
+        self._heatmap_qimage = qimage.copy() if qimage else None
+        self.update()
+
+    def clear_heatmap(self):
+        self._heatmap_qimage = None
+        self._show_heatmap = False
+        self.update()
+
+    def load_heatmap_from_file(self, filepath):
+        import os
+        if not os.path.exists(filepath):
+            self._heatmap_qimage = None; return
+        from PyQt5.QtGui import QImage
+        qimg = QImage(filepath)
+        if qimg.isNull():
+            self._heatmap_qimage = None; return
+        if self.image is not None:
+            iw, ih = self.image.size
+            if qimg.width() != iw or qimg.height() != ih:
+                qimg = qimg.scaled(iw, ih)
+        self._heatmap_qimage = qimg.copy()
+        self._show_heatmap = True
         self.update()
 
     def _load_prediction_overlay(self, image_path):
