@@ -76,6 +76,8 @@ class AnnotationCanvas(QWidget):
         self._undo_stack = []  # (mask_copy, action_desc)
         self._max_undo = 50
         self._prediction_qimage = None  # Separate storage for inference results
+        self._heatmap_qimage = None     # Grad-CAM heatmap overlay
+        self._show_heatmap = False      # Space toggles heatmap in cls mode
         
         self.mask_changed.connect(self._auto_save_json)
 
@@ -87,6 +89,7 @@ class AnnotationCanvas(QWidget):
         self.current_image_path = image_path
         self.image = Image.open(image_path).convert("RGB")
         self._cache_qimage()
+        self._heatmap_qimage = None
         w, h = self.image.size
 
         # Load class names for label mapping
@@ -226,6 +229,18 @@ class AnnotationCanvas(QWidget):
                         painter.setOpacity(0.5)
                     painter.drawImage(rect, self._prediction_qimage)
                     painter.setOpacity(1.0)
+
+        # Draw Grad-CAM heatmap overlay (classification mode)
+        if (getattr(self, "_cls_mode", False) and self._show_heatmap
+                and self._heatmap_qimage is not None):
+            pw = self._heatmap_qimage.width()
+            ph = self._heatmap_qimage.height()
+            iw, ih = self.image.size
+            if pw == iw and ph == ih:
+                painter.setOpacity(0.55)
+                painter.drawImage(rect, self._heatmap_qimage)
+                painter.setOpacity(1.0)
+
         if self._mode == self.MODE_POLYGON and self._polygon_points:
             self._draw_polygon_preview(painter)
         if self._mode == self.MODE_LINE and self._line_start is not None:
@@ -694,6 +709,10 @@ class AnnotationCanvas(QWidget):
                 # Detection mode: Space -> toggle prediction boxes
                 self._show_pred_boxes = not self._show_pred_boxes
                 self.status_message.emit("Prediction boxes: %s" % ("ON" if self._show_pred_boxes else "OFF"))
+            elif getattr(self, "_cls_mode", False):
+                # Classification mode: Space -> toggle Grad-CAM heatmap
+                self._show_heatmap = not self._show_heatmap
+                self.status_message.emit("Heatmap: %s" % ("ON" if self._show_heatmap else "OFF"))
             else:
                 # Segmentation mode: toggle prediction overlay
                 self._show_prediction = not self._show_prediction
@@ -803,6 +822,39 @@ class AnnotationCanvas(QWidget):
     def set_eraser(self):
         self._mode = self.MODE_ERASER
         self._update_mode_cursor()
+        self.update()
+
+
+    def set_heatmap(self, qimage):
+        """Set Grad-CAM heatmap overlay QImage (classification mode)."""
+        self._heatmap_qimage = qimage.copy() if qimage else None
+        self.update()
+
+
+    def load_heatmap_from_file(self, filepath):
+        """Load heatmap overlay from a saved image file."""
+        import os
+        if not os.path.exists(filepath):
+            self._heatmap_qimage = None
+            return
+        from PyQt5.QtGui import QImage
+        qimg = QImage(filepath)
+        if qimg.isNull():
+            self._heatmap_qimage = None
+            return
+        # Resize to match current image if needed
+        if self.image is not None:
+            iw, ih = self.image.size
+            if qimg.width() != iw or qimg.height() != ih:
+                qimg = qimg.scaled(iw, ih)
+        self._heatmap_qimage = qimg.copy()
+        self._show_heatmap = True
+        self.update()
+
+    def clear_heatmap(self):
+        """Clear Grad-CAM heatmap overlay."""
+        self._heatmap_qimage = None
+        self._show_heatmap = False
         self.update()
 
     def _load_prediction_overlay(self, image_path):

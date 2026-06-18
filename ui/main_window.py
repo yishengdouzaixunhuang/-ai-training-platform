@@ -150,6 +150,10 @@ class MainWindow(QMainWindow):
         self._detection_mode = False
         self._cls_mode = False
         self._box_manager = None
+
+        # Install event filter for global Space key handling
+        from PyQt5.QtWidgets import QApplication
+        QApplication.instance().installEventFilter(self)
         self.chart_signal.connect(self._update_loss_chart)
         self.batch_signal.connect(self._update_batch_status)
         self.refresh_list_signal.connect(lambda: self._filter_images(self.search_input.text()))
@@ -637,6 +641,13 @@ class MainWindow(QMainWindow):
         ih.addWidget(QPushButton("Single Inference", clicked=self._start_cls_inference))
         ih.addWidget(QPushButton("Batch Inference", clicked=self._start_cls_batch_inference))
         cil.addLayout(ih)
+        hl3 = QHBoxLayout()
+        hl3.addWidget(QPushButton("Heatmap", clicked=self._generate_cls_heatmap))
+        self.cls_auto_heatmap = QCheckBox("Auto-heatmap after inference")
+        self.cls_auto_heatmap.setChecked(True)
+        hl3.addWidget(self.cls_auto_heatmap)
+        cil.addLayout(hl3)
+
         # Confusion Matrix section
         cil.addWidget(QLabel("<b>Confusion Matrix</b>"))
         eh = QHBoxLayout()
@@ -886,6 +897,7 @@ class MainWindow(QMainWindow):
             self._cls_mode = True
             self.log("Task: Image Classification")
             self.canvas._det_overlay = None
+            self.canvas._cls_mode = True
             self.canvas.update()
             self._load_classification_labels()
             self._refresh_cls_model_list()
@@ -896,6 +908,8 @@ class MainWindow(QMainWindow):
             self._cls_mode = False
             self.log("Task: Semantic Segmentation")
             self.canvas._det_overlay = None
+            self.canvas._cls_mode = False
+            self.canvas.clear_heatmap()
             self.canvas.update()
             self._right_stack.setCurrentIndex(0)
 
@@ -1301,6 +1315,50 @@ class MainWindow(QMainWindow):
             path = item.data(Qt.UserRole) if item else None
             if path and os.path.exists(path):
                 self._load_image_by_index(currentRow)
+
+
+
+    def eventFilter(self, obj, event):
+        """Catch Space key in classification mode before child widgets consume it."""
+        from PyQt5.QtCore import QEvent
+        if (event.type() == QEvent.KeyPress 
+                and event.key() == Qt.Key_Space 
+                and not event.isAutoRepeat()
+                and getattr(self, "_cls_mode", False)):
+            self._toggle_heatmap()
+            return True
+        return super().eventFilter(obj, event)
+
+    def _toggle_heatmap(self):
+        """Toggle Grad-CAM heatmap overlay (called by Space shortcut)."""
+        from PyQt5.QtGui import QImage
+        if not getattr(self, "_cls_mode", False):
+            return
+        current_path = getattr(self.canvas, "current_image_path", "")
+        if not current_path or not self.current_project:
+            return
+        base = os.path.splitext(os.path.basename(current_path))[0]
+        pd = str(self.pm.get_project_dir(self.current_project["name"]))
+        hm_file = os.path.join(pd, "outputs", "classification", "heatmaps", base + "_heatmap.jpg")
+        if self.canvas._show_heatmap:
+            self.canvas._show_heatmap = False
+            self.canvas.update()
+            self.statusBar().showMessage("Heatmap: OFF", 2000)
+        elif os.path.exists(hm_file):
+            qimg = QImage(hm_file)
+            if not qimg.isNull():
+                iw, ih = self.canvas.image.size
+                if qimg.width() != iw or qimg.height() != ih:
+                    qimg = qimg.scaled(iw, ih)
+                self.canvas._heatmap_qimage = qimg.copy()
+                self.canvas._show_heatmap = True
+                self.canvas.update()
+                self.statusBar().showMessage("Heatmap: ON", 2000)
+            else:
+                self.statusBar().showMessage("Heatmap: failed to load", 2000)
+        else:
+            self.statusBar().showMessage("No heatmap file: " + os.path.basename(hm_file), 2000)
+
 
     def _on_image_item_clicked(self, row, col):
         item = self.image_list_widget.item(row, 0)
@@ -1777,11 +1835,17 @@ class MainWindow(QMainWindow):
                 result = ct.predict_single(current_path, model_file, top_k=top_k)
                 elapsed = time.time() - t0
                 if result and result.get("predictions"):
+                    if not hasattr(self, "_cls_predictions"):
+                        self._cls_predictions = {}
+                    self._cls_predictions[current_path] = result
                     lines = [f"{p['class']}: {p['confidence']:.4f}" for p in result["predictions"]]
                     self.log_signal.emit(
                         f"Classification: {result['predictions'][0]['class']} "
                         f"({result['predictions'][0]['confidence']:.2%}) in {elapsed:.2f}s")
                     self.cls_result_label.setText("\n".join(lines))
+                    if (hasattr(self, "cls_auto_heatmap") and self.cls_auto_heatmap.isChecked()
+                            and result and result.get("predictions")):
+                        self._generate_cls_heatmap()
                 else:
                     self.cls_result_label.setText("No result")
                     self.log_signal.emit("Classification: no result")
@@ -1858,6 +1922,60 @@ class MainWindow(QMainWindow):
                     if base not in [os.path.splitext(k)[0] for k in self._cls_predictions]:
                         self._cls_predictions[base] = info
                 self.refresh_list_signal.emit()
+                # Auto-generate heatmaps for ALL images after batch inference
+                if hasattr(self, "cls_auto_heatmap") and self.cls_auto_heatmap.isChecked():
+                    self.log_signal.emit("Generating heatmaps for all images...")
+                    hm_dir = os.path.join(out_dir, "heatmaps")
+                    os.makedirs(hm_dir, exist_ok=True)
+                    try:
+                        from PIL import Image
+                        import numpy as np
+                        from classification.trainer import ClassificationTrainer
+                        from classification.gradcam import generate_gradcam_heatmap
+                        ct2 = ClassificationTrainer(project_dir)
+                        ct2.load_model(model_file)
+                        img_sz = getattr(ct2, "_image_size", None)
+                        model_nm = getattr(ct2, "model_name", "resnet18")
+                        hm_total = len(images)
+                        hm_done = 0
+                        for img_path in images:
+                            if self._stop_flag:
+                                break
+                            base = os.path.splitext(os.path.basename(img_path))[0]
+                            hm_file = os.path.join(hm_dir, base + "_heatmap.jpg")
+                            try:
+                                img = Image.open(img_path).convert("RGB")
+                                img_np = np.array(img)
+                                # Find target class from predictions
+                                target_cls = None
+                                info = results.get(base, {})
+                                cls_name = info.get("class", "") if isinstance(info, dict) else ""
+                                if cls_name and hasattr(ct2, "class_names"):
+                                    try:
+                                        target_cls = ct2.class_names.index(cls_name)
+                                    except ValueError:
+                                        pass
+                                overlay = generate_gradcam_heatmap(
+                                    ct2.model, img_np,
+                                    model_name=model_nm,
+                                    target_class=target_cls,
+                                    image_size=img_sz,
+                                )
+                                if overlay is not None:
+                                    Image.fromarray(overlay).save(hm_file, quality=85)
+                                hm_done += 1
+                            except Exception:
+                                pass
+                        self.log_signal.emit(f"Heatmaps saved: {hm_done}/{hm_total} to {hm_dir}")
+                        # Load heatmap for current image
+                        current_base = os.path.splitext(os.path.basename(
+                            getattr(self.canvas, "current_image_path", "")))[0]
+                        current_hm = os.path.join(hm_dir, current_base + "_heatmap.jpg")
+                        self.canvas.load_heatmap_from_file(current_hm)
+                    except Exception as e:
+                        import traceback
+                        self.log_signal.emit(f"Heatmap batch error: {e}")
+                        traceback.print_exc()
                 self.cls_infer_status.setText("Complete")
                 # Compute confusion matrix from batch results
                 try:
@@ -1948,6 +2066,79 @@ class MainWindow(QMainWindow):
         threading.Thread(target=run, daemon=True).start()
 
 
+
+
+    def _generate_cls_heatmap(self):
+        """Generate Grad-CAM heatmap for current classification result."""
+        if not self.current_project:
+            return
+        current_path = getattr(self.canvas, "current_image_path", None)
+        if not current_path or not os.path.exists(current_path):
+            return
+        self.cls_infer_status.setText("Generating heatmap...")
+        import threading
+        threading.Thread(target=self._do_generate_heatmap, daemon=True).start()
+
+
+    def _do_generate_heatmap(self):
+        """Core heatmap generation (synchronous, call from any thread)."""
+        current_path = getattr(self.canvas, "current_image_path", None)
+        if not current_path or not os.path.exists(current_path):
+            self.log_signal.emit("Heatmap: no current image")
+            return
+        project_dir = str(self.pm.get_project_dir(self.current_project["name"]))
+        # Scan disk directly (thread-safe) instead of reading UI combo
+        models_dir = os.path.join(project_dir, "models", "classification")
+        model_file = None
+        if os.path.exists(models_dir):
+            pth_files = sorted([f for f in os.listdir(models_dir) if f.endswith(".pth")])
+            if pth_files:
+                model_file = pth_files[-1]  # Use most recent model
+        if not model_file:
+            self.log_signal.emit("Heatmap: no model found")
+            return
+        try:
+            from PIL import Image
+            import numpy as np
+            from classification.trainer import ClassificationTrainer
+            from classification.gradcam import generate_gradcam_heatmap
+            from PyQt5.QtGui import QImage
+            img = Image.open(current_path).convert("RGB")
+            img_np = np.array(img)
+            ct = ClassificationTrainer(project_dir)
+            ct.load_model(model_file)
+            if ct.model is None:
+                self.log_signal.emit("Heatmap: model not loaded")
+                return
+            img_sz = getattr(ct, "_image_size", None)
+            cls_preds = getattr(self, "_cls_predictions", {}).get(current_path, None)
+            target_class = None
+            if cls_preds is not None and isinstance(cls_preds, dict):
+                top_pred = cls_preds.get("predictions", [{}])[0] if cls_preds.get("predictions") else {}
+                class_name = top_pred.get("class", "")
+                if class_name and hasattr(ct, "class_names"):
+                    try:
+                        target_class = ct.class_names.index(class_name)
+                    except ValueError:
+                        pass
+            overlay = generate_gradcam_heatmap(
+                ct.model, img_np,
+                model_name=getattr(ct, "model_name", "resnet18"),
+                target_class=target_class,
+                image_size=img_sz,
+            )
+            if overlay is not None:
+                h, w, ch = overlay.shape
+                qimg = QImage(overlay.tobytes(), w, h, 3 * w, QImage.Format_RGB888)
+                self.canvas.set_heatmap(qimg)
+                self.canvas._show_heatmap = True
+                self.log_signal.emit("Heatmap generated (Space to toggle)")
+            else:
+                self.log_signal.emit("Heatmap: model unsupported (ViT?) or failed")
+        except Exception as e:
+            import traceback
+            self.log_signal.emit(f"Heatmap error: {e}")
+            traceback.print_exc()
 
     def _eval_cls_model(self):
         """Evaluate classification model and show confusion matrix."""
