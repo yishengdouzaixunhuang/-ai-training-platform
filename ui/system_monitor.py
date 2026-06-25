@@ -40,45 +40,36 @@ class SystemMonitor(QLabel):
             pass
         self._gpu_available = False
 
-    @staticmethod
-    def _fmt(val, suffix, warn_threshold=90):
-        """Format value with red coloring if >= warn_threshold."""
-        if val >= warn_threshold:
-            return f"<span style='color:#ff4444;font-weight:bold'>{val:.2f}{suffix}</span>"
-        return f"{val:.2f}{suffix}"
-
     def _refresh(self):
         parts = []
 
         # CPU
         cpu = psutil.cpu_percent(interval=None)
-        parts.append(self._fmt(cpu, "%", 90).replace("%", "%</span>") if cpu >= 90 else f"CPU:{cpu:.2f}%")
-        # Fix the span wrapping properly
         if cpu >= 90:
-            parts[-1] = f"CPU:<span style='color:#ff4444;font-weight:bold'>{cpu:.2f}%</span>"
+            parts.append(f"CPU:<span style='color:#ff4444;font-weight:bold'>{cpu:.2f}%</span>")
         else:
-            parts[-1] = f"CPU:{cpu:.2f}%"
+            parts.append(f"CPU:{cpu:.2f}%")
 
-        # GPU
+        # GPU (memory usage % + absolute GB)
         if self._gpu_available:
             try:
                 if hasattr(self, "_use_nvml"):
                     info = self._nvml.nvmlDeviceGetMemoryInfo(self._gpu_handle)
-                    util = self._nvml.nvmlDeviceGetUtilizationRates(self._gpu_handle)
                     used = info.used / 1024**3
                     total = info.total / 1024**3
-                    if util.gpu >= 90:
-                        parts.append(f"GPU:<span style='color:#ff4444;font-weight:bold'>{util.gpu:.2f}%</span>\uff08{used:.2f}/{total:.2f}GB)")
+                    mem_pct = (info.used / info.total) * 100
+                    if mem_pct >= 90:
+                        parts.append(f"GPU:<span style='color:#ff4444;font-weight:bold'>{mem_pct:.2f}%</span>\uff08{used:.2f}/{total:.2f}GB)")
                     else:
-                        parts.append(f"GPU:{util.gpu:.2f}%\uff08{used:.2f}/{total:.2f}GB)")
+                        parts.append(f"GPU:{mem_pct:.2f}%\uff08{used:.2f}/{total:.2f}GB)")
                 elif hasattr(self, "_use_torch"):
                     import torch
                     used = torch.cuda.memory_allocated(0) / 1024**3
                     mem_pct = (used / self._gpu_total) * 100 if self._gpu_total > 0 else 0
                     if mem_pct >= 90:
-                        parts.append(f"GPU:<span style='color:#ff4444;font-weight:bold'>--</span>\uff08{used:.2f}/{self._gpu_total:.2f}GB)")
+                        parts.append(f"GPU:<span style='color:#ff4444;font-weight:bold'>{mem_pct:.2f}%</span>\uff08{used:.2f}/{self._gpu_total:.2f}GB)")
                     else:
-                        parts.append(f"GPU:--\uff08{used:.2f}/{self._gpu_total:.2f}GB)")
+                        parts.append(f"GPU:{mem_pct:.2f}%\uff08{used:.2f}/{self._gpu_total:.2f}GB)")
             except Exception:
                 parts.append("GPU:--")
 

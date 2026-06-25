@@ -21,10 +21,12 @@ import matplotlib
 matplotlib.use("Qt5Agg")
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
-from core.config import APP_NAME, APP_VERSION, load_config, save_config
+from core.config import APP_NAME, APP_VERSION, CLASS_COLORS, load_config, save_config
 from core.project_manager import ProjectManager
 from annotation.label_manager import LabelManager
 from annotation.mask_editor import AnnotationCanvas
+from ui.color_palette import ColorPalette
+from ui.crop_tool import CropToolDialog
 from annotation.labelme_io import save_mask_to_json, save_labelme_json, mask_to_shapes
 from annotation.version_manager import list_versions, restore_version, get_version_diff
 from training.trainer import Trainer
@@ -221,6 +223,8 @@ class MainWindow(QMainWindow):
         tm.addSeparator()
         tm.addAction("OCR Text Recognition", lambda: self._set_task("ocr"))
         tm.addAction("OCV Quality Inspection", lambda: self._set_task("ocv"))
+        tm.addSeparator()
+        tm.addAction("Image Crop Tool...", self._open_crop_tool)
         sm = mb.addMenu("Settings(&S)")
         sm.addAction("Workspace...", self._set_workspace)
         vm = mb.addMenu("View(&V)")
@@ -428,7 +432,23 @@ class MainWindow(QMainWindow):
         self.class_list = QListWidget()
         self.class_list.currentRowChanged.connect(self._on_class_changed)
         al.addWidget(self.class_list)
+
+        # Class management buttons
+        cl = QHBoxLayout()
+        self.btn_add_class = QPushButton("+"); self.btn_add_class.setToolTip("Add class")
+        self.btn_add_class.clicked.connect(self._add_class)
+        self.btn_del_class = QPushButton("-"); self.btn_del_class.setToolTip("Delete selected class")
+        self.btn_del_class.clicked.connect(self._delete_class)
+        self.btn_ren_class = QPushButton("R"); self.btn_ren_class.setToolTip("Rename selected class")
+        self.btn_ren_class.clicked.connect(self._rename_class)
+        for b in [self.btn_add_class, self.btn_del_class, self.btn_ren_class]: b.setFixedWidth(28); b.setFixedHeight(22)
+        cl.addWidget(self.btn_add_class); cl.addWidget(self.btn_del_class); cl.addWidget(self.btn_ren_class)
+        cl.addStretch(); al.addLayout(cl)
         bl = QHBoxLayout(); bl.addWidget(QLabel("Brush:"))
+        al.addWidget(QLabel("<b>Palette:</b>"))
+        self.color_palette = ColorPalette()
+        self.color_palette.class_selected.connect(self._on_palette_class_clicked)
+        al.addWidget(self.color_palette)
         self.brush_slider = QSlider(Qt.Horizontal)
         self.brush_slider.setRange(2, 100); self.brush_slider.setValue(15)
         self.brush_slider.valueChanged.connect(lambda v: setattr(self.canvas, "brush_size", v))
@@ -436,10 +456,10 @@ class MainWindow(QMainWindow):
         al.addWidget(QLabel("<b>Mode:</b>"))
         mode_layout = QHBoxLayout()
         self.mode_group = QButtonGroup(self); self.mode_group.setExclusive(True)
-        modes = [("Brush","brush"),("Polygon","polygon"),("Line","line"),("Eraser","eraser"),("Pan","pan")]
+        modes = [("Brush","brush"),("Polygon","polygon"),("Line","line"),("Eraser","eraser"),("Ignore","ignore"),("Pan","pan")]
         self._mode_buttons = {}
         for label, mode_id in modes:
-            btn = QPushButton(label); btn.setCheckable(True); btn.setMinimumWidth(56)
+            btn = QPushButton(label); btn.setCheckable(True); btn.setMinimumWidth(64)
             def make_callback(m): return lambda: self._set_annotation_mode(m)
             btn.clicked.connect(make_callback(mode_id))
             if mode_id == "pan": btn.setChecked(True)
@@ -915,6 +935,19 @@ class MainWindow(QMainWindow):
             self._load_classes()
             self.log(f"Opened: {name}")
             self.setWindowTitle(f"{APP_NAME} - {name}")
+
+            # Auto-detect task type from project config
+            task_map = {"语义分割":"segmentation","目标检测":"detection","图像分类":"classification","OCR文字识别":"ocr","OCV字符质检":"ocv"}
+            config_path = os.path.join(self._project_dir, "project.json")
+            if os.path.exists(config_path):
+                try:
+                    with open(config_path, "r", encoding="utf-8") as f:
+                        meta = json.load(f)
+                    task_type = meta.get("task_type", "语义分割")
+                    internal = task_map.get(task_type, "segmentation")
+                    self._set_task(internal)
+                except Exception:
+                    pass
         except Exception as e:
             QMessageBox.warning(self, "Error", str(e))
 
@@ -932,6 +965,8 @@ class MainWindow(QMainWindow):
         self.canvas.update()
         self.image_list_widget.setRowCount(0)
         self.class_list.clear()
+        if hasattr(self, "color_palette"):
+            self.color_palette.clear()
         self.image_count_label.setText("")
         self.list_status.setText("")
         self.log("Project closed")
@@ -1055,6 +1090,11 @@ class MainWindow(QMainWindow):
                     dst = os.path.join(img_dir, os.path.basename(f))
                     if not os.path.exists(dst):
                         shutil.copy2(f, dst)
+                    json_path = os.path.splitext(dst)[0] + ".json"
+                    if not os.path.exists(json_path):
+                        blank = {"version":"5.3.1","flags":{},"shapes":[],"imagePath":os.path.basename(dst),"imageData":None,"imageHeight":0,"imageWidth":0}
+                        with open(json_path, "w", encoding="utf-8") as jf:
+                            json.dump(blank, jf, indent=2, ensure_ascii=False)
                     if (i + 1) % 100 == 0:
                         self.log(f"Import progress: {i+1}/{len(files)}")
                 self.log(f"Import complete: {len(files)} images")
@@ -1726,6 +1766,7 @@ class MainWindow(QMainWindow):
             "polygon": self.canvas.MODE_POLYGON,
             "line": self.canvas.MODE_LINE,
             "eraser": self.canvas.MODE_ERASER,
+            "ignore": self.canvas.MODE_IGNORE,
         }
         if mode in mode_map:
             self.canvas._mode = mode_map[mode]
@@ -1747,6 +1788,9 @@ class MainWindow(QMainWindow):
         for label, key in [("Set as Train", "train"), ("Set as Val", "val"), ("Set as Test", "test")]:
             action = menu.addAction(label)
             action.triggered.connect(lambda checked, k=key: self._set_selected_split(selected_rows, k, project_dir, split_map))
+
+        action4 = menu.addAction("Open JSON Location")
+        action4.triggered.connect(lambda: self._open_json_location(selected_rows, project_dir))
         menu.exec_(self.image_list_widget.viewport().mapToGlobal(pos))
 
     def _set_selected_split(self, selected_rows, split_key, project_dir, split_map):
@@ -1762,7 +1806,21 @@ class MainWindow(QMainWindow):
         self._filter_images(self.search_input.text())
         self.log(f"Set {len(selected_rows)} image(s) to {split_key}")
 
-    # ============ Version History ============
+    def _open_json_location(self, selected_rows, project_dir):
+        """Open folder in Explorer and highlight the JSON file."""
+        import subprocess
+        for r in selected_rows:
+            item = self.image_list_widget.item(r, 0)
+            p = item.data(Qt.UserRole) if item else None
+            if not p:
+                continue
+            json_path = os.path.splitext(p)[0] + ".json"
+            if not os.path.exists(json_path):
+                blank = {"version":"5.3.1","flags":{},"shapes":[],"imagePath":os.path.basename(p),"imageData":None,"imageHeight":0,"imageWidth":0}
+                with open(json_path, "w", encoding="utf-8") as jf:
+                    json.dump(blank, jf, indent=2, ensure_ascii=False)
+            subprocess.Popen(f'explorer /select,"{os.path.abspath(json_path)}"', shell=True)
+            break
 
     def _refresh_versions(self):
         """Refresh version history list for current image."""
@@ -1821,18 +1879,112 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
         self._cached_classes = classes
-        if hasattr(self, "class_list"):
-            self.class_list.clear()
-            for c in classes:
-                item = QListWidgetItem(c)
-                self.class_list.addItem(item)
-
+        self._refresh_class_ui()
     def _on_class_changed(self, current):
         """Handle class selection change in class list."""
         if current < 0 or not hasattr(self.canvas, "label_manager"):
             return
         if current >= 0:
-            self.canvas.label_manager.current_class = current
+            self.canvas.set_class(current)
+            if hasattr(self, "color_palette"):
+                self.color_palette.set_selected(current)
+
+
+    def _on_palette_class_clicked(self, idx):
+        """Sync palette click to class list and canvas."""
+        if hasattr(self, "class_list") and idx < self.class_list.count():
+            self.class_list.blockSignals(True)
+            self.class_list.setCurrentRow(idx)
+            self.class_list.blockSignals(False)
+            if hasattr(self.canvas, "label_manager"):
+                self.canvas.set_class(idx)
+
+    def _add_class(self):
+        """Add a new class to the project."""
+        name, ok = QInputDialog.getText(self, "Add Class", "Class name:")
+        if not ok or not name.strip():
+            return
+        name = name.strip()
+        classes = list(self._cached_classes)
+        if name in classes:
+            self.log(f"[Class] Duplicate: {name}")
+            return
+        classes.append(name)
+        self._cached_classes = classes
+        self._save_classes_to_project(classes)
+        self._refresh_class_ui()
+        self.log(f"[Class] Added: {name}")
+
+    def _delete_class(self):
+        """Delete selected class from the project."""
+        row = self.class_list.currentRow()
+        if row < 1:  # protect background (index 0)
+            self.log("[Class] Cannot delete background")
+            return
+        classes = list(self._cached_classes)
+        if row >= len(classes):
+            return
+        name = classes[row]
+        reply = QMessageBox.question(self, "Delete Class",
+            f"Delete class \u2018{name}\u2019? Existing annotations will keep their class index.",
+            QMessageBox.Yes | QMessageBox.No)
+        if reply != QMessageBox.Yes:
+            return
+        del classes[row]
+        self._cached_classes = classes
+        self._save_classes_to_project(classes)
+        self._refresh_class_ui()
+        self.log(f"[Class] Deleted: {name}")
+
+    def _rename_class(self):
+        """Rename selected class."""
+        row = self.class_list.currentRow()
+        if row < 0:
+            return
+        classes = list(self._cached_classes)
+        if row >= len(classes):
+            return
+        old_name = classes[row]
+        new_name, ok = QInputDialog.getText(self, "Rename Class", "New name:", text=old_name)
+        if not ok or not new_name.strip() or new_name.strip() == old_name:
+            return
+        new_name = new_name.strip()
+        if new_name in classes:
+            self.log(f"[Class] Duplicate: {new_name}")
+            return
+        classes[row] = new_name
+        self._cached_classes = classes
+        self._save_classes_to_project(classes)
+        self._refresh_class_ui()
+        self.log(f"[Class] Renamed: {old_name} -> {new_name}")
+
+    def _save_classes_to_project(self, classes):
+        """Persist class list to project.json."""
+        if not self.current_project:
+            return
+        pd = str(self.pm.get_project_dir(self.current_project["name"]))
+        config_path = os.path.join(pd, "project.json")
+        if os.path.exists(config_path):
+            try:
+                with open(config_path, "r", encoding="utf-8") as f:
+                    meta = json.load(f)
+                meta["classes"] = classes
+                with open(config_path, "w", encoding="utf-8") as f:
+                    json.dump(meta, f, indent=2, ensure_ascii=False)
+            except Exception as e:
+                self.log(f"[Class] Save error: {e}")
+
+    def _refresh_class_ui(self):
+        """Refresh class list and palette from _cached_classes."""
+        classes = self._cached_classes
+        if hasattr(self, "class_list"):
+            self.class_list.blockSignals(True)
+            self.class_list.clear()
+            for c in classes:
+                self.class_list.addItem(QListWidgetItem(c))
+            self.class_list.blockSignals(False)
+        if hasattr(self, "color_palette"):
+            self.color_palette.set_classes(classes, [CLASS_COLORS[k % len(CLASS_COLORS)] for k in range(len(classes))])
 
     # ============ UI Panel Toggles ============
 
@@ -3235,6 +3387,11 @@ class MainWindow(QMainWindow):
                 continue
             self.det_class_list.addItem(c)
 
+
+    def _open_crop_tool(self):
+        """Open the image crop tool dialog."""
+        dlg = CropToolDialog(self)
+        dlg.exec_()
     def _about(self):
         """Show about dialog."""
         QMessageBox.about(self, "AI Training Platform",

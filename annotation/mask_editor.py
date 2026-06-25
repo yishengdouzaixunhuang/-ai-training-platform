@@ -1,4 +1,4 @@
-"""Semantic segmentation annotation canvas with zoom, pan, brush, polygon, line tools."""
+﻿"""Semantic segmentation annotation canvas with zoom, pan, brush, polygon, line tools."""
 import os, json, re, numpy as np, cv2
 from PIL import Image
 from PyQt5.QtWidgets import QWidget
@@ -18,6 +18,7 @@ class AnnotationCanvas(QWidget):
     MODE_POLYGON = "polygon"
     MODE_LINE = "line"
     MODE_ERASER = "eraser"
+    MODE_IGNORE = "ignore"
     MODE_PAN = "pan"
 
     MIN_ZOOM = 0.05
@@ -246,7 +247,7 @@ class AnnotationCanvas(QWidget):
                 painter.drawImage(rect, self._heatmap_qimage)
                 painter.setOpacity(1.0)
 
-        if self._mode == self.MODE_POLYGON and self._polygon_points:
+        if self._mode in (self.MODE_POLYGON, self.MODE_IGNORE) and self._polygon_points:
             self._draw_polygon_preview(painter)
         if self._mode == self.MODE_LINE and self._line_start is not None:
             self._draw_line_preview(painter)
@@ -271,7 +272,7 @@ class AnnotationCanvas(QWidget):
                 painter.drawRect(QRectF(x, y, w, h))
 
         zoom_pct = int(self.zoom_level / self._fit_zoom * 100)
-        mode_names = {self.MODE_BRUSH: "Brush", self.MODE_ERASER: "Eraser",
+        mode_names = {self.MODE_BRUSH: 'Brush', self.MODE_ERASER: 'Eraser', self.MODE_IGNORE: 'Ignore',
                        self.MODE_POLYGON: "Polygon", self.MODE_LINE: "Line",
                        self.MODE_PAN: "Pan"}
         ann_status = "Annot:ON" if self._show_annotation else "Annot:OFF"
@@ -413,6 +414,25 @@ class AnnotationCanvas(QWidget):
                     if not points or len(points) < 2:
                         continue
                     if "ignore" in label.lower() or "gnore" in label.lower():
+                        # Draw gray "IGNORE" label instead of skipping
+                        pts = np.array(points, dtype=np.float32)
+                        cx = int(pts[:, 0].min())
+                        cy = int(pts[:, 1].min())
+                        pt = self._image_to_widget(cx, cy)
+                        wx, wy = pt.x(), pt.y()
+                        font_size = max(8, int(10 * self.zoom_level))
+                        font = QFont("Sans", font_size, QFont.Bold)
+                        painter.setFont(font)
+                        fm = QFontMetrics(font)
+                        label_text = "IGNORE"
+                        tw = fm.horizontalAdvance(label_text) + 8
+                        th = fm.height() + 4
+                        bg_rect = QRectF(wx - 2, wy - th, tw, th)
+                        painter.setPen(Qt.NoPen)
+                        painter.setBrush(QColor(80, 80, 80, 180))
+                        painter.drawRoundedRect(bg_rect, 3, 3)
+                        painter.setPen(QColor(200, 200, 200))
+                        painter.drawText(bg_rect, Qt.AlignCenter, label_text)
                         continue
                     # Use first point as top-left anchor
                     pts = np.array(points, dtype=np.float32)
@@ -458,7 +478,11 @@ class AnnotationCanvas(QWidget):
         if len(self._polygon_points) < 1:
             return
         pts = self._polygon_points
-        color = CLASS_COLORS[self.current_class_id % len(CLASS_COLORS)]
+        if self._mode == self.MODE_IGNORE:
+            color = (128, 128, 128)  # gray for ignore
+        else:
+            color = CLASS_COLORS[self.current_class_id % len(CLASS_COLORS)]
+        qcolor = QColor(*color)
         qcolor = QColor(*color)
 
         # Draw solid polyline (no fill, to keep image visible)
@@ -534,7 +558,7 @@ class AnnotationCanvas(QWidget):
         if self.image is None:
             return
         if event.button() == Qt.RightButton:
-            if self._mode == self.MODE_POLYGON and self._polygon_points:
+            if self._mode in (self.MODE_POLYGON, self.MODE_IGNORE) and self._polygon_points:
                 self._polygon_points = []
                 self.update()
                 self.status_message.emit("Polygon cancelled")
@@ -565,15 +589,15 @@ class AnnotationCanvas(QWidget):
             self._drawing = True
             self._drag_start_pos = pt
             self._draw_eraser_at(event.pos())
+        elif self._mode in (self.MODE_POLYGON, self.MODE_IGNORE):
+            if not self._polygon_points:
+                self._push_undo("polygon")
+            self._add_polygon_point(pt)
         elif self._mode == self.MODE_LINE:
             self._push_undo("line")
             self._line_start = pt
             self._line_end = pt
             self.update()
-        elif self._mode == self.MODE_POLYGON:
-            if not self._polygon_points:
-                self._push_undo("polygon")
-            self._add_polygon_point(pt)
 
     def mouseMoveEvent(self, event):
         if self._panning:
@@ -597,7 +621,7 @@ class AnnotationCanvas(QWidget):
             self._draw_brush_at(event.pos())
         elif self._drawing and self._mode == self.MODE_ERASER:
             self._draw_eraser_at(event.pos())
-        if self._mode in (self.MODE_BRUSH, self.MODE_ERASER, self.MODE_POLYGON, self.MODE_LINE):
+        if self._mode in (self.MODE_BRUSH, self.MODE_ERASER, self.MODE_POLYGON, self.MODE_IGNORE, self.MODE_LINE):
             self.update()
         # Prediction hover tooltip (uses precomputed stats, O(1) per move)
         if self._show_prediction and hasattr(self, "_prediction_mask") and self._prediction_mask is not None:
@@ -647,7 +671,7 @@ class AnnotationCanvas(QWidget):
             self.mask_changed.emit()
 
     def mouseDoubleClickEvent(self, event):
-        if self._mode == self.MODE_POLYGON and len(self._polygon_points) >= 3:
+        if self._mode in (self.MODE_POLYGON, self.MODE_IGNORE) and len(self._polygon_points) >= 3:
             self._close_polygon()
 
     def wheelEvent(self, event):
@@ -682,7 +706,7 @@ class AnnotationCanvas(QWidget):
             else:
                 self.status_message.emit("Nothing to undo")
         elif event.key() == Qt.Key_Escape:
-            if self._mode == self.MODE_POLYGON and self._polygon_points:
+            if self._mode in (self.MODE_POLYGON, self.MODE_IGNORE) and self._polygon_points:
                 self._polygon_points = []
                 self.update()
                 self.status_message.emit("Polygon cancelled")
@@ -690,10 +714,10 @@ class AnnotationCanvas(QWidget):
             self._line_end = None
             self.update()
         elif event.key() in (Qt.Key_Return, Qt.Key_Enter):
-            if self._mode == self.MODE_POLYGON and len(self._polygon_points) >= 3:
+            if self._mode in (self.MODE_POLYGON, self.MODE_IGNORE) and len(self._polygon_points) >= 3:
                 self._close_polygon()
         elif event.key() == Qt.Key_Backspace or event.key() == Qt.Key_Delete:
-            if self._mode == self.MODE_POLYGON and self._polygon_points:
+            if self._mode in (self.MODE_POLYGON, self.MODE_IGNORE) and self._polygon_points:
                 self._polygon_points.pop()
                 self.update()
                 self.status_message.emit("Removed point, %d remaining" % len(self._polygon_points))
@@ -777,7 +801,8 @@ class AnnotationCanvas(QWidget):
         if len(self._polygon_points) < 3:
             return
         pts = np.array(self._polygon_points, dtype=np.int32).reshape((-1, 1, 2))
-        cv2.fillPoly(self.mask, [pts], color=self.current_class_id)
+        fill_value = 255 if self._mode == self.MODE_IGNORE else self.current_class_id
+        cv2.fillPoly(self.mask, [pts], color=fill_value)
         self._polygon_points = []
         self._overlay_dirty = True
         self.update()
@@ -799,7 +824,7 @@ class AnnotationCanvas(QWidget):
     # ======================== Mode & State ========================
 
     def set_mode(self, mode):
-        if self._mode == self.MODE_POLYGON and self._polygon_points:
+        if self._mode in (self.MODE_POLYGON, self.MODE_IGNORE) and self._polygon_points:
             self._polygon_points = []
         self._line_start = None
         self._line_end = None
@@ -813,6 +838,7 @@ class AnnotationCanvas(QWidget):
         cursors = {
             self.MODE_BRUSH: Qt.CrossCursor,
             self.MODE_ERASER: Qt.CrossCursor,
+            self.MODE_IGNORE: Qt.CrossCursor,
             self.MODE_POLYGON: Qt.CrossCursor,
             self.MODE_LINE: Qt.CrossCursor,
             self.MODE_PAN: Qt.OpenHandCursor,
@@ -826,6 +852,11 @@ class AnnotationCanvas(QWidget):
 
     def set_eraser(self):
         self._mode = self.MODE_ERASER
+        self._update_mode_cursor()
+        self.update()
+
+    def set_ignore(self):
+        self._mode = self.MODE_IGNORE
         self._update_mode_cursor()
         self.update()
 
