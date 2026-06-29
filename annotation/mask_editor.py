@@ -20,6 +20,8 @@ class AnnotationCanvas(QWidget):
     MODE_ERASER = "eraser"
     MODE_IGNORE = "ignore"
     MODE_PAN = "pan"
+    MODE_SAM = "sam"
+    MODE_SAM = "sam"
 
     MIN_ZOOM = 0.05
     MAX_ZOOM = 30.0
@@ -67,6 +69,18 @@ class AnnotationCanvas(QWidget):
 
         self._line_start = None
         self._line_end = None
+        # SAM state
+        self._sam_points = []
+        self._sam_labels = []
+        self._sam_mask = None
+        self._sam_score = 0.0
+        self._sam_predicting = False
+        # SAM state
+        self._sam_points = []
+        self._sam_labels = []
+        self._sam_mask = None
+        self._sam_score = 0.0
+        self._sam_predicting = False
 
         self.label_manager = None
         self.current_image_path = None
@@ -146,6 +160,15 @@ class AnnotationCanvas(QWidget):
             return None
         return int(ix), int(iy)
 
+
+    def _window_to_image_unclamped(self, pos):
+        """Convert widget pos to image coords, allowing outside-image values."""
+        if self.image is None:
+            return None
+        rect = self._image_to_widget_rect()
+        ix = (pos.x() - rect.x()) / self.zoom_level
+        iy = (pos.y() - rect.y()) / self.zoom_level
+        return int(ix), int(iy)
     def _image_to_widget(self, ix, iy):
         rect = self._image_to_widget_rect()
         return QPointF(rect.x() + ix * self.zoom_level, rect.y() + iy * self.zoom_level)
@@ -248,9 +271,15 @@ class AnnotationCanvas(QWidget):
                 painter.setOpacity(1.0)
 
         if self._mode in (self.MODE_POLYGON, self.MODE_IGNORE) and self._polygon_points:
+            painter.setClipping(False)
             self._draw_polygon_preview(painter)
+            painter.setClipping(True)
         if self._mode == self.MODE_LINE and self._line_start is not None:
+            painter.setClipping(False)
             self._draw_line_preview(painter)
+            painter.setClipping(True)
+        if self._mode == self.MODE_SAM:
+            self._draw_sam_overlay(painter)
         if self._mode in (self.MODE_BRUSH, self.MODE_ERASER):
             self._draw_brush_cursor(painter)
 
@@ -274,7 +303,7 @@ class AnnotationCanvas(QWidget):
         zoom_pct = int(self.zoom_level / self._fit_zoom * 100)
         mode_names = {self.MODE_BRUSH: 'Brush', self.MODE_ERASER: 'Eraser', self.MODE_IGNORE: 'Ignore',
                        self.MODE_POLYGON: "Polygon", self.MODE_LINE: "Line",
-                       self.MODE_PAN: "Pan"}
+                       self.MODE_PAN: "Pan", self.MODE_SAM: "SAM"}
         ann_status = "Annot:ON" if self._show_annotation else "Annot:OFF"
         if self._det_overlay is not None:
             pred_status = "Pred:ON" if self._show_pred_boxes else "Pred:OFF"
@@ -510,7 +539,7 @@ class AnnotationCanvas(QWidget):
         # Draw line from last vertex to cursor
         pos = self.mapFromGlobal(QCursor.pos())
         if self.rect().contains(pos):
-            hpt = self._window_to_image(pos)
+            hpt = self._window_to_image_unclamped(pos)
             if hpt is not None:
                 last = pts[-1]
                 lw = self._image_to_widget(last[0], last[1])
@@ -536,7 +565,7 @@ class AnnotationCanvas(QWidget):
         pos = self.mapFromGlobal(QCursor.pos())
         if not self.rect().contains(pos):
             return
-        end_pt = self._window_to_image(pos)
+        end_pt = self._window_to_image_unclamped(pos)
         if end_pt is None:
             return
         sp = self._image_to_widget(self._line_start[0], self._line_start[1])
@@ -558,6 +587,9 @@ class AnnotationCanvas(QWidget):
         if self.image is None:
             return
         if event.button() == Qt.RightButton:
+            if self._mode == self.MODE_SAM:
+                self._handle_sam_click(event)
+                return
             if self._mode in (self.MODE_POLYGON, self.MODE_IGNORE) and self._polygon_points:
                 self._polygon_points = []
                 self.update()
@@ -572,7 +604,7 @@ class AnnotationCanvas(QWidget):
 
             return
         pt = self._window_to_image(event.pos())
-        if pt is None:
+        if pt is None and self._mode not in (self.MODE_POLYGON, self.MODE_IGNORE, self.MODE_LINE, self.MODE_SAM):
             return
         if self._mode == self.MODE_PAN:
             self._panning = True
@@ -592,12 +624,14 @@ class AnnotationCanvas(QWidget):
         elif self._mode in (self.MODE_POLYGON, self.MODE_IGNORE):
             if not self._polygon_points:
                 self._push_undo("polygon")
-            self._add_polygon_point(pt)
+            self._add_polygon_point(self._window_to_image_unclamped(event.pos()))
         elif self._mode == self.MODE_LINE:
             self._push_undo("line")
-            self._line_start = pt
-            self._line_end = pt
+            self._line_start = self._window_to_image_unclamped(event.pos())
+            self._line_end = self._window_to_image_unclamped(event.pos())
             self.update()
+        elif self._mode == self.MODE_SAM:
+            self._handle_sam_click(event)
 
     def mouseMoveEvent(self, event):
         if self._panning:
@@ -660,7 +694,7 @@ class AnnotationCanvas(QWidget):
             self.update()
             self.mask_changed.emit()
         if self._mode == self.MODE_LINE and self._line_start is not None:
-            pt = self._window_to_image(event.pos())
+            pt = self._window_to_image_unclamped(event.pos())
             if pt is not None:
                 self._line_end = pt
                 self._apply_line()
@@ -688,6 +722,44 @@ class AnnotationCanvas(QWidget):
         self.update()
 
     def keyPressEvent(self, event):
+        # SAM mode: Enter=accept, Esc=cancel, Backspace=undo last point
+        if self._mode == self.MODE_SAM:
+            if event.key() == Qt.Key_Return or event.key() == Qt.Key_Enter:
+                self._accept_sam_mask()
+                return
+            elif event.key() == Qt.Key_Escape:
+                self._cancel_sam()
+                return
+            elif event.key() == Qt.Key_Backspace or event.key() == Qt.Key_Delete:
+                if self._sam_points:
+                    self._sam_points.pop()
+                    self._sam_labels.pop()
+                    if self._sam_points:
+                        self._run_sam_prediction()
+                    else:
+                        self._sam_mask = None
+                        self.update()
+                        self.status_message.emit("SAM: all points removed")
+                return
+        # SAM mode: Enter=accept, Esc=cancel, Backspace=undo last point
+        if self._mode == self.MODE_SAM:
+            if event.key() == Qt.Key_Return or event.key() == Qt.Key_Enter:
+                self._accept_sam_mask()
+                return
+            elif event.key() == Qt.Key_Escape:
+                self._cancel_sam()
+                return
+            elif event.key() == Qt.Key_Backspace or event.key() == Qt.Key_Delete:
+                if self._sam_points:
+                    self._sam_points.pop()
+                    self._sam_labels.pop()
+                    if self._sam_points:
+                        self._run_sam_prediction()
+                    else:
+                        self._sam_mask = None
+                        self.update()
+                        self.status_message.emit("SAM: all points removed")
+                return
         # Detection mode: Delete = remove selected box
         if self._det_overlay is not None and (event.key() == Qt.Key_Delete or event.key() == Qt.Key_Backspace):
             self._det_overlay.delete_active_box()
@@ -821,9 +893,215 @@ class AnnotationCanvas(QWidget):
         cv2.line(self.mask, (x1, y1), (x2, y2), color=self.current_class_id, thickness=thickness)
         self.status_message.emit("Line drawn (width=%d)" % thickness)
 
+    # ======================== SAM Assist ========================
+
+    def _handle_sam_click(self, event):
+        """Add a SAM prompt point on click."""
+        pt = self._window_to_image(event.pos())
+        if pt is None:
+            return
+        if event.button() == Qt.LeftButton:
+            self._sam_points.append(pt)
+            self._sam_labels.append(1)  # foreground
+        elif event.button() == Qt.RightButton:
+            self._sam_points.append(pt)
+            self._sam_labels.append(0)  # background
+        else:
+            return
+        self._run_sam_prediction()
+
+    def _run_sam_prediction(self):
+        """Run SAM inference with current points."""
+        if self._sam_predicting:
+            return
+        if not self._sam_points:
+            return
+        self._sam_predicting = True
+        self.status_message.emit("SAM: predicting...")
+        self.update()
+        import threading
+        def _predict():
+            try:
+                from annotation.sam_assist import sam_predict
+                img = self.image
+                result = sam_predict(img, self._sam_points, self._sam_labels)
+                if result:
+                    self._sam_mask = result["mask"]
+                    self._sam_score = result["score"]
+                    self.status_message.emit(
+                        "SAM: score=%.3f | Enter=accept, Esc=cancel, +click=refine" % self._sam_score)
+                else:
+                    self.status_message.emit("SAM: prediction returned no mask")
+            except ImportError as e:
+                self.status_message.emit("SAM: segment-anything not installed. Run: pip install segment-anything")
+            except Exception as e:
+                self.status_message.emit("SAM error: %s" % str(e))
+            finally:
+                self._sam_predicting = False
+                self.update()
+        threading.Thread(target=_predict, daemon=True).start()
+
+    def _draw_sam_overlay(self, painter):
+        """Draw SAM prompt points and mask preview."""
+        rect = self._image_to_widget_rect()
+        scale = self.zoom_level
+
+        # Draw mask preview
+        if self._sam_mask is not None and self._sam_mask.any():
+            painter.setClipping(True)
+            painter.setClipRect(rect)
+            h, w = self._sam_mask.shape
+            arr = np.zeros((h, w, 4), dtype=np.uint8)
+            color = list(CLASS_COLORS[self.current_class_id % len(CLASS_COLORS)])
+            arr[self._sam_mask, :3] = color
+            arr[self._sam_mask, 3] = 120
+            qimg = QImage(arr.data, w, h, w * 4, QImage.Format_RGBA8888)
+            painter.drawImage(rect, qimg)
+            painter.setClipping(False)
+
+        # Draw prompt points
+        for i, pt in enumerate(self._sam_points):
+            wp = self._image_to_widget(pt[0], pt[1])
+            if self._sam_labels[i] == 1:
+                painter.setPen(QPen(QColor(0, 255, 0), 2))
+                painter.setBrush(QBrush(QColor(0, 255, 0, 180)))
+            else:
+                painter.setPen(QPen(QColor(255, 0, 0), 2))
+                painter.setBrush(QBrush(QColor(255, 0, 0, 180)))
+            painter.drawEllipse(wp, 5, 5)
+
+    def _accept_sam_mask(self):
+        """Accept SAM mask: fill into current class mask."""
+        if self._sam_mask is None or not self._sam_mask.any():
+            self.status_message.emit("SAM: no mask to accept")
+            return
+        self._push_undo("sam")
+        self.mask[self._sam_mask] = self.current_class_id
+        self._overlay_dirty = True
+        self._sam_points = []
+        self._sam_labels = []
+        self._sam_mask = None
+        self._sam_score = 0.0
+        self.update()
+        self.mask_changed.emit()
+        self.status_message.emit("SAM mask applied")
+
+    def _cancel_sam(self):
+        """Cancel SAM: clear all points and mask."""
+        self._sam_points = []
+        self._sam_labels = []
+        self._sam_mask = None
+        self._sam_score = 0.0
+        self.update()
+        self.status_message.emit("SAM: cancelled")
+
+    # ======================== SAM Assist ========================
+
+    def _handle_sam_click(self, event):
+        """Add a SAM prompt point on click."""
+        pt = self._window_to_image(event.pos())
+        if pt is None:
+            return
+        if event.button() == Qt.LeftButton:
+            self._sam_points.append(pt)
+            self._sam_labels.append(1)  # foreground
+        elif event.button() == Qt.RightButton:
+            self._sam_points.append(pt)
+            self._sam_labels.append(0)  # background
+        else:
+            return
+        self._run_sam_prediction()
+
+    def _run_sam_prediction(self):
+        """Run SAM inference with current points."""
+        if self._sam_predicting:
+            return
+        if not self._sam_points:
+            return
+        self._sam_predicting = True
+        self.status_message.emit("SAM: predicting...")
+        self.update()
+        import threading
+        def _predict():
+            try:
+                from annotation.sam_assist import sam_predict
+                img = self.image
+                result = sam_predict(img, self._sam_points, self._sam_labels)
+                if result:
+                    self._sam_mask = result["mask"]
+                    self._sam_score = result["score"]
+                    self.status_message.emit(
+                        "SAM: score=%.3f | Enter=accept, Esc=cancel, +click=refine" % self._sam_score)
+                else:
+                    self.status_message.emit("SAM: prediction returned no mask")
+            except ImportError as e:
+                self.status_message.emit("SAM: segment-anything not installed. Run: pip install segment-anything")
+            except Exception as e:
+                self.status_message.emit("SAM error: %s" % str(e))
+            finally:
+                self._sam_predicting = False
+                self.update()
+        threading.Thread(target=_predict, daemon=True).start()
+
+    def _draw_sam_overlay(self, painter):
+        """Draw SAM prompt points and mask preview."""
+        rect = self._image_to_widget_rect()
+        scale = self.zoom_level
+
+        if self._sam_mask is not None and self._sam_mask.any():
+            painter.setClipping(True)
+            painter.setClipRect(rect)
+            h, w = self._sam_mask.shape
+            arr = np.zeros((h, w, 4), dtype=np.uint8)
+            color = list(CLASS_COLORS[self.current_class_id % len(CLASS_COLORS)])
+            arr[self._sam_mask, :3] = color
+            arr[self._sam_mask, 3] = 120
+            qimg = QImage(arr.data, w, h, w * 4, QImage.Format_RGBA8888)
+            painter.drawImage(rect, qimg)
+            painter.setClipping(False)
+
+        for i, pt in enumerate(self._sam_points):
+            wp = self._image_to_widget(pt[0], pt[1])
+            if self._sam_labels[i] == 1:
+                painter.setPen(QPen(QColor(0, 255, 0), 2))
+                painter.setBrush(QBrush(QColor(0, 255, 0, 180)))
+            else:
+                painter.setPen(QPen(QColor(255, 0, 0), 2))
+                painter.setBrush(QBrush(QColor(255, 0, 0, 180)))
+            painter.drawEllipse(wp, 5, 5)
+
+    def _accept_sam_mask(self):
+        """Accept SAM mask: fill into current class mask."""
+        if self._sam_mask is None or not self._sam_mask.any():
+            self.status_message.emit("SAM: no mask to accept")
+            return
+        self._push_undo("sam")
+        self.mask[self._sam_mask] = self.current_class_id
+        self._overlay_dirty = True
+        self._sam_points = []
+        self._sam_labels = []
+        self._sam_mask = None
+        self._sam_score = 0.0
+        self.update()
+        self.mask_changed.emit()
+        self.status_message.emit("SAM mask applied")
+
+    def _cancel_sam(self):
+        """Cancel SAM: clear all points and mask."""
+        self._sam_points = []
+        self._sam_labels = []
+        self._sam_mask = None
+        self._sam_score = 0.0
+        self.update()
+        self.status_message.emit("SAM: cancelled")
+
     # ======================== Mode & State ========================
 
     def set_mode(self, mode):
+        if self._mode == self.MODE_SAM and mode != self.MODE_SAM:
+            self._sam_points = []
+            self._sam_labels = []
+            self._sam_mask = None
         if self._mode in (self.MODE_POLYGON, self.MODE_IGNORE) and self._polygon_points:
             self._polygon_points = []
         self._line_start = None
@@ -842,6 +1120,7 @@ class AnnotationCanvas(QWidget):
             self.MODE_POLYGON: Qt.CrossCursor,
             self.MODE_LINE: Qt.CrossCursor,
             self.MODE_PAN: Qt.OpenHandCursor,
+            self.MODE_SAM: Qt.CrossCursor,
         }
         self.setCursor(QCursor(cursors.get(self._mode, Qt.CrossCursor)))
 

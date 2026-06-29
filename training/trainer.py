@@ -292,25 +292,52 @@ class Trainer:
                 resume = False
             else:
                 ckpt = torch.load(ckpt_path, map_location=self.device, weights_only=False)
-                self.num_classes = ckpt["num_classes"]
-                self.classes = ckpt["classes"]
+                ckpt_num_classes = ckpt["num_classes"]
+                ckpt_classes = ckpt["classes"]
                 self.model_name = ckpt.get("model_name", self.model_name)
                 self.history = ckpt.get("history", {})
                 start_epoch = len(self.history.get("train_loss", []))
 
-                self.model = create_model(self.num_classes, self.model_name).to(self.device)
-                self.model.load_state_dict(ckpt["model_state_dict"])
+                # Check if classes changed since last training
+                if ckpt_num_classes != self.num_classes:
+                    if log_callback:
+                        log_callback(f"Class count changed ({ckpt_num_classes} -> {self.num_classes}), reinitializing model head")
+                    self.model = create_model(self.num_classes, self.model_name).to(self.device)
+                    # Try to load backbone weights from checkpoint (ignore classifier head mismatch)
+                    try:
+                        model_state = self.model.state_dict()
+                        pretrained_state = {k: v for k, v in ckpt["model_state_dict"].items()
+                                           if k in model_state and model_state[k].shape == v.shape}
+                        model_state.update(pretrained_state)
+                        self.model.load_state_dict(model_state, strict=False)
+                        if log_callback:
+                            loaded = len(pretrained_state)
+                            total = len(model_state)
+                            log_callback(f"Loaded {loaded}/{total} layers from checkpoint (head reinitialized)")
+                    except Exception as e:
+                        if log_callback:
+                            log_callback(f"Could not transfer backbone weights: {e}")
+                    self.classes = self.classes  # keep current project classes
+                else:
+                    self.num_classes = ckpt_num_classes
+                    self.classes = ckpt_classes
+                    self.model = create_model(self.num_classes, self.model_name).to(self.device)
+                    self.model.load_state_dict(ckpt["model_state_dict"])
                 self.model.train()
 
                 self.prepare_data(batch_size, image_size=image_size, loss_name=loss_name, augment=augment)
 
                 self.optimizer = torch.optim.Adam(self.model.parameters(), lr=1e-4)
-                if "optimizer_state_dict" in ckpt:
+                # When classes changed, skip optimizer state (head params don't match)
+                if ckpt_num_classes == self.num_classes and "optimizer_state_dict" in ckpt:
                     try:
                         self.optimizer.load_state_dict(ckpt["optimizer_state_dict"])
                     except Exception:
                         if log_callback:
                             log_callback("Optimizer state mismatch, using fresh optimizer")
+                else:
+                    if log_callback:
+                        log_callback("Class count changed, using fresh optimizer")
 
                 if log_callback:
                     log_callback("Resuming from epoch %d (mIoU: %.4f)" % (

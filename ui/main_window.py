@@ -155,6 +155,9 @@ class MainWindow(QMainWindow):
         self._ocr_mode = False
         self._ocv_mode = False
         self._box_manager = None
+        self._page_size = 50
+        self._current_page = 0
+        self._filtered_data = []
 
         # Install event filter for global Space key handling
         from PyQt5.QtWidgets import QApplication
@@ -399,6 +402,29 @@ class MainWindow(QMainWindow):
         self.image_list_widget.setColumnWidth(5, 50)
         self.image_list_widget.setColumnWidth(6, 60)
         ll.addWidget(self.image_list_widget)
+        # Pagination bar
+        pag_bar = QHBoxLayout()
+        self.stats_summary = QLabel("")
+        pag_bar.addWidget(self.stats_summary)
+        pag_bar.addStretch()
+        pag_bar.addWidget(QLabel("Per page:"))
+        self.page_size_combo = QComboBox()
+        self.page_size_combo.addItems(["50", "100", "200"])
+        self.page_size_combo.setCurrentText("50")
+        self.page_size_combo.currentTextChanged.connect(self._on_page_size_changed)
+        pag_bar.addWidget(self.page_size_combo)
+        self.page_prev_btn = QPushButton("◀")
+        self.page_prev_btn.setFixedWidth(30)
+        self.page_prev_btn.clicked.connect(lambda: self._go_to_page(self._current_page - 1))
+        pag_bar.addWidget(self.page_prev_btn)
+        self.page_info_label = QLabel("Page 0/0")
+        pag_bar.addWidget(self.page_info_label)
+        self.page_next_btn = QPushButton("▶")
+        self.page_next_btn.setFixedWidth(30)
+        self.page_next_btn.clicked.connect(lambda: self._go_to_page(self._current_page + 1))
+        pag_bar.addWidget(self.page_next_btn)
+        pag_bar.addStretch()
+        ll.addLayout(pag_bar)
         self.list_status = QLabel(""); ll.addWidget(self.list_status)
         outer.addWidget(lc)
         outer.setSizes([600, 250])
@@ -456,7 +482,7 @@ class MainWindow(QMainWindow):
         al.addWidget(QLabel("<b>Mode:</b>"))
         mode_layout = QHBoxLayout()
         self.mode_group = QButtonGroup(self); self.mode_group.setExclusive(True)
-        modes = [("Brush","brush"),("Polygon","polygon"),("Line","line"),("Eraser","eraser"),("Ignore","ignore"),("Pan","pan")]
+        modes = [("Brush","brush"),("Polygon","polygon"),("Line","line"),("Eraser","eraser"),("Ignore","ignore"),("SAM","sam"),("Pan","pan")]
         self._mode_buttons = {}
         for label, mode_id in modes:
             btn = QPushButton(label); btn.setCheckable(True); btn.setMinimumWidth(64)
@@ -531,8 +557,16 @@ class MainWindow(QMainWindow):
         tl.addWidget(QLabel("<b>Training</b>"))
         self.train_progress = QProgressBar(); tl.addWidget(self.train_progress)
         self.train_status = QLabel("Ready"); tl.addWidget(self.train_status)
-        self.btn_train_stop = QPushButton("Stop"); self.btn_train_stop.clicked.connect(self._stop_batch)
-        self.btn_train_stop.setEnabled(False); tl.addWidget(self.btn_train_stop)
+        btns = QHBoxLayout()
+        self.btn_train_start = QPushButton("Start Training")
+        self.btn_train_start.clicked.connect(self._start_training)
+        self.btn_train_start.setStyleSheet("QPushButton { background-color: #4CAF50; color: white; font-weight: bold; padding: 4px 12px; }")
+        btns.addWidget(self.btn_train_start)
+        self.btn_train_stop = QPushButton("Stop")
+        self.btn_train_stop.clicked.connect(self._stop_batch)
+        self.btn_train_stop.setEnabled(False)
+        btns.addWidget(self.btn_train_stop)
+        tl.addLayout(btns)
         tl.addStretch()
         fl = QFormLayout()
         self.epochs_spin = QSpinBox(); self.epochs_spin.setRange(1, 5000); self.epochs_spin.setValue(200)
@@ -1211,7 +1245,6 @@ class MainWindow(QMainWindow):
                 jp = os.path.join(os.path.dirname(p), base + ".json")
                 return os.path.getmtime(jp) if os.path.exists(jp) else 0
             self._all_images.sort(key=_json_mtime, reverse=True)
-        shown = 0
         total_train = 0
         total_val = 0
         total_test = 0
@@ -1228,6 +1261,8 @@ class MainWindow(QMainWindow):
                 cls_mapping = ClsLabelManager(pd).get_mapping()
             except Exception:
                 pass
+        # Build filtered data list (deferred rendering)
+        self._filtered_data = []
         for path in self._all_images:
             fname = os.path.basename(path)
             base = os.path.splitext(fname)[0]
@@ -1340,7 +1375,6 @@ class MainWindow(QMainWindow):
             if sf_text == "Test Only" and split_status != " [Test]":
                 continue
 
-            # Build display text
             # Image dimensions (cached)
             img_w, img_h = 0, 0
             cache_key = path
@@ -1377,7 +1411,7 @@ class MainWindow(QMainWindow):
                         conf = cls_data.get("confidence", None)
                         if conf is not None:
                             score_str = f"{conf:.2f}"
-            
+
             # Inference time
             infer_ms = getattr(self, "_infer_times", {}).get(base, "")
 
@@ -1386,41 +1420,19 @@ class MainWindow(QMainWindow):
             score_str = f"{raw_score:.2f}" if raw_score is not None else ""
             if self._cls_mode and cls_data is not None:
                 if isinstance(cls_data, dict) and "confidence" in cls_data:
-                    score_str = f"{cls_data["confidence"]:.2f}"
+                    score_str = f"{cls_data['confidence']:.2f}"
 
-            row = self.image_list_widget.rowCount()
-            self.image_list_widget.insertRow(row)
-            items_data = [
-                (str(shown + 1), True),
-                (fname, False),
-                (f"{img_w}x{img_h}" if img_w else "", True),
-                (split_status.replace("[", "").replace("]", "").strip(), True),
-                (", ".join(shape_labels) if self._cls_mode else (str(shape_count) if shape_count > 0 else ""), True),
-                (cls_text if self._cls_mode else (ocr_text if self._ocr_mode else (str(pred_cnt) if pred_cnt > 0 else "")), True),
-                (ocr_score if self._ocr_mode else score_str, True),
-                (ocr_time if self._ocr_mode else (str(infer_ms) if infer_ms else ""), True),
-            ]
-            for col, (val, center) in enumerate(items_data):
-                item = QTableWidgetItem(val)
-                if center:
-                    item.setTextAlignment(Qt.AlignCenter)
-                self.image_list_widget.setItem(row, col, item)
-            # Store path in first column
-            self.image_list_widget.item(row, 0).setData(Qt.UserRole, path)
-            # Color: green=Train, orange=Val, red=Test, green=annotated
-            if "Test" in split_status:
-                clr = QColor(180, 0, 0)
-            elif "Val" in split_status:
-                clr = QColor(200, 150, 0)
-            elif has_ann:
-                clr = QColor(0, 120, 0)
-            else:
-                clr = QColor(0, 0, 0)
-            for col in range(8):
-                item = self.image_list_widget.item(row, col)
-                if item:
-                    item.setForeground(clr)
-            shown += 1
+            self._filtered_data.append({
+                'path': path, 'fname': fname, 'base': base,
+                'img_w': img_w, 'img_h': img_h,
+                'split_status': split_status, 'shape_count': shape_count,
+                'shape_labels': shape_labels, 'has_ann': has_ann,
+                'cls_text': cls_text, 'ocr_text': ocr_text,
+                'ocr_score': ocr_score, 'ocr_time': ocr_time,
+                'score_str': score_str, 'infer_ms': infer_ms,
+                'pred_cnt': pred_cnt,
+            })
+
             if split_status == " [Train]":
                 total_train += 1
             elif split_status == " [Val]":
@@ -1431,21 +1443,111 @@ class MainWindow(QMainWindow):
                 total_annotated += 1
                 total_shapes += shape_count
 
-        parts = [f"Showing {shown}/{len(self._all_images)}"]
+        # Reset to page 0 and render
+        self._current_page = 0
+        self._render_page()
+
+        # Update stats summary bar
+        parts = []
+        total = len(self._filtered_data)
+        if total < len(self._all_images):
+            parts.append(f"Showing {total}/{len(self._all_images)}")
+        else:
+            parts.append(f"Total: {total}")
         if total_train:
             parts.append(f"Train: {total_train}")
         if total_val:
             parts.append(f"Val: {total_val}")
         if total_test:
             parts.append(f"Test: {total_test}")
-        parts.append(f"Annotated: {total_annotated}")
+        parts.append(f"Ann: {total_annotated}")
+        self.stats_summary.setText(" | ".join(parts))
+
+        parts2 = [f"Total: {len(self._all_images)} images"]
+        if total_train:
+            parts2.append(f"Train: {total_train}")
+        if total_val:
+            parts2.append(f"Val: {total_val}")
+        if total_test:
+            parts2.append(f"Test: {total_test}")
+        parts2.append(f"Annotated: {total_annotated}")
         if not self._cls_mode:
-            parts.append(f"Blocks: {total_shapes}")
+            parts2.append(f"Blocks: {total_shapes}")
         else:
-            parts.append(f"Classes: {len(getattr(self, "_cached_classes", []))}")
-        self.list_status.setText(" | ".join(parts))
+            parts2.append(f"Classes: {len(getattr(self, '_cached_classes', []))}")
+        self.list_status.setText(" | ".join(parts2))
 
         self._suppress_cell_change = False
+
+    def _render_page(self):
+        """Render current page from _filtered_data into the table."""
+        self._suppress_cell_change = True
+        self.image_list_widget.setRowCount(0)
+
+        total = len(self._filtered_data)
+        total_pages = max(1, (total + self._page_size - 1) // self._page_size)
+        self._current_page = max(0, min(self._current_page, total_pages - 1))
+
+        start = self._current_page * self._page_size
+        end = min(start + self._page_size, total)
+
+        for i, data in enumerate(self._filtered_data[start:end]):
+            row = self.image_list_widget.rowCount()
+            self.image_list_widget.insertRow(row)
+            global_idx = start + i
+            items_data = [
+                (str(global_idx + 1), True),
+                (data['fname'], False),
+                (f"{data['img_w']}x{data['img_h']}" if data['img_w'] else "", True),
+                (data['split_status'].replace("[", "").replace("]", "").strip(), True),
+                (", ".join(data['shape_labels']) if self._cls_mode else (str(data['shape_count']) if data['shape_count'] > 0 else ""), True),
+                (data['cls_text'] if self._cls_mode else (data['ocr_text'] if self._ocr_mode else (str(data['pred_cnt']) if data['pred_cnt'] > 0 else "")), True),
+                (data['ocr_score'] if self._ocr_mode else data['score_str'], True),
+                (data['ocr_time'] if self._ocr_mode else (str(data['infer_ms']) if data['infer_ms'] else ""), True),
+            ]
+            for col, (val, center) in enumerate(items_data):
+                item = QTableWidgetItem(val)
+                if center:
+                    item.setTextAlignment(Qt.AlignCenter)
+                self.image_list_widget.setItem(row, col, item)
+            # Store path in first column
+            self.image_list_widget.item(row, 0).setData(Qt.UserRole, data['path'])
+            # Color: green=Train, orange=Val, red=Test
+            if "Test" in data['split_status']:
+                clr = QColor(180, 0, 0)
+            elif "Val" in data['split_status']:
+                clr = QColor(200, 150, 0)
+            elif data['has_ann']:
+                clr = QColor(0, 120, 0)
+            else:
+                clr = QColor(0, 0, 0)
+            for col in range(8):
+                item = self.image_list_widget.item(row, col)
+                if item:
+                    item.setForeground(clr)
+
+        # Update pagination controls
+        self.page_info_label.setText(f"Page {self._current_page + 1}/{total_pages}")
+        self.page_prev_btn.setEnabled(self._current_page > 0)
+        self.page_next_btn.setEnabled(self._current_page < total_pages - 1)
+
+        self._suppress_cell_change = False
+
+    def _go_to_page(self, page):
+        """Navigate to a specific page."""
+        total = len(self._filtered_data)
+        total_pages = max(1, (total + self._page_size - 1) // self._page_size)
+        self._current_page = max(0, min(page, total_pages - 1))
+        self._render_page()
+
+    def _on_page_size_changed(self, text):
+        """Handle page size change."""
+        try:
+            self._page_size = int(text)
+        except ValueError:
+            self._page_size = 50
+        self._current_page = 0
+        self._render_page()
 
     def _on_current_cell_changed(self, currentRow, currentColumn, previousRow, previousColumn):
         """Handle mouse click and keyboard navigation in image list."""
@@ -1767,10 +1869,14 @@ class MainWindow(QMainWindow):
             "line": self.canvas.MODE_LINE,
             "eraser": self.canvas.MODE_ERASER,
             "ignore": self.canvas.MODE_IGNORE,
+            "sam": self.canvas.MODE_SAM,
         }
         if mode in mode_map:
             self.canvas._mode = mode_map[mode]
             self.canvas._update_mode_cursor()
+            self.canvas.update()
+            if mode == "sam":
+                self.log("SAM Assist: Left-click=foreground, Right-click=background, Enter=accept, Esc=cancel")
 
     # ============ Right-click Context Menu ============
 
@@ -2754,6 +2860,11 @@ class MainWindow(QMainWindow):
     def _toggle_image_list(self):
         v = not self.image_list_widget.isVisible()
         self.image_list_widget.setVisible(v)
+        self.stats_summary.setVisible(v)
+        self.page_size_combo.setVisible(v)
+        self.page_prev_btn.setVisible(v)
+        self.page_next_btn.setVisible(v)
+        self.page_info_label.setVisible(v)
         self._save_ui_setting("image_list_visible", v)
 
     def _toggle_log_panel(self):
@@ -2832,16 +2943,18 @@ class MainWindow(QMainWindow):
         from training.trainer import Trainer
         self.trainer = Trainer(project_dir, model_name=model_name)
 
+        resume = settings.get("resume", False)
         self.log(f"Starting training: {model_name}, {epochs} epochs, batch={batch_size}"
                  + (f", {cv_folds}-fold CV" if cv_folds > 1 else "")
-                 + f", loss={loss_name}, aug={augment}")
+                 + f", loss={loss_name}, aug={augment}"
+                 + (f", resume" if resume else ""))
         
         def run():
             try:
                 self.trainer.train(
                     epochs=epochs, batch_size=batch_size,
                     image_size=image_size, loss_name=loss_name,
-                    augment=augment, k_folds=cv_folds,
+                    augment=augment, k_folds=cv_folds, resume=resume,
                     stop_check=lambda: self._stop_flag,
                     log_callback=lambda msg: self.log_signal.emit(msg),
                     progress_callback=lambda c, t: self.progress_signal.emit(c, t),
@@ -3414,7 +3527,7 @@ class MainWindow(QMainWindow):
             self.log(f"Save failed: {e}")
 
     def _clear_current_mask(self):
-        """Clear current annotation mask."""
+        """Clear current annotation mask and SAM state."""
         if self.canvas.image is None:
             return
         reply = QMessageBox.question(self, "Clear Annotation",
@@ -3424,6 +3537,11 @@ class MainWindow(QMainWindow):
             h, w = self.canvas.mask.shape
             self.canvas.mask = np.zeros((h, w), dtype=np.uint8)
             self.canvas._overlay_dirty = True
+            # Clear SAM state if active
+            self.canvas._sam_points = []
+            self.canvas._sam_labels = []
+            self.canvas._sam_mask = None
+            self.canvas._sam_score = 0.0
             self.canvas.update()
             self.canvas.mask_changed.emit()
             self.log("Annotation cleared")
