@@ -16,7 +16,7 @@ from PyQt5.QtWidgets import (
 ,
     QStackedWidget
 )
-from PyQt5.QtGui import QFont, QColor, QImage, QPixmap
+from PyQt5.QtGui import QFont, QColor, QImage, QPixmap, QPainter, QLinearGradient
 from PyQt5.QtCore import Qt, pyqtSignal, QTimer
 import matplotlib
 matplotlib.use("Qt5Agg")
@@ -446,21 +446,30 @@ class MainWindow(QMainWindow):
 
     def _create_center_panel(self):
         outer = QSplitter(Qt.Vertical)
-        # Canvas area
+        # Canvas area (no header - canvas fills entire space)
         cc = QWidget(); cl = QVBoxLayout(cc); cl.setContentsMargins(0, 0, 0, 0)
-        header_widget = QWidget(); tb = QHBoxLayout(header_widget); tb.setContentsMargins(4, 2, 4, 2)
-        hider = QPushButton("▼")
-        hider.setFixedSize(18, 18)
-        hider.setToolTip("Toggle canvas header")
-        hider.clicked.connect(lambda: self._toggle_canvas_header())
-        tb.addWidget(hider)
-        tb.addWidget(QLabel("<b>Annot</b>")); tb.addStretch()
-        self.image_count_label = QLabel(""); tb.addWidget(self.image_count_label)
-        self._canvas_header = header_widget
-        self._canvas_header_visible = True
-        cl.addWidget(header_widget)
+        # Mixed classification view mode buttons (hidden by default, shown in mixed mode)
+        self._mixed_view_btns_layout = QHBoxLayout()
+        self._mixed_view_btns_layout.setSpacing(1)
+        for mode_id, label, tip in [
+            (0, "1×1 G", "Single: Grayscale"),
+            (1, "1×1 H", "Single: Height Map"),
+            (2, "1×2", "Side-by-side"),
+        ]:
+            btn = QPushButton(label)
+            btn.setCheckable(True); btn.setFixedSize(38, 18)
+            btn.setToolTip(tip)
+            btn.setStyleSheet("QPushButton { font-size: 9px; padding: 0; } QPushButton:checked { background-color: #2C5F8A; color: white; }")
+            btn.clicked.connect(lambda checked, m=mode_id: self._set_mixed_view_mode(m))
+            self._mixed_view_btns_layout.addWidget(btn)
+        self._mixed_view_group = [self._mixed_view_btns_layout.itemAt(i).widget() for i in range(3)]
+        self._mixed_view_group[0].setChecked(True)
+        for btn in self._mixed_view_group:
+            btn.setVisible(False)
+        self.image_count_label = QLabel(""); self.image_count_label.setVisible(False)
         self.canvas = AnnotationCanvas()
         self.canvas.status_message.connect(self.statusBar().showMessage)
+
         self._version_refresh_timer = QTimer()
         self._version_refresh_timer.setSingleShot(True)
         self._version_refresh_timer.setInterval(1500)
@@ -820,6 +829,51 @@ class MainWindow(QMainWindow):
         ovl.addStretch()
         self._right_stack.addWidget(panel_ocv)  # 10
 
+        # Panel 11: Height Map Controls
+        panel_hm = QWidget(); hml = QVBoxLayout(panel_hm); hml.setContentsMargins(4, 2, 2, 2)
+        hml.addWidget(QLabel("<b>Height Map Colormap</b>"))
+        self.hm_status = QLabel("No height map loaded")
+        self.hm_status.setStyleSheet("color: #888; font-size: 11px;")
+        hml.addWidget(self.hm_status)
+        self.hm_data_range = QLabel("")
+        self.hm_data_range.setStyleSheet("color: #666; font-size: 10px;")
+        hml.addWidget(self.hm_data_range)
+        hml.addWidget(QLabel("Mapping Range (mm):"))
+        rng = QHBoxLayout()
+        self.hm_vmin = QDoubleSpinBox()
+        self.hm_vmin.setRange(-999, 999); self.hm_vmin.setDecimals(4)
+        self.hm_vmin.setSingleStep(0.01)
+        self.hm_vmin.setToolTip("Min height (maps to blue/cold color)")
+        rng.addWidget(self.hm_vmin)
+        rng.addWidget(QLabel("~"))
+        self.hm_vmax = QDoubleSpinBox()
+        self.hm_vmax.setRange(-999, 999); self.hm_vmax.setDecimals(4)
+        self.hm_vmax.setSingleStep(0.01)
+        self.hm_vmax.setToolTip("Max height (maps to red/warm color)")
+        rng.addWidget(self.hm_vmax)
+        hml.addLayout(rng)
+        self.hm_colorbar = QLabel()
+        self.hm_colorbar.setFixedHeight(20)
+        self.hm_colorbar.setMinimumWidth(100)
+        hml.addWidget(self.hm_colorbar)
+        hml.addWidget(QLabel("Color Scheme:"))
+        self.hm_cmap_combo = QComboBox()
+        self.hm_cmap_combo.addItems(["JET", "TURBO", "HOT", "RAINBOW", "VIRIDIS", "PLASMA", "INFERNO", "MAGMA", "HSV"])
+        self.hm_cmap_combo.setCurrentText("JET")
+        hml.addWidget(self.hm_cmap_combo)
+        bth = QHBoxLayout()
+        print('[DEBUG] Creating HM buttons')
+        auto_btn = QPushButton("Auto Range")
+        auto_btn.clicked.connect(self._hm_auto_range)
+        bth.addWidget(auto_btn)
+        apply_btn = QPushButton("Apply")
+        apply_btn.clicked.connect(self._hm_apply)
+        apply_btn.setStyleSheet("QPushButton { background-color: #2C5F8A; color: white; font-weight: bold; }")
+        bth.addWidget(apply_btn)
+        hml.addLayout(bth)
+        hml.addStretch()
+        self._right_stack.addWidget(panel_hm)  # 11
+
         content_layout.addWidget(self._right_stack)
 
         # ===== Vertical tab bar =====
@@ -839,6 +893,7 @@ class MainWindow(QMainWindow):
             ("CI", "Cls Inference", 8),
             ("OI", "OCR Inference", 9),
             ("OV", "OCV Inspect", 10),
+            ("HM", "Height Map", 11),
         ]
         for icon_text, tooltip, idx in tab_defs:
             btn = QPushButton(icon_text)
@@ -858,6 +913,71 @@ class MainWindow(QMainWindow):
         self._right_tabs.button(0).setChecked(True)
 
         return p
+    # ============ Height Map Controls ============
+    def _update_height_controls(self):
+        canvas = self.canvas
+        if canvas._height_image is None:
+            self.hm_status.setText("No height map loaded")
+            self.hm_data_range.setText("")
+            self._update_height_colorbar()
+            return
+        # Auto-switch to HM tab on first height map detection
+        if not getattr(self, "_hm_tab_auto_shown", False):
+            self._hm_tab_auto_shown = True
+            self._right_stack.setCurrentIndex(11)
+            self._right_tabs.button(11).setChecked(True)
+        vmin, vmax = canvas._get_height_auto_range()
+        self.hm_status.setText(f"Height map: {canvas._height_image.size[0]}x{canvas._height_image.size[1]}")
+        self.hm_data_range.setText(f"Data range: [{vmin:.4f}, {vmax:.4f}] mm")
+        if canvas._height_vmin is not None:
+            self.hm_vmin.setValue(canvas._height_vmin)
+        else:
+            self.hm_vmin.setValue(vmin)
+        if canvas._height_vmax is not None:
+            self.hm_vmax.setValue(canvas._height_vmax)
+        else:
+            self.hm_vmax.setValue(vmax)
+        self._update_height_colorbar()
+
+    def _update_height_colorbar(self):
+        w = max(self.hm_colorbar.width(), 200)
+        pix = QPixmap(w, 20)
+        pix.fill(QColor(40, 40, 40))
+        painter = QPainter(pix)
+        grad = QLinearGradient(0, 0, w, 0)
+        grad.setColorAt(0.0, QColor(0, 0, 180))
+        grad.setColorAt(0.25, QColor(0, 200, 200))
+        grad.setColorAt(0.5, QColor(0, 220, 0))
+        grad.setColorAt(0.75, QColor(240, 240, 0))
+        grad.setColorAt(1.0, QColor(220, 50, 0))
+        painter.fillRect(0, 0, w, 20, grad)
+        painter.end()
+        self.hm_colorbar.setPixmap(pix)
+
+    def _hm_auto_range(self):
+        print('[DEBUG _hm_auto_range] CALLED')
+        self.canvas.set_height_range(None, None, self._hm_get_colormap())
+        self._update_height_controls()
+
+    def _hm_apply(self):
+        print('[DEBUG _hm_apply] CALLED')
+        vmin = self.hm_vmin.value()
+        vmax = self.hm_vmax.value()
+        cmap = self._hm_get_colormap()
+        self.canvas.set_height_range(vmin, vmax, cmap)
+        self._update_height_controls()
+
+    def _hm_get_colormap(self):
+        import cv2
+        cmap_map = {
+            "JET": cv2.COLORMAP_JET, "TURBO": cv2.COLORMAP_TURBO,
+            "HOT": cv2.COLORMAP_HOT, "RAINBOW": cv2.COLORMAP_RAINBOW,
+            "VIRIDIS": cv2.COLORMAP_VIRIDIS, "PLASMA": cv2.COLORMAP_PLASMA,
+            "INFERNO": cv2.COLORMAP_INFERNO, "MAGMA": cv2.COLORMAP_MAGMA,
+            "HSV": cv2.COLORMAP_HSV,
+        }
+        return cmap_map.get(self.hm_cmap_combo.currentText(), cv2.COLORMAP_JET)
+
     # ============ Logging & Progress ============
     def log(self, msg):
         self.log_signal.emit(msg)
@@ -958,7 +1078,28 @@ class MainWindow(QMainWindow):
         menu = QMenu(self)
         open_action = menu.addAction("Open in Explorer")
         open_action.triggered.connect(lambda: os.startfile(str(self.pm.get_project_dir(name))))
+        menu.addSeparator()
+        del_action = menu.addAction("Delete Project")
+        del_action.triggered.connect(lambda: self._delete_project(name, item))
         menu.exec_(self.project_tree.viewport().mapToGlobal(pos))
+
+    def _delete_project(self, name, item):
+        """Delete a project after confirmation."""
+        reply = QMessageBox.question(
+            self, "Confirm Delete",
+            f"Delete project '{name}' and all its data?\nThis cannot be undone.",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if reply != QMessageBox.Yes:
+            return
+        try:
+            # Close if currently open
+            if self.current_project and self.current_project.get("name") == name:
+                self._close_project()
+            self.pm.delete_project(name)
+            self._refresh_projects()
+            self.log(f"Deleted project: {name}")
+        except Exception as e:
+            QMessageBox.warning(self, "Error", str(e))
 
     def _on_project_double_click(self, item):
         name = item.data(0, Qt.UserRole)
@@ -1025,6 +1166,10 @@ class MainWindow(QMainWindow):
                     task_type = meta.get("task_type", "语义分割")
                     internal = task_map.get(task_type, "segmentation")
                     self._set_task(internal)
+                    # Show mixed view buttons if mixed project
+                    if internal == "mixed_classification" and hasattr(self, "_mixed_view_group"):
+                        for btn in self._mixed_view_group:
+                            btn.setVisible(True)
                 except Exception:
                     pass
         except Exception as e:
@@ -1076,10 +1221,14 @@ class MainWindow(QMainWindow):
             self._detection_mode = False
             self._cls_mode = True
             self._mixed_cls_mode = False
+            self.canvas._mixed_cls_mode = False
             self.log("Task: Image Classification")
             self.canvas._det_overlay = None
             self.canvas._cls_mode = True
             self.canvas.update()
+            if hasattr(self, "_mixed_view_group"):
+                for btn in self._mixed_view_group:
+                    btn.setVisible(False)
             self._load_classification_labels()
             self._refresh_cls_model_list()
             self._filter_images(self.search_input.text())
@@ -1088,11 +1237,15 @@ class MainWindow(QMainWindow):
             self._detection_mode = False
             self._cls_mode = True
             self._mixed_cls_mode = True
+            self.canvas._mixed_cls_mode = True
             self.log("Task: Mixed Classification (Gray+Height)")
             self.canvas._det_overlay = None
             self.canvas._cls_mode = True
             self.canvas.update()
             self._load_classification_labels()
+            if hasattr(self, "_mixed_view_group"):
+                for btn in self._mixed_view_group:
+                    btn.setVisible(True)
             self._refresh_cls_model_list()
             self._filter_images(self.search_input.text())
             self._right_stack.setCurrentIndex(7)
@@ -1172,7 +1325,7 @@ class MainWindow(QMainWindow):
             return QMessageBox.information(self, "Hint", "Please open a project first")
         files, _ = QFileDialog.getOpenFileNames(
             self, "Import Images", "",
-            "Images (*.png *.jpg *.jpeg *.bmp *.tiff)")
+            "Images (*.png *.jpg *.jpeg *.bmp *.tif *.tiff)")
         if files:
             self.log(f"Importing {len(files)} images...")
             img_dir = os.path.join(
@@ -1182,11 +1335,15 @@ class MainWindow(QMainWindow):
                     dst = os.path.join(img_dir, os.path.basename(f))
                     if not os.path.exists(dst):
                         shutil.copy2(f, dst)
-                    json_path = os.path.splitext(dst)[0] + ".json"
-                    if not os.path.exists(json_path):
-                        blank = {"version":"5.3.1","flags":{},"shapes":[],"imagePath":os.path.basename(dst),"imageData":None,"imageHeight":0,"imageWidth":0}
-                        with open(json_path, "w", encoding="utf-8") as jf:
-                            json.dump(blank, jf, indent=2, ensure_ascii=False)
+                    # Skip JSON creation for height map files (.tif/.tiff)
+                    if os.path.splitext(dst)[1].lower() in (".tif", ".tiff"):
+                        pass
+                    else:
+                        json_path = os.path.splitext(dst)[0] + ".json"
+                        if not os.path.exists(json_path):
+                            blank = {"version":"5.3.1","flags":{},"shapes":[],"imagePath":os.path.basename(dst),"imageData":None,"imageHeight":0,"imageWidth":0}
+                            with open(json_path, "w", encoding="utf-8") as jf:
+                                json.dump(blank, jf, indent=2, ensure_ascii=False)
                     if (i + 1) % 100 == 0:
                         self.log(f"Import progress: {i+1}/{len(files)}")
                 self.log(f"Import complete: {len(files)} images")
@@ -1204,7 +1361,7 @@ class MainWindow(QMainWindow):
             images = []
             if os.path.exists(img_dir):
                 for f in sorted(os.listdir(img_dir)):
-                    if f.lower().endswith((".png", ".jpg", ".jpeg", ".bmp")):
+                    if f.lower().endswith((".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff")):
                         images.append(os.path.join(img_dir, f))
             self.image_list_signal.emit((gen, images))
         threading.Thread(target=scan, daemon=True).start()
@@ -1296,6 +1453,8 @@ class MainWindow(QMainWindow):
             pass
 
     def _filter_images(self, text):
+        if getattr(self, "_mixed_cls_mode", False) and self._all_images:
+            self.log(f"[DEBUG] _filter_images: mixed=True, all_images={len(self._all_images)}")
         self._suppress_cell_change = True
         self.image_list_widget.setRowCount(0)
         text_lower = text.lower().strip()
@@ -1567,6 +1726,8 @@ class MainWindow(QMainWindow):
         start = self._current_page * self._page_size
         end = min(start + self._page_size, total)
 
+        if getattr(self, "_mixed_cls_mode", False):
+            self.log(f"[DEBUG] _render_page: _mixed_cls_mode=True, data_count={len(self._filtered_data)}")
         for i, data in enumerate(self._filtered_data[start:end]):
             row = self.image_list_widget.rowCount()
             self.image_list_widget.insertRow(row)
@@ -1926,7 +2087,12 @@ class MainWindow(QMainWindow):
         if item:
             path = item.data(Qt.UserRole)
             if path and os.path.exists(path):
-                self.canvas.load_image(path)
+                if getattr(self, "_mixed_cls_mode", False):
+                    self.log(f"[Mixed] Loading pair for: {os.path.basename(path)}")
+                    self.canvas.set_mixed_pair(path)
+                else:
+                    self.canvas.load_image(path)
+                self._update_height_controls()
                 self._refresh_versions()
                 w, h = self.canvas.image.width, self.canvas.image.height
                 self.statusBar().showMessage(
@@ -2240,6 +2406,21 @@ class MainWindow(QMainWindow):
         threading.Thread(target=run, daemon=True).start()
 
     def _on_cls_mixed_toggled(self, checked):
+        """Handle mixed mode checkbox toggle."""
+        self._mixed_cls_mode = checked
+        self.canvas._mixed_cls_mode = checked
+        # Show/hide mixed view buttons in canvas header
+        if hasattr(self, "_mixed_view_group"):
+            for btn in self._mixed_view_group:
+                btn.setVisible(checked)
+        if checked:
+            self.log("Mixed mode ON: using grayscale + height map pairs")
+            # Reload current image as mixed pair (load height map)
+            current_path = getattr(self.canvas, "current_image_path", None)
+            if current_path and os.path.exists(current_path):
+                row = self.image_list_widget.currentRow()
+                if row >= 0:
+                    self._load_image_by_index(row)
         """Handle mixed mode checkbox toggle."""
         self._mixed_cls_mode = checked
         if checked:
@@ -3057,11 +3238,22 @@ class MainWindow(QMainWindow):
             self._saved_right = v
             self._save_ui_setting("right_panel_visible", v)
 
-    def _toggle_canvas_header(self):
-        self._canvas_header_visible = not getattr(self, "_canvas_header_visible", True)
-        if hasattr(self, "_canvas_header"):
-            self._canvas_header.setVisible(self._canvas_header_visible)
-        self._save_ui_setting("canvas_header_visible", self._canvas_header_visible)
+    def _set_mixed_view_mode(self, mode):
+        """Switch mixed classification view mode."""
+        self.canvas._view_mode = mode
+        for i, btn in enumerate(self._mixed_view_group):
+            btn.setChecked(i == mode)
+        if mode == 0:
+            self.canvas.image = self.canvas._gray_image
+            self.canvas._cache_qimage()
+        elif mode == 1:
+            if self.canvas._height_image:
+                self.canvas.image = self.canvas._height_image.convert("RGB") if hasattr(self.canvas._height_image, "mode") else self.canvas._height_image
+                self.canvas._cache_qimage()
+        self.canvas._fit_to_window()
+        self.canvas.update()
+
+
 
 
 

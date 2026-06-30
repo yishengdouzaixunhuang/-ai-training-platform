@@ -61,5 +61,13 @@ class ProjectManager:
         projects.sort(key=lambda x: x["modified"], reverse=True)
         return projects
     
+    def delete_project(self, name):
+        """Delete a project directory entirely."""
+        import shutil
+        project_dir = self.workspace / name
+        if not project_dir.exists():
+            raise FileNotFoundError(f"工程 '{name}' 不存在")
+        shutil.rmtree(str(project_dir))
+
     def get_project_dir(self, name):
         return self.workspace / name

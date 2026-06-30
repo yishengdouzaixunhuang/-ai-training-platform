@@ -1,4 +1,4 @@
-﻿"""Semantic segmentation annotation canvas with zoom, pan, brush, polygon, line tools."""
+"""Semantic segmentation annotation canvas with zoom, pan, brush, polygon, line tools."""
 import os, json, re, numpy as np, cv2
 from PIL import Image
 from PyQt5.QtWidgets import QWidget
@@ -36,6 +36,17 @@ class AnnotationCanvas(QWidget):
         self.mask = None
         self._cached_qimage = None
         self._cached_gray = None  # cached grayscale numpy array
+        # Mixed classification dual-image support
+        self._mixed_cls_mode = False
+        self._height_image = None      # PIL Image for height map
+        self._cached_height_qimage = None
+        self._height_path = None
+        self._view_mode = 0           # 0=single gray, 1=single height, 2=side-by-side (1x2)
+        self._height_vmin = None       # user-specified min for height colormap (None=auto)
+        self._height_vmax = None       # user-specified max for height colormap
+        self._height_colormap = cv2.COLORMAP_JET  # default colormap
+        self._cached_height_pil = None      # PIL Image of rainbow for standard path
+        self._gray_image = None       # cached original grayscale PIL Image
         self._det_overlay = None  # detection box overlay (attached by main_window)
         self._cached_overlay_qimage = None
         self._overlay_dirty = True
@@ -105,8 +116,41 @@ class AnnotationCanvas(QWidget):
 
     def load_image(self, image_path):
         self.current_image_path = image_path
-        self.image = Image.open(image_path).convert("RGB")
-        self._cache_qimage()
+        pil_img = Image.open(image_path)
+        ext = os.path.splitext(image_path)[1].lower()
+        # Auto-detect height map: any .tif/.tiff
+        if ext in (".tif", ".tiff"):
+            self._height_image = pil_img  # keep native float32 for rainbow
+            self._height_path = image_path
+            # Normalize float32 height data to 8-bit grayscale for the "gray" view
+            arr = np.array(pil_img, dtype=np.float64)
+            if arr.ndim == 3:
+                arr = arr[:, :, 0]
+            vmin, vmax = np.percentile(arr, (0.5, 99.5))
+            if vmax <= vmin:
+                vmin, vmax = arr.min(), arr.max()
+            if vmax <= vmin:
+                vmax = vmin + 1
+            arr_8u = np.clip((arr - vmin) / (vmax - vmin) * 255, 0, 255).astype(np.uint8)
+            gray_pil = Image.fromarray(arr_8u, mode="L").convert("RGB")
+            self._gray_image = gray_pil
+            self.image = gray_pil
+            self._cache_height_qimage()
+            # Use cached PIL rainbow image directly (avoids QImage->PIL conversion)
+            if self._cached_height_pil is not None:
+                self.image = self._cached_height_pil
+            else:
+                pass
+            self._cache_qimage()
+            self._view_mode = 0
+        else:
+            self.image = pil_img.convert("RGB")
+            self._cache_qimage()
+            self._height_image = None
+            self._cached_height_qimage = None
+            self._view_mode = 0
+        self._height_vmin = None
+        self._height_vmax = None
         self._heatmap_qimage = None
         self._ocr_overlay = None
         self._heatmap_qimage = None
@@ -143,8 +187,17 @@ class AnnotationCanvas(QWidget):
         if self.image is None:
             return QRectF()
         iw, ih = self.image.size
-        dw = iw * self.zoom_level
-        dh = ih * self.zoom_level
+        if self._mixed_cls_mode and self._view_mode == 2 and self._height_image is not None:
+            # Side-by-side: gray | height with a small gap
+            gap = 10
+            hiw, hih = self._height_image.size
+            total_w = iw + hiw + gap
+            total_h = max(ih, hih)
+            dw = total_w * self.zoom_level
+            dh = total_h * self.zoom_level
+        else:
+            dw = iw * self.zoom_level
+            dh = ih * self.zoom_level
         x = (self.width() - dw) / 2.0 + self.pan_offset_x
         y = (self.height() - dh) / 2.0 + self.pan_offset_y
         return QRectF(x, y, dw, dh)
@@ -155,10 +208,23 @@ class AnnotationCanvas(QWidget):
         rect = self._image_to_widget_rect()
         ix = (pos.x() - rect.x()) / self.zoom_level
         iy = (pos.y() - rect.y()) / self.zoom_level
-        iw, ih = self.image.size
-        if ix < 0 or iy < 0 or ix >= iw or iy >= ih:
-            return None
-        return int(ix), int(iy)
+        # Side-by-side: only left half (grayscale) is annotatable
+        side_by_side = (getattr(self, "_mixed_cls_mode", False) and self._view_mode == 2
+                        and self._height_image is not None)
+        if side_by_side:
+            iw_total = self.image.size[0] + self._height_image.size[0] + 10
+            ih_total = max(self.image.size[1], self._height_image.size[1])
+            if ix < 0 or iy < 0 or ix >= iw_total or iy >= ih_total:
+                return None
+            # Only map clicks on grayscale half (left)
+            if ix >= self.image.size[0]:
+                return None  # height map half - no annotation
+            return int(ix), int(iy)
+        else:
+            iw, ih = self.image.size
+            if ix < 0 or iy < 0 or ix >= iw or iy >= ih:
+                return None
+            return int(ix), int(iy)
 
 
     def _window_to_image_unclamped(self, pos):
@@ -168,10 +234,124 @@ class AnnotationCanvas(QWidget):
         rect = self._image_to_widget_rect()
         ix = (pos.x() - rect.x()) / self.zoom_level
         iy = (pos.y() - rect.y()) / self.zoom_level
+        # Side-by-side: clamp to grayscale image bounds for annotation
+        side_by_side = (getattr(self, "_mixed_cls_mode", False) and self._view_mode == 2
+                        and self._height_image is not None)
+        if side_by_side:
+            # Clamp to grayscale image
+            iw_gray = self.image.size[0]
+            ix = max(0, min(ix, iw_gray - 1))
+            ih_total = max(self.image.size[1], self._height_image.size[1])
+            iy = max(0, min(iy, ih_total - 1))
         return int(ix), int(iy)
     def _image_to_widget(self, ix, iy):
         rect = self._image_to_widget_rect()
         return QPointF(rect.x() + ix * self.zoom_level, rect.y() + iy * self.zoom_level)
+
+    def set_mixed_pair(self, gray_path, height_path=None):
+        """Set paired grayscale + height images for mixed classification."""
+        self._mixed_cls_mode = True
+        self._height_path = height_path
+        # Load grayscale
+        gray_img = Image.open(gray_path).convert("RGB")
+        self._gray_image = gray_img
+        self.image = gray_img
+        self.current_image_path = gray_path
+        # Load height map if available (keep native bit depth for rainbow render)
+        import numpy as np
+        if height_path and os.path.exists(height_path):
+            self._height_image = Image.open(height_path)
+        else:
+            base = os.path.splitext(gray_path)[0]
+            for ext in [".tif", ".tiff"]:
+                candidate = base + ext
+                if os.path.exists(candidate):
+                    self._height_image = Image.open(candidate)
+                    self._height_path = candidate
+                    break
+        self._cache_height_qimage()
+        self._heatmap_qimage = None
+        self._ocr_overlay = None
+        w, h = self.image.size
+        class_names = self.label_manager.classes if self.label_manager else ["background"]
+        loaded_mask = load_mask_from_json(gray_path, self.project_dir, class_names)
+        if loaded_mask is not None:
+            self.mask = loaded_mask
+        else:
+            self.mask = np.zeros((h, w), dtype=np.uint8)
+        self._overlay_dirty = True
+        self._fit_to_window()
+        self._load_prediction_overlay(gray_path)
+        self.update()
+
+    def set_height_range(self, vmin=None, vmax=None, colormap=None):
+        self._height_vmin = vmin
+        self._height_vmax = vmax
+        if colormap is not None:
+            self._height_colormap = colormap
+        self._cache_height_qimage()
+        if self._cached_height_pil is not None:
+            self.image = self._cached_height_pil
+            self._cache_qimage()
+            self._view_mode = 0
+        self.update()
+
+    def _get_height_auto_range(self):
+        if self._height_image is None:
+            return 0, 1
+        arr = np.array(self._height_image, dtype=np.float64)
+        if arr.ndim == 3:
+            arr = arr[:, :, 0]
+        valid = arr[(arr > -100) & (arr < 100) & (arr != 0)]
+        if len(valid) > 0:
+            vmin, vmax = np.percentile(valid, (0.5, 99.5))
+        else:
+            vmin, vmax = arr.min(), arr.max()
+        if vmax <= vmin:
+            vmin, vmax = arr.min(), arr.max()
+        if vmax <= vmin:
+            vmax = vmin + 1
+        return float(vmin), float(vmax)
+
+    def _cache_height_qimage(self):
+        """Cache height map as rainbow-colored QImage."""
+        if self._height_image is None:
+            self._cached_height_qimage = None
+            return
+        arr = np.array(self._height_image, dtype=np.float64)
+        if arr.ndim == 3:
+            arr = arr[:, :, 0]
+        # Mask: exclude sentinel/background values (-999, 0) and extreme outliers (>|100|)
+        # Real height data is typically -5 to 0 mm; sentinels are -999 or 0
+        valid_mask = (arr > -100) & (arr < 100) & (arr != 0)
+        # Use user-specified range if set, otherwise auto-detect from valid pixels only
+        if self._height_vmin is not None and self._height_vmax is not None:
+            vmin, vmax = self._height_vmin, self._height_vmax
+        else:
+            if valid_mask.any():
+                vmin, vmax = np.percentile(arr[valid_mask], (0.5, 99.5))
+            else:
+                vmin, vmax = arr.min(), arr.max()
+            if vmax <= vmin:
+                vmin, vmax = arr.min(), arr.max()
+            if vmax <= vmin:
+                vmax = vmin + 1
+        # Clip to range and normalize
+        arr_clipped = np.clip(arr, vmin, vmax)
+        arr_norm = ((arr_clipped - vmin) / (vmax - vmin) * 255).astype(np.uint8)
+        h, w = arr_norm.shape
+        # Invert so high areas get warm colors
+        arr_inv = 255 - arr_norm
+        # Apply colormap
+        color = cv2.applyColorMap(arr_inv, self._height_colormap)
+        color = cv2.cvtColor(color, cv2.COLOR_BGR2RGB)
+        # Paint invalid (background) pixels dark gray instead of distorting colormap
+        color[~valid_mask] = [40, 40, 40]
+        color = np.ascontiguousarray(color)
+        self._cached_height_pil = Image.fromarray(color, mode="RGB")
+        h, w, _ = color.shape
+        qimg = QImage(color.data, w, h, 3 * w, QImage.Format_RGB888)
+        self._cached_height_qimage = qimg.copy() if not qimg.isNull() else None
 
     def _cache_qimage(self):
         if self.image is None:
@@ -226,16 +406,48 @@ class AnnotationCanvas(QWidget):
 
     def paintEvent(self, event):
         painter = QPainter(self)
-        if self.zoom_level < 1.0:
-            painter.setRenderHint(QPainter.SmoothPixmapTransform)
+        painter.setRenderHint(QPainter.SmoothPixmapTransform)  # always smooth scaling
         painter.fillRect(self.rect(), QColor(40, 40, 40))
         if self.image is None:
             painter.setPen(QColor(150, 150, 150))
             painter.drawText(self.rect(), Qt.AlignCenter, "No image loaded")
             return
         rect = self._image_to_widget_rect()
-        if self._cached_qimage is not None:
-            painter.drawImage(rect, self._cached_qimage)
+        side_by_side = (getattr(self, "_mixed_cls_mode", False) and self._view_mode == 2
+                        and self._cached_height_qimage is not None and self._cached_qimage is not None)
+
+        if side_by_side:
+            # Side-by-side: gray (left) | height (right)
+            iw, ih = self.image.size
+            hiw, hih = self._height_image.size
+            gap = 10
+            scale = self.zoom_level
+            # Gray image on left
+            gray_rect = QRectF(rect.x(), rect.y() + (rect.height() - ih * scale) / 2.0,
+                               iw * scale, ih * scale)
+            painter.drawImage(gray_rect, self._cached_qimage)
+            # Height image on right
+            height_rect = QRectF(rect.x() + iw * scale + gap * scale,
+                                 rect.y() + (rect.height() - hih * scale) / 2.0,
+                                 hiw * scale, hih * scale)
+            painter.drawImage(height_rect, self._cached_height_qimage)
+            # Divider line
+            div_x = rect.x() + iw * scale + gap * scale / 2.0
+            painter.setPen(QPen(QColor(100, 100, 100), 2))
+            painter.drawLine(QPointF(div_x, rect.y()), QPointF(div_x, rect.y() + rect.height()))
+            # Labels
+            font = QFont("Consolas", max(8, int(10 * scale)))
+            painter.setFont(font)
+            painter.setPen(QColor(200, 200, 200))
+            painter.drawText(gray_rect, Qt.AlignBottom | Qt.AlignHCenter, "Grayscale")
+            painter.setPen(QColor(200, 180, 100))
+            painter.drawText(height_rect, Qt.AlignBottom | Qt.AlignHCenter, "Height Map")
+        elif self._cached_qimage is not None:
+            if self._view_mode == 1 and self._cached_height_qimage is not None:
+                # Single height mode: use rainbow height map
+                painter.drawImage(rect, self._cached_height_qimage)
+            else:
+                painter.drawImage(rect, self._cached_qimage)
         self._build_overlay()
         # Draw annotation overlay (hatch pattern)
         if self._show_annotation and self._cached_overlay_qimage is not None:
@@ -761,6 +973,28 @@ class AnnotationCanvas(QWidget):
                         self.update()
                         self.status_message.emit("SAM: all points removed")
                 return
+        # Left/Right arrow to switch between grayscale and rainbow height map
+        if self._height_image is not None and self._view_mode != 2:
+            if event.key() == Qt.Key_Left or event.key() == Qt.Key_Right:
+                if self._height_image is not None:
+                    if self._view_mode == 0:
+                        # Switch to grayscale
+                        self._view_mode = 1
+                        self.image = self._gray_image
+                        self._cache_qimage()
+                        self.status_message.emit("View: Grayscale")
+                    else:
+                        # Switch to rainbow height map
+                        self._view_mode = 0
+                        self._cache_height_qimage()
+                        if self._cached_height_pil is not None:
+                            self.image = self._cached_height_pil
+                        self._cache_qimage()
+                        self.status_message.emit("View: Height Map (rainbow)")
+                    self._fit_to_window()
+                    self.update()
+                return
+
         # Detection mode: Delete = remove selected box
         if self._det_overlay is not None and (event.key() == Qt.Key_Delete or event.key() == Qt.Key_Backspace):
             self._det_overlay.delete_active_box()
