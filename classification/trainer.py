@@ -693,3 +693,237 @@ def get_training_history(project_dir):
         ckpt = torch.load(path, map_location="cpu", weights_only=False)
         return ckpt.get("history", {})
     return {}
+
+# ======================== Dual-Input Classification Trainer ========================
+
+class DualClassificationTrainer:
+    """Trains a dual-input model using grayscale + height map pairs."""
+
+    def __init__(self, project_dir, model_name="resnet18", device=None):
+        self.project_dir = Path(project_dir)
+        self.model_name = model_name
+        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+
+        with open(self.project_dir / "project.json", "r", encoding="utf-8") as f:
+            self.meta = json.load(f)
+
+        # Determine num_classes
+        from .dual_dataset import MixedClassificationDataset
+        ds = MixedClassificationDataset(project_dir, split="all", image_size=224)
+        self.num_classes = ds.num_classes
+        self.class_names = [f"class_{i}" for i in range(self.num_classes)]
+        if hasattr(ds, "_class_names"):
+            self.class_names = ds._class_names
+
+        self.model = None
+        self.train_loader = None
+        self.val_loader = None
+        self.criterion = None
+        self.optimizer = None
+        self.scaler = None
+        self.history = {"train_loss": [], "val_loss": [], "val_acc": []}
+        self._stop_requested = False
+        self._stop_check_fn = None
+
+    def _prepare_data(self, batch_size=32, image_size=224):
+        from .dual_dataset import MixedClassificationDataset
+
+        train_ds = MixedClassificationDataset(
+            self.project_dir, split="train", image_size=image_size, augment=True)
+        val_ds = MixedClassificationDataset(
+            self.project_dir, split="val", image_size=image_size, augment=False)
+
+        if len(val_ds) == 0 and len(train_ds) >= 2:
+            from .dual_dataset import auto_split
+            auto_split(self.project_dir, val_ratio=0.2)
+            train_ds = MixedClassificationDataset(
+                self.project_dir, split="train", image_size=image_size, augment=True)
+            val_ds = MixedClassificationDataset(
+                self.project_dir, split="val", image_size=image_size, augment=False)
+
+        if len(train_ds) == 0:
+            raise ValueError("Training set is empty")
+        if len(val_ds) == 0:
+            raise ValueError("Validation set is empty")
+
+        self.num_classes = train_ds.num_classes
+        self.train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True,
+                                       num_workers=2, pin_memory=True)
+        self.val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False,
+                                     num_workers=2, pin_memory=True)
+        return len(train_ds), len(val_ds)
+
+    def init_model(self):
+        from .dual_model import create_dual_model
+        self.model = create_dual_model(self.model_name, self.num_classes).to(self.device)
+        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=1e-4)
+        self.criterion = nn.CrossEntropyLoss()
+
+    def train_epoch(self):
+        self.model.train()
+        total_loss = 0
+        batches = 0
+        pbar = tqdm(self.train_loader, desc="Train", ncols=80)
+        for (gray, height), labels in pbar:
+            if self._stop_requested or (self._stop_check_fn and self._stop_check_fn()):
+                self._stop_requested = True
+                return total_loss / max(batches, 1)
+            gray = gray.to(self.device)
+            height = height.to(self.device)
+            labels = labels.to(self.device)
+
+            # Stack as 4-channel input
+            inputs = torch.cat([gray, height], dim=1)
+
+            self.optimizer.zero_grad()
+            outputs = self.model(inputs)
+            loss = self.criterion(outputs, labels)
+            loss.backward()
+            self.optimizer.step()
+
+            total_loss += loss.item()
+            batches += 1
+            pbar.set_postfix(loss=f"{loss.item():.4f}")
+        return total_loss / max(batches, 1)
+
+    def validate(self):
+        self.model.eval()
+        total_loss = 0
+        correct = 0
+        total = 0
+        batches = 0
+        with torch.no_grad():
+            for (gray, height), labels in self.val_loader:
+                if self._stop_requested:
+                    break
+                gray = gray.to(self.device)
+                height = height.to(self.device)
+                labels = labels.to(self.device)
+
+                inputs = torch.cat([gray, height], dim=1)
+                outputs = self.model(inputs)
+                loss = self.criterion(outputs, labels)
+                total_loss += loss.item()
+                batches += 1
+
+                preds = outputs.argmax(1)
+                correct += (preds == labels).sum().item()
+                total += labels.size(0)
+
+        avg_loss = total_loss / max(batches, 1)
+        accuracy = correct / max(total, 1)
+        return avg_loss, accuracy
+
+    def train(self, epochs=200, batch_size=32, lr=0.001, image_size=224,
+              progress_callback=None, log_callback=None, resume=False,
+              stop_check=None, epoch_callback=None):
+        if resume:
+            ckpt_path = self.project_dir / "models" / "classification" / "last_model.pth"
+            if ckpt_path.exists():
+                ckpt = torch.load(ckpt_path, map_location=self.device, weights_only=False)
+                self.num_classes = ckpt["num_classes"]
+                self.model_name = ckpt.get("model_name", self.model_name)
+                self.history = ckpt.get("history", {"train_loss": [], "val_loss": [], "val_acc": []})
+                start_epoch = len(self.history.get("train_loss", []))
+                self._prepare_data(batch_size, image_size)
+                from .dual_model import create_dual_model
+                self.model = create_dual_model(self.model_name, self.num_classes).to(self.device)
+                self.model.load_state_dict(ckpt["model_state_dict"], strict=False)
+                self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
+                if "optimizer_state_dict" in ckpt:
+                    try:
+                        self.optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+                    except Exception:
+                        if log_callback:
+                            log_callback("Optimizer state mismatch, using fresh optimizer")
+                if log_callback:
+                    log_callback(f"Resuming from epoch {start_epoch} (Val Acc: {self.history.get('val_acc', [0])[-1] if self.history.get('val_acc') else 0:.4f})")
+            else:
+                resume = False
+                if log_callback:
+                    log_callback("No checkpoint found, training from scratch")
+
+        if not resume:
+            self._prepare_data(batch_size, image_size)
+            self.init_model()
+            start_epoch = 0
+            for pg in self.optimizer.param_groups:
+                pg["lr"] = lr
+
+        self._stop_requested = False
+        self._stop_check_fn = stop_check
+
+        best_acc = self.history.get("val_acc", [0])[-1] if self.history.get("val_acc") else 0
+        for epoch in range(start_epoch, epochs):
+            train_loss = self.train_epoch()
+            val_loss, val_acc = self.validate()
+
+            self.history["train_loss"].append(train_loss)
+            self.history["val_loss"].append(val_loss)
+            self.history["val_acc"].append(val_acc)
+
+            if stop_check and stop_check():
+                self._stop_requested = True
+                if log_callback:
+                    log_callback("Training stopped by user")
+                break
+
+            msg = f"Epoch {epoch+1}/{epochs} | Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.4f}"
+            if log_callback:
+                log_callback(msg)
+
+            # Save checkpoint every epoch
+            os.makedirs(self.project_dir / "models" / "classification", exist_ok=True)
+            ckpt = {
+                "model_state_dict": self.model.state_dict(),
+                "optimizer_state_dict": self.optimizer.state_dict(),
+                "num_classes": self.num_classes,
+                "model_name": self.model_name,
+                "history": self.history,
+            }
+            torch.save(ckpt, self.project_dir / "models" / "classification" / "last_model.pth")
+
+            if val_acc > best_acc:
+                best_acc = val_acc
+                torch.save(ckpt, self.project_dir / "models" / "classification" / "best_model.pth")
+                if log_callback:
+                    log_callback(f"  Best saved (Acc: {best_acc:.4f})")
+
+            if progress_callback:
+                progress_callback(epoch + 1, epochs)
+            if epoch_callback:
+                epoch_callback(epoch + 1, epochs, train_loss, val_acc)
+
+        if log_callback:
+            log_callback(f"Training complete. Best accuracy: {best_acc:.4f}")
+
+    def predict(self, gray_path, height_path, image_size=224):
+        """Inference on a single pair."""
+        from PIL import Image as PILImage
+        import torchvision.transforms as T
+
+        gray = PILImage.open(gray_path).convert("RGB")
+        height = PILImage.open(height_path).convert("L")
+
+        gray = gray.resize((image_size, image_size), PILImage.BILINEAR)
+        height = height.resize((image_size, image_size), PILImage.BILINEAR)
+
+        gray_t = T.ToTensor()(gray)
+        for c in range(3):
+            gray_t[c] = (gray_t[c] - IMAGENET_MEAN[c]) / IMAGENET_STD[c]
+        height_t = T.ToTensor()(height)
+        height_t = (height_t - 0.5) / 0.25
+
+        inputs = torch.cat([gray_t, height_t], dim=0).unsqueeze(0).to(self.device)
+
+        self.model.eval()
+        with torch.no_grad():
+            outputs = self.model(inputs)
+        probs = outputs.softmax(1).squeeze(0)
+        top_prob, top_idx = probs.max(0)
+        return {
+            "class": self.class_names[top_idx.item()],
+            "class_id": top_idx.item(),
+            "confidence": top_prob.item(),
+        }
+

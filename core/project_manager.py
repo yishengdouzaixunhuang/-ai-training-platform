@@ -1,4 +1,5 @@
-﻿"""工程管理"""
+# -*- coding: utf-8 -*-
+"""工程管理"""
 import os
 import json
 from datetime import datetime
@@ -9,11 +10,14 @@ class ProjectManager:
         self.workspace = Path(workspace)
         self.workspace.mkdir(parents=True, exist_ok=True)
     
+    MIXED_CLS_LABEL = "混合分类"
     VALID_TASK_TYPES = ("语义分割", "目标检测", "图像分类", "OCR文字识别", "OCV字符质检")
+    VALID_TASK_TYPES_FULL = ("语义分割", "目标检测", "图像分类", "混合分类", "OCR文字识别", "OCV字符质检")
 
     def create_project(self, name, task_type="语义分割"):
-        if task_type not in self.VALID_TASK_TYPES:
-            raise ValueError(f"不支持的任务类型: {task_type}，可选: {self.VALID_TASK_TYPES}")
+        allowed = self.VALID_TASK_TYPES_FULL
+        if task_type not in allowed:
+            raise ValueError(f"不支持的任务类型: {task_type}，可选: {allowed}")
         project_dir = self.workspace / name
         if project_dir.exists():
             raise FileExistsError(f"工程 '{name}' 已存在")

@@ -6,6 +6,7 @@ import time
 import numpy as np
 from PIL import Image
 from PyQt5.QtWidgets import (
+    QFrame,
     QButtonGroup,
     QMainWindow, QMenu, QAction, QSplitter, QTreeWidget, QTreeWidgetItem,
     QTextEdit, QFileDialog, QMessageBox, QInputDialog, QVBoxLayout, QHBoxLayout,
@@ -152,6 +153,7 @@ class MainWindow(QMainWindow):
         self._stats_timer.timeout.connect(self._do_update_stats)
         self._detection_mode = False
         self._cls_mode = False
+        self._mixed_cls_mode = False
         self._ocr_mode = False
         self._ocv_mode = False
         self._box_manager = None
@@ -223,6 +225,7 @@ class MainWindow(QMainWindow):
         tm.addAction("Semantic Segmentation", lambda: self._set_task("segmentation"))
         tm.addAction("Object Detection", lambda: self._set_task("detection"))
         tm.addAction("Image Classification", lambda: self._set_task("classification"))
+        tm.addAction("Mixed Classification", lambda: self._set_task("mixed_classification"))
         tm.addSeparator()
         tm.addAction("OCR Text Recognition", lambda: self._set_task("ocr"))
         tm.addAction("OCV Quality Inspection", lambda: self._set_task("ocv"))
@@ -259,17 +262,19 @@ class MainWindow(QMainWindow):
 
     def _create_left_panel(self):
         p = QWidget(); outer_layout = QVBoxLayout(p); outer_layout.setContentsMargins(2, 2, 2, 2)
-        hh = QHBoxLayout()
-        hh.addWidget(QLabel("<b>Projects</b>"))
-        hh.addStretch()
-        btn = QPushButton("鈼€"); btn.setFixedSize(22, 22); btn.setToolTip("Collapse left panel")
-        btn.clicked.connect(lambda: self._toggle_panel("left"))
-        hh.addWidget(btn)
-        outer_layout.addLayout(hh)
+        outer_layout.setSpacing(2)
 
-        # Resizable splitter for project tree and stat tables
-        self._left_splitter = QSplitter(Qt.Vertical)
-        self._left_splitter.setChildrenCollapsible(False)
+        # ==== TOP: Projects (collapsible content, not accordion) ====
+        ph = QHBoxLayout(); ph.setContentsMargins(0, 0, 0, 0)
+        self._proj_toggle_btn = QPushButton("\u25bc"); self._proj_toggle_btn.setFixedSize(18, 18)
+        self._proj_toggle_btn.setToolTip("Collapse Projects")
+        ph.addWidget(self._proj_toggle_btn)
+        ph.addWidget(QLabel("<b>Projects</b>")); ph.addStretch()
+        btn_left = QPushButton("\u25c0"); btn_left.setFixedSize(22, 22)
+        btn_left.setToolTip("Collapse left panel")
+        btn_left.clicked.connect(lambda: self._toggle_panel("left"))
+        ph.addWidget(btn_left)
+        outer_layout.addLayout(ph)
 
         self.project_tree = QTreeWidget()
         self.project_tree.setHeaderLabels(["Name", "Time"])
@@ -280,105 +285,98 @@ class MainWindow(QMainWindow):
         self.month_item = QTreeWidgetItem(["Within 1 month"])
         self.older_item = QTreeWidgetItem(["Older"])
         self.project_tree.addTopLevelItems([self.week_item, self.month_item, self.older_item])
-        self._left_splitter.addWidget(self.project_tree)
+        self.project_tree.setMaximumHeight(250)
+        outer_layout.addWidget(self.project_tree)
+        # Projects collapse toggle
+        def _toggle_proj():
+            v = not self.project_tree.isVisible()
+            self.project_tree.setVisible(v)
+            self._proj_toggle_btn.setText("\u25b6" if not v else "\u25bc")
+        self._proj_toggle_btn.clicked.connect(_toggle_proj)
 
-        btn_new = QPushButton("+ New Project"); btn_new.clicked.connect(self._new_project)
+        # ==== MIDDLE: Accordion (three mutually exclusive panels) ====
+        sep = QFrame(); sep.setFrameShape(QFrame.HLine); sep.setFrameShadow(QFrame.Sunken)
+        outer_layout.addWidget(sep)
 
-        # Result blocks section
-        res_widget = QWidget(); res_layout = QVBoxLayout(res_widget); res_layout.setContentsMargins(0, 0, 0, 0)
-        res_layout.addWidget(QLabel("<b>Result Blocks</b>"))
+        # Accordion header buttons
+        ah_layout = QHBoxLayout(); ah_layout.setContentsMargins(0, 0, 0, 0); ah_layout.setSpacing(1)
+        self._accordion_btns = []
+        self._accordion_headers = []
+        for i, (label, key) in enumerate([
+            ("Result", "res"), ("Annotation", "ann"), ("Image List", "imglist")
+        ]):
+            btn = QPushButton(f"{label} (0)")
+            btn.setCheckable(True); btn.setFixedHeight(22)
+            btn.setStyleSheet(
+                "QPushButton { font-size: 10px; padding: 1px 6px; border: 1px solid #888; border-radius: 2px; }"
+                "QPushButton:checked { background-color: #2C5F8A; color: white; font-weight: bold; }"
+            )
+            btn.clicked.connect(lambda checked, i=i: self._switch_accordion(i))
+            ah_layout.addWidget(btn)
+            self._accordion_btns.append(btn)
+            self._accordion_headers.append((label, key))
+        ah_layout.addStretch()
+        outer_layout.addLayout(ah_layout)
+
+        # Accordion content: QStackedWidget (fills all remaining space)
+        self._accordion_stack = QStackedWidget()
+        outer_layout.addWidget(self._accordion_stack, 1)  # stretch=1
+
+        # -- Page 0: Result Blocks --
+        res_page = QWidget(); res_layout = QVBoxLayout(res_page); res_layout.setContentsMargins(0, 2, 0, 0)
         self.stats_table = QTableWidget()
         self.stats_table.setColumnCount(8)
         self.stats_table.verticalHeader().setDefaultSectionSize(24)
         self.stats_table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.stats_table.setAlternatingRowColors(True)
         res_layout.addWidget(self.stats_table)
-        self._left_splitter.addWidget(res_widget)
+        self._accordion_stack.addWidget(res_page)  # 0
 
-        # Annotation blocks section
-        ann_widget = QWidget(); ann_layout = QVBoxLayout(ann_widget); ann_layout.setContentsMargins(0, 0, 0, 0)
-        ann_layout.addWidget(QLabel("<b>Annotation Blocks</b>"))
+        # -- Page 1: Annotation Blocks --
+        ann_page = QWidget(); ann_layout = QVBoxLayout(ann_page); ann_layout.setContentsMargins(0, 2, 0, 0)
         self.ann_table = QTableWidget()
         self.ann_table.setColumnCount(8)
         self.ann_table.verticalHeader().setDefaultSectionSize(24)
         self.ann_table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.ann_table.setAlternatingRowColors(True)
         ann_layout.addWidget(self.ann_table)
-        self._left_splitter.addWidget(ann_widget)
+        self._accordion_stack.addWidget(ann_page)  # 1
 
-        self._left_splitter.setSizes([300, 250, 200])
-        outer_layout.addWidget(self._left_splitter)
-        outer_layout.addWidget(btn_new)
-        return p
+        # -- Page 2: Image List --
+        imglist_page = QWidget(); il = QVBoxLayout(imglist_page); il.setContentsMargins(0, 2, 0, 0); il.setSpacing(1)
 
-    def _create_center_panel(self):
-        outer = QSplitter(Qt.Vertical)
-        outer.setCollapsible(0, False)  # canvas area stays visible
-        outer.setCollapsible(1, True)   # image list can collapse
-        # Canvas area
-        cc = QWidget(); cl = QVBoxLayout(cc); cl.setContentsMargins(0, 0, 0, 0)
-        tb = QHBoxLayout(); tb.setContentsMargins(0, 0, 0, 2)
-        hider = QPushButton("_")
-        hider.setFixedSize(20, 18)
-        hider.setToolTip("Hide header")
-        hider.clicked.connect(lambda: self._toggle_canvas_header())
-        tb.addWidget(hider)
-        tb.addWidget(QLabel("<b>Annot</b>")); tb.addStretch()
-        self.image_count_label = QLabel(""); tb.addWidget(self.image_count_label)
-        self._canvas_header = tb
-        self._canvas_header_visible = True
-        cl.addLayout(tb)
-        self.canvas = AnnotationCanvas()
-        self.canvas.status_message.connect(self.statusBar().showMessage)
-        self._version_refresh_timer = QTimer()
-        self._version_refresh_timer.setSingleShot(True)
-        self._version_refresh_timer.setInterval(1500)
-        self._version_refresh_timer.timeout.connect(self._refresh_versions)
-        self.canvas.mask_changed.connect(lambda: self._version_refresh_timer.start())
-        self.canvas.det_boxes_changed.connect(self._on_det_boxes_changed)
-        cl.addWidget(self.canvas)
-        outer.addWidget(cc)
-        self._center_splitter = outer  # for toggling
-        # Image list area (collapsible)
-        lc = QWidget(); ll = QVBoxLayout(lc); ll.setContentsMargins(2, 2, 2, 2)
-        hh = QHBoxLayout()
-        btn_imglist = QPushButton("Hide List")
-        btn_imglist.setFixedWidth(70)
-        btn_imglist.clicked.connect(lambda: self._toggle_image_list())
-        hh.addWidget(btn_imglist)
-        hh.addWidget(QLabel("<b>Image List</b>"))
+        # Filter toolbar
+        ft = QHBoxLayout(); ft.setContentsMargins(0, 0, 0, 0); ft.setSpacing(2)
         self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("Search name or class...")
+        self.search_input.setPlaceholderText("Search...")
         self.search_input.textChanged.connect(self._filter_images)
-        hh.addWidget(self.search_input)
+        ft.addWidget(self.search_input)
         self.split_filter = QComboBox()
         self.split_filter.addItems(["All Sets", "Train Only", "Val Only", "Test Only"])
         self.split_filter.currentIndexChanged.connect(lambda: self._filter_images(self.search_input.text()))
-        hh.addWidget(self.split_filter)
+        ft.addWidget(self.split_filter)
         self.annotated_check = QCheckBox("Annotated")
-        self.annotated_check.setChecked(False)
         self.annotated_check.toggled.connect(lambda: self._filter_images(self.search_input.text()))
-        hh.addWidget(self.annotated_check)
+        ft.addWidget(self.annotated_check)
         self.recent_check = QCheckBox("Recent")
-        self.recent_check.setToolTip("Sort by annotation date (newest first)")
+        self.recent_check.setToolTip("Sort by annotation date")
         self.recent_check.toggled.connect(lambda: self._filter_images(self.search_input.text()))
-        hh.addWidget(self.recent_check)
-        # Prediction count filter
-        hh2 = QHBoxLayout()
-        hh2.addWidget(QLabel("Pred:"))
+        ft.addWidget(self.recent_check)
+        il.addLayout(ft)
+        # Pred filter row
+        pf = QHBoxLayout(); pf.setContentsMargins(0, 0, 0, 0); pf.setSpacing(2)
+        pf.addWidget(QLabel("Pred:"))
         self.pred_op_combo = QComboBox()
         self.pred_op_combo.addItems(["\u2265", "=", "\u2264"])
-        self.pred_op_combo.setToolTip("Filter by prediction block count")
         self.pred_op_combo.currentIndexChanged.connect(lambda: self._filter_images(self.search_input.text()))
-        hh2.addWidget(self.pred_op_combo)
-        self.pred_count_spin = QSpinBox()
-        self.pred_count_spin.setRange(0, 9999)
-        self.pred_count_spin.setValue(0)
-        self.pred_count_spin.setToolTip("0 = disabled. Filter images by number of prediction blocks.")
+        pf.addWidget(self.pred_op_combo)
+        self.pred_count_spin = QSpinBox(); self.pred_count_spin.setRange(0, 9999); self.pred_count_spin.setValue(0)
+        self.pred_count_spin.setToolTip("0=disabled")
         self.pred_count_spin.valueChanged.connect(lambda: self._filter_images(self.search_input.text()))
-        hh2.addWidget(self.pred_count_spin)
-        ll.addLayout(hh2)
-        ll.addLayout(hh)
+        pf.addWidget(self.pred_count_spin); pf.addStretch()
+        il.addLayout(pf)
+
+        # Image table
         self.image_list_widget = QTableWidget()
         self.image_list_widget.setColumnCount(8)
         self.image_list_widget.setHorizontalHeaderLabels(["序号", "图片名", "大小", "数据集", "标注", "结果", "分数", "耗时"])
@@ -389,11 +387,9 @@ class MainWindow(QMainWindow):
         self.image_list_widget.setAlternatingRowColors(True)
         self.image_list_widget.verticalHeader().setVisible(False)
         self.image_list_widget.verticalHeader().setDefaultSectionSize(22)
-        self.image_list_widget.setMaximumHeight(250)
         self.image_list_widget.currentCellChanged.connect(self._on_current_cell_changed)
         self.image_list_widget.setContextMenuPolicy(Qt.CustomContextMenu)
         self.image_list_widget.customContextMenuRequested.connect(self._on_image_context_menu)
-        # Column widths
         self.image_list_widget.setColumnWidth(0, 40)
         self.image_list_widget.setColumnWidth(1, 200)
         self.image_list_widget.setColumnWidth(2, 100)
@@ -401,33 +397,78 @@ class MainWindow(QMainWindow):
         self.image_list_widget.setColumnWidth(4, 50)
         self.image_list_widget.setColumnWidth(5, 50)
         self.image_list_widget.setColumnWidth(6, 60)
-        ll.addWidget(self.image_list_widget)
-        # Pagination bar
-        pag_bar = QHBoxLayout()
-        self.stats_summary = QLabel("")
-        pag_bar.addWidget(self.stats_summary)
+        il.addWidget(self.image_list_widget, 1)
+
+        # Pagination
+        pag_bar = QHBoxLayout(); pag_bar.setContentsMargins(0, 0, 0, 0); pag_bar.setSpacing(2)
+        self.stats_summary = QLabel(""); pag_bar.addWidget(self.stats_summary)
         pag_bar.addStretch()
         pag_bar.addWidget(QLabel("Per page:"))
         self.page_size_combo = QComboBox()
-        self.page_size_combo.addItems(["50", "100", "200"])
-        self.page_size_combo.setCurrentText("50")
+        self.page_size_combo.addItems(["50", "100", "200"]); self.page_size_combo.setCurrentText("50")
         self.page_size_combo.currentTextChanged.connect(self._on_page_size_changed)
         pag_bar.addWidget(self.page_size_combo)
-        self.page_prev_btn = QPushButton("◀")
-        self.page_prev_btn.setFixedWidth(30)
+        self.page_prev_btn = QPushButton("\u25c0"); self.page_prev_btn.setFixedWidth(30)
         self.page_prev_btn.clicked.connect(lambda: self._go_to_page(self._current_page - 1))
         pag_bar.addWidget(self.page_prev_btn)
-        self.page_info_label = QLabel("Page 0/0")
-        pag_bar.addWidget(self.page_info_label)
-        self.page_next_btn = QPushButton("▶")
-        self.page_next_btn.setFixedWidth(30)
+        self.page_info_label = QLabel("Page 0/0"); pag_bar.addWidget(self.page_info_label)
+        self.page_next_btn = QPushButton("\u25b6"); self.page_next_btn.setFixedWidth(30)
         self.page_next_btn.clicked.connect(lambda: self._go_to_page(self._current_page + 1))
-        pag_bar.addWidget(self.page_next_btn)
-        pag_bar.addStretch()
-        ll.addLayout(pag_bar)
-        self.list_status = QLabel(""); ll.addWidget(self.list_status)
-        outer.addWidget(lc)
-        outer.setSizes([600, 250])
+        pag_bar.addWidget(self.page_next_btn); pag_bar.addStretch()
+        il.addLayout(pag_bar)
+        self.list_status = QLabel(""); il.addWidget(self.list_status)
+        self._accordion_stack.addWidget(imglist_page)  # 2
+
+        # Default: show Image List
+        self._switch_accordion(2)
+
+        # ==== BOTTOM: New Project (fixed) ====
+        sep2 = QFrame(); sep2.setFrameShape(QFrame.HLine); sep2.setFrameShadow(QFrame.Sunken)
+        outer_layout.addWidget(sep2)
+        btn_new = QPushButton("+ New Project"); btn_new.clicked.connect(self._new_project)
+        outer_layout.addWidget(btn_new)
+
+        return p
+
+    def _switch_accordion(self, idx):
+        """Switch accordion to panel idx and update button states."""
+        for i, btn in enumerate(self._accordion_btns):
+            btn.setChecked(i == idx)
+        self._accordion_stack.setCurrentIndex(idx)
+
+    def _update_accordion_counts(self, result_count=None, ann_count=None, img_count=None):
+        """Update accordion header counts."""
+        counts = [result_count, ann_count, img_count]
+        for i, btn in enumerate(self._accordion_btns):
+            if counts[i] is not None:
+                label, _ = self._accordion_headers[i]
+                btn.setText(f"{label} ({counts[i]})")
+
+    def _create_center_panel(self):
+        outer = QSplitter(Qt.Vertical)
+        # Canvas area
+        cc = QWidget(); cl = QVBoxLayout(cc); cl.setContentsMargins(0, 0, 0, 0)
+        header_widget = QWidget(); tb = QHBoxLayout(header_widget); tb.setContentsMargins(4, 2, 4, 2)
+        hider = QPushButton("▼")
+        hider.setFixedSize(18, 18)
+        hider.setToolTip("Toggle canvas header")
+        hider.clicked.connect(lambda: self._toggle_canvas_header())
+        tb.addWidget(hider)
+        tb.addWidget(QLabel("<b>Annot</b>")); tb.addStretch()
+        self.image_count_label = QLabel(""); tb.addWidget(self.image_count_label)
+        self._canvas_header = header_widget
+        self._canvas_header_visible = True
+        cl.addWidget(header_widget)
+        self.canvas = AnnotationCanvas()
+        self.canvas.status_message.connect(self.statusBar().showMessage)
+        self._version_refresh_timer = QTimer()
+        self._version_refresh_timer.setSingleShot(True)
+        self._version_refresh_timer.setInterval(1500)
+        self._version_refresh_timer.timeout.connect(self._refresh_versions)
+        self.canvas.mask_changed.connect(lambda: self._version_refresh_timer.start())
+        self.canvas.det_boxes_changed.connect(self._on_det_boxes_changed)
+        cl.addWidget(self.canvas)
+        outer.addWidget(cc)
         return outer
 
     def _create_right_panel(self):
@@ -639,6 +680,10 @@ class MainWindow(QMainWindow):
         # Panel 7: Classification Training
         panel_cls_train = QWidget(); ctl = QVBoxLayout(panel_cls_train); ctl.setContentsMargins(4, 2, 2, 2)
         ctl.addWidget(QLabel("<b>Classification Training</b>"))
+        self.cls_mixed_check = QCheckBox("Mixed (Gray + Height Map)")
+        self.cls_mixed_check.setToolTip("Use paired grayscale (.bmp) + height (.tif) images for training")
+        self.cls_mixed_check.toggled.connect(self._on_cls_mixed_toggled)
+        ctl.addWidget(self.cls_mixed_check)
         self.cls_train_progress = QProgressBar(); ctl.addWidget(self.cls_train_progress)
         self.cls_train_status = QLabel("Ready"); ctl.addWidget(self.cls_train_status)
         btn_cls_stop = QPushButton("Stop"); btn_cls_stop.clicked.connect(self._stop_training)
@@ -928,7 +973,7 @@ class MainWindow(QMainWindow):
         name_edit = QLineEdit()
         form.addRow("Project Name:", name_edit)
         task_combo = QComboBox()
-        task_combo.addItems(["语义分割", "目标检测", "图像分类", "OCR文字识别", "OCV字符质检"])
+        task_combo.addItems(["语义分割", "目标检测", "图像分类", "混合分类", "OCR文字识别", "OCV字符质检"])
         form.addRow("Task Type:", task_combo)
         classes_edit = QLineEdit()
         classes_edit.setPlaceholderText("e.g. defect, scratch, dent (comma separated)")
@@ -971,7 +1016,7 @@ class MainWindow(QMainWindow):
             self.setWindowTitle(f"{APP_NAME} - {name}")
 
             # Auto-detect task type from project config
-            task_map = {"语义分割":"segmentation","目标检测":"detection","图像分类":"classification","OCR文字识别":"ocr","OCV字符质检":"ocv"}
+            task_map = {"语义分割":"segmentation","目标检测":"detection","图像分类":"classification","混合分类":"mixed_classification","OCR文字识别":"ocr","OCV字符质检":"ocv"}
             config_path = os.path.join(self._project_dir, "project.json")
             if os.path.exists(config_path):
                 try:
@@ -1030,7 +1075,20 @@ class MainWindow(QMainWindow):
         elif task == "classification":
             self._detection_mode = False
             self._cls_mode = True
+            self._mixed_cls_mode = False
             self.log("Task: Image Classification")
+            self.canvas._det_overlay = None
+            self.canvas._cls_mode = True
+            self.canvas.update()
+            self._load_classification_labels()
+            self._refresh_cls_model_list()
+            self._filter_images(self.search_input.text())
+            self._right_stack.setCurrentIndex(7)
+        elif task == "mixed_classification":
+            self._detection_mode = False
+            self._cls_mode = True
+            self._mixed_cls_mode = True
+            self.log("Task: Mixed Classification (Gray+Height)")
             self.canvas._det_overlay = None
             self.canvas._cls_mode = True
             self.canvas.update()
@@ -1166,7 +1224,18 @@ class MainWindow(QMainWindow):
             pd = str(self.pm.get_project_dir(self.current_project["name"]))
             self._pred_count_cache_key = None  # force reload
             threading.Thread(target=self._load_output_stats_async, args=(pd,), daemon=True).start()
-        self.image_count_label.setText(f"Total: {len(image_paths)} images")
+        # In mixed mode, count paired height maps
+        pair_count = 0
+        if self._mixed_cls_mode:
+            for p in image_paths:
+                base = os.path.splitext(p)[0]
+                for ext in (".tif", ".tiff"):
+                    if os.path.exists(base + ext):
+                        pair_count += 1
+                        break
+            self.image_count_label.setText(f"Total: {len(image_paths)} images ({pair_count} pairs)")
+        else:
+            self.image_count_label.setText(f"Total: {len(image_paths)} images")
         self.log(f"Loaded {len(image_paths)} images in list")
         if image_paths:
             self._suppress_cell_change = True
@@ -1476,6 +1545,13 @@ class MainWindow(QMainWindow):
         else:
             parts2.append(f"Classes: {len(getattr(self, '_cached_classes', []))}")
         self.list_status.setText(" | ".join(parts2))
+
+        # Update accordion header counts
+        self._update_accordion_counts(
+            result_count=total_shapes,
+            ann_count=total_annotated,
+            img_count=len(self._all_images),
+        )
 
         self._suppress_cell_change = False
 
@@ -2115,8 +2191,10 @@ class MainWindow(QMainWindow):
         use_amp = self.cls_amp_check.isChecked()
         k_folds = self.cls_kfold_spin.value()
         resume = self.cls_resume_check.isChecked()
+        mixed_mode = self.cls_mixed_check.isChecked()
 
-        self.log(f"Classification: {model_name}, {epochs} epochs, batch={batch_size}, lr={lr}")
+        mode_label = "Mixed Classification" if mixed_mode else "Classification"
+        self.log(f"{mode_label}: {model_name}, {epochs} epochs, batch={batch_size}, lr={lr}")
         self.cls_train_progress.setVisible(True)
         self.cls_train_progress.setValue(0)
         self.cls_train_status.setText("Preparing...")
@@ -2125,9 +2203,13 @@ class MainWindow(QMainWindow):
 
         def run():
             try:
-                from classification.trainer import ClassificationTrainer
-                self._cls_trainer = ClassificationTrainer(project_dir, model_name=model_name)
-                def epoch_cb(epoch, total):
+                if mixed_mode:
+                    from classification.trainer import DualClassificationTrainer
+                    self._cls_trainer = DualClassificationTrainer(project_dir, model_name=model_name)
+                else:
+                    from classification.trainer import ClassificationTrainer
+                    self._cls_trainer = ClassificationTrainer(project_dir, model_name=model_name)
+                def epoch_cb(epoch, total, train_loss=0, val_acc=0):
                     if self._stop_flag:
                         self._cls_trainer._stop_flag = True
                     self.progress_signal.emit(epoch, total)
@@ -2145,10 +2227,10 @@ class MainWindow(QMainWindow):
                 )
                 self._refresh_cls_model_list()
                 self._update_cls_loss_curve()
-                self.log_signal.emit("Classification training complete!")
+                self.log_signal.emit(f"{mode_label} training complete!")
             except Exception as e:
                 import traceback
-                self.log_signal.emit(f"Classification training error: {e}")
+                self.log_signal.emit(f"{mode_label} training error: {e}")
                 self.log_signal.emit(traceback.format_exc())
             finally:
                 self.cls_train_progress.setVisible(False)
@@ -2156,6 +2238,12 @@ class MainWindow(QMainWindow):
                 self._cls_stop_btn.setEnabled(False)
         import threading
         threading.Thread(target=run, daemon=True).start()
+
+    def _on_cls_mixed_toggled(self, checked):
+        """Handle mixed mode checkbox toggle."""
+        self._mixed_cls_mode = checked
+        if checked:
+            self.log("Mixed mode ON: using grayscale + height map pairs")
 
     def _refresh_cls_model_list(self):
         """Refresh classification model list for inference."""
@@ -2184,30 +2272,59 @@ class MainWindow(QMainWindow):
         if not current_path or not os.path.exists(current_path):
             return QMessageBox.warning(self, "Warning", "No image selected")
         top_k = self.cls_topk_spin.value()
+        mixed_mode = self.cls_mixed_check.isChecked()
         self.cls_infer_status.setText("Running...")
         def run():
             import time
             try:
-                from classification.trainer import ClassificationTrainer
-                ct = ClassificationTrainer(project_dir)
-                t0 = time.time()
-                result = ct.predict_single(current_path, model_file, top_k=top_k)
-                elapsed = time.time() - t0
-                if result and result.get("predictions"):
-                    if not hasattr(self, "_cls_predictions"):
-                        self._cls_predictions = {}
-                    self._cls_predictions[current_path] = result
-                    lines = [f"{p['class']}: {p['confidence']:.4f}" for p in result["predictions"]]
-                    self.log_signal.emit(
-                        f"Classification: {result['predictions'][0]['class']} "
-                        f"({result['predictions'][0]['confidence']:.2%}) in {elapsed:.2f}s")
-                    self.cls_result_label.setText("\n".join(lines))
-                    if (hasattr(self, "cls_auto_heatmap") and self.cls_auto_heatmap.isChecked()
-                            and result and result.get("predictions")):
-                        self._generate_cls_heatmap()
+                if mixed_mode:
+                    from classification.trainer import DualClassificationTrainer
+                    ct = DualClassificationTrainer(project_dir)
+                    base = os.path.splitext(current_path)[0]
+                    height_path = None
+                    for ext in [".tif", ".tiff"]:
+                        candidate = base + ext
+                        if os.path.exists(candidate):
+                            height_path = candidate
+                            break
+                    if not height_path:
+                        self.log_signal.emit("Mixed inference: no paired height map found")
+                        self.cls_result_label.setText("No paired height map")
+                        return
+                    t0 = time.time()
+                    result = ct.predict(current_path, height_path)
+                    elapsed = time.time() - t0
+                    if result:
+                        if not hasattr(self, "_cls_predictions"):
+                            self._cls_predictions = {}
+                        self._cls_predictions[current_path] = result
+                        self.log_signal.emit(
+                            f"Mixed: {result['class']} ({result['confidence']:.2%}) in {elapsed:.2f}s")
+                        self.cls_result_label.setText(f"{result['class']}: {result['confidence']:.4f}")
+                    else:
+                        self.cls_result_label.setText("No result")
+                        self.log_signal.emit("Mixed: no result")
                 else:
-                    self.cls_result_label.setText("No result")
-                    self.log_signal.emit("Classification: no result")
+                    from classification.trainer import ClassificationTrainer
+                    ct = ClassificationTrainer(project_dir)
+                    t0 = time.time()
+                    result = ct.predict_single(current_path, model_file, top_k=top_k)
+                    elapsed = time.time() - t0
+                    if result and result.get("predictions"):
+                        if not hasattr(self, "_cls_predictions"):
+                            self._cls_predictions = {}
+                        self._cls_predictions[current_path] = result
+                        lines = [f"{p['class']}: {p['confidence']:.4f}" for p in result["predictions"]]
+                        self.log_signal.emit(
+                            f"Classification: {result['predictions'][0]['class']} "
+                            f"({result['predictions'][0]['confidence']:.2%}) in {elapsed:.2f}s")
+                        self.cls_result_label.setText("\n".join(lines))
+                        if (hasattr(self, "cls_auto_heatmap") and self.cls_auto_heatmap.isChecked()
+                                and result and result.get("predictions")):
+                            self._generate_cls_heatmap()
+                    else:
+                        self.cls_result_label.setText("No result")
+                        self.log_signal.emit("Classification: no result")
             except Exception as e:
                 import traceback
                 self.log_signal.emit(f"Classification inference error: {e}")
@@ -2229,10 +2346,19 @@ class MainWindow(QMainWindow):
         img_dir = os.path.join(project_dir, "images")
         out_dir = os.path.join(project_dir, "outputs", "classification")
         os.makedirs(out_dir, exist_ok=True)
-        images = [os.path.join(img_dir, f) for f in os.listdir(img_dir)
-                  if f.lower().endswith((".bmp", ".png", ".jpg", ".jpeg"))]
-        if not images:
-            return QMessageBox.warning(self, "Warning", "No images found")
+        mixed_mode = self.cls_mixed_check.isChecked()
+
+        if mixed_mode:
+            from classification.dual_dataset import _find_pairs
+            pairs = _find_pairs(project_dir, "all", {})
+            if not pairs:
+                return QMessageBox.warning(self, "Warning", "No paired gray+height images found")
+            images = [(gray, height) for gray, height, _ in pairs]
+        else:
+            images = [os.path.join(img_dir, f) for f in os.listdir(img_dir)
+                      if f.lower().endswith((".bmp", ".png", ".jpg", ".jpeg"))]
+            if not images:
+                return QMessageBox.warning(self, "Warning", "No images found")
         total = len(images)
         top_k = self.cls_topk_spin.value()
         self._stop_flag = False
@@ -2245,28 +2371,29 @@ class MainWindow(QMainWindow):
             import time, json as _json
             results = {}
             try:
-                from classification.trainer import ClassificationTrainer
-                ct = ClassificationTrainer(project_dir)
-                ct.load_model(model_file)
-                for i, img_path in enumerate(images):
-                    if self._stop_flag:
-                        self.log_signal.emit(f"Batch classification stopped at {i}/{total}")
-                        break
-                    base = os.path.splitext(os.path.basename(img_path))[0]
-                    t0 = time.time()
-                    try:
-                        r = ct.predict_single(img_path, model_file, top_k=top_k)
-                        elapsed = time.time() - t0
-                        if r and r.get("predictions"):
-                            top1 = r["predictions"][0]
-                            results[base] = {"class": top1["class"], "confidence": top1["confidence"]}
-                            self.log_signal.emit(
-                                f"[{i+1}/{total}] {base}: {top1['class']} ({top1['confidence']:.2%}, {elapsed:.2f}s)")
-                        else:
-                            self.log_signal.emit(f"[{i+1}/{total}] {base}: no result")
-                    except Exception as ex:
-                        self.log_signal.emit(f"[{i+1}/{total}] {base}: FAILED - {ex}")
-                    self.infer_progress_signal.emit(i + 1, total)
+                if mixed_mode:
+                    from classification.trainer import DualClassificationTrainer
+                    ct = DualClassificationTrainer(project_dir)
+                    ct.load_model(model_file)
+                    for i, (gray_path, height_path) in enumerate(images):
+                        if self._stop_flag:
+                            self.log_signal.emit(f"Batch classification stopped at {i}/{total}")
+                            break
+                        gray_path, height_path = images[i]
+                        base = os.path.splitext(os.path.basename(gray_path))[0]
+                        t0 = time.time()
+                        try:
+                            r = ct.predict(gray_path, height_path)
+                            elapsed = time.time() - t0
+                            if r:
+                                results[base] = {"class": r["class"], "confidence": r["confidence"]}
+                                self.log_signal.emit(
+                                    f"[{i+1}/{total}] {base}: {r['class']} ({r['confidence']:.2%}, {elapsed:.2f}s)")
+                            else:
+                                self.log_signal.emit(f"[{i+1}/{total}] {base}: no result")
+                        except Exception as ex:
+                            self.log_signal.emit(f"[{i+1}/{total}] {base}: FAILED - {ex}")
+                        self.infer_progress_signal.emit(i + 1, total)
                 out_path = os.path.join(out_dir, "classification_results.json")
                 with open(out_path, "w", encoding="utf-8") as f:
                     _json.dump(results, f, indent=2, ensure_ascii=False)
@@ -2282,7 +2409,7 @@ class MainWindow(QMainWindow):
                         self._cls_predictions[base] = info
                 self.refresh_list_signal.emit()
                 # Auto-generate heatmaps for ALL images after batch inference
-                if hasattr(self, "cls_auto_heatmap") and self.cls_auto_heatmap.isChecked():
+                if not mixed_mode and hasattr(self, "cls_auto_heatmap") and self.cls_auto_heatmap.isChecked():
                     self.log_signal.emit("Generating heatmaps for all images...")
                     hm_dir = os.path.join(out_dir, "heatmaps")
                     os.makedirs(hm_dir, exist_ok=True)
@@ -2747,9 +2874,13 @@ class MainWindow(QMainWindow):
         model_file = self.cls_infer_model_combo.currentText()
         if not model_file or "(no models" in model_file:
             return QMessageBox.warning(self, "Error", "No classification model found.")
+        mixed_mode = self.cls_mixed_check.isChecked()
         self.cls_eval_status.setText("Evaluating...")
         def run():
             try:
+                if mixed_mode:
+                    self._eval_cls_model_mixed(project_dir, model_file)
+                    return
                 from classification.trainer import ClassificationTrainer
                 ct = ClassificationTrainer(project_dir)
                 ct.load_model(model_file)
@@ -2814,6 +2945,81 @@ class MainWindow(QMainWindow):
 
 
 
+    def _eval_cls_model_mixed(self, project_dir, model_file):
+        """Evaluate mixed classification model on validation set."""
+        import torch
+        from classification.trainer import DualClassificationTrainer
+        from classification.dual_dataset import MixedClassificationDataset
+        ct = DualClassificationTrainer(project_dir)
+        ct.load_model(model_file)
+        val_ds = MixedClassificationDataset(project_dir, split="val", image_size=getattr(ct, "_image_size", None) or 224)
+        if len(val_ds) == 0:
+            self.log_signal.emit("Mixed eval: no validation samples")
+            return
+        loader = torch.utils.data.DataLoader(val_ds, batch_size=32, shuffle=False)
+        ct.model.eval()
+        correct = 0
+        total = 0
+        all_preds = []
+        all_labels = []
+        with torch.no_grad():
+            for (gray, height), labels in loader:
+                gray = gray.to(ct.device)
+                height = height.to(ct.device)
+                labels = labels.to(ct.device)
+                inputs = torch.cat([gray, height], dim=1)
+                outputs = ct.model(inputs)
+                preds = outputs.argmax(1)
+                correct += (preds == labels).sum().item()
+                total += labels.size(0)
+                all_preds.extend(preds.cpu().tolist())
+                all_labels.extend(labels.cpu().tolist())
+        acc = correct / total if total > 0 else 0
+        self.log_signal.emit(f"Mixed eval: Top-1={acc:.4f} ({correct}/{total})")
+        class_names = getattr(ct, "class_names", ["NG", "OK"])
+        n = len(class_names)
+        cm_matrix = [[0]*n for _ in range(n)]
+        for gt, pred in zip(all_labels, all_preds):
+            if 0 <= gt < n and 0 <= pred < n:
+                cm_matrix[gt][pred] += 1
+        display_order = list(range(n))
+        if "OK" in class_names and "NG" in class_names:
+            ok_idx = class_names.index("OK")
+            ng_idx = class_names.index("NG")
+            if ok_idx > ng_idx:
+                display_order = [ok_idx, ng_idx]
+        display_names = [class_names[i] for i in display_order]
+        cm_display = [[cm_matrix[display_order[i]][display_order[j]] for j in range(n)] for i in range(n)]
+        headers = display_names + ["Total"]
+        self.cls_cm_table.setRowCount(n + 1)
+        self.cls_cm_table.setColumnCount(n + 1)
+        self.cls_cm_table.setHorizontalHeaderLabels(headers)
+        self.cls_cm_table.setVerticalHeaderLabels(display_names + ["Total"])
+        row_sums = [sum(row) for row in cm_display]
+        col_sums = [sum(cm_display[r][c] for r in range(n)) for c in range(n)]
+        cm_total = sum(row_sums)
+        from PyQt5.QtGui import QColor
+        from PyQt5.QtCore import Qt
+        for i in range(n):
+            for j in range(n):
+                item = QTableWidgetItem(str(cm_display[i][j]))
+                item.setTextAlignment(Qt.AlignCenter)
+                if i == j:
+                    item.setBackground(QColor(180, 255, 180))
+                self.cls_cm_table.setItem(i, j, item)
+            item = QTableWidgetItem(str(row_sums[i]))
+            item.setTextAlignment(Qt.AlignCenter)
+            self.cls_cm_table.setItem(i, n, item)
+        for j in range(n):
+            item = QTableWidgetItem(str(col_sums[j]))
+            item.setTextAlignment(Qt.AlignCenter)
+            self.cls_cm_table.setItem(n, j, item)
+        item = QTableWidgetItem(str(cm_total))
+        item.setTextAlignment(Qt.AlignCenter)
+        self.cls_cm_table.setItem(n, n, item)
+        self.cls_cm_table.resizeColumnsToContents()
+        self.cls_eval_status.setText(f"Top-1: {acc:.2%}")
+
     def _on_cm_cell_clicked(self, row, col):
         """Filter image list when clicking a confusion matrix cell."""
         import os
@@ -2857,15 +3063,8 @@ class MainWindow(QMainWindow):
             self._canvas_header.setVisible(self._canvas_header_visible)
         self._save_ui_setting("canvas_header_visible", self._canvas_header_visible)
 
-    def _toggle_image_list(self):
-        v = not self.image_list_widget.isVisible()
-        self.image_list_widget.setVisible(v)
-        self.stats_summary.setVisible(v)
-        self.page_size_combo.setVisible(v)
-        self.page_prev_btn.setVisible(v)
-        self.page_next_btn.setVisible(v)
-        self.page_info_label.setVisible(v)
-        self._save_ui_setting("image_list_visible", v)
+
+
 
     def _toggle_log_panel(self):
         v = not self._log_splitter.isVisible() if hasattr(self, "_log_splitter") else False

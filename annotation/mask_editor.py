@@ -226,7 +226,8 @@ class AnnotationCanvas(QWidget):
 
     def paintEvent(self, event):
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.SmoothPixmapTransform)
+        if self.zoom_level < 1.0:
+            painter.setRenderHint(QPainter.SmoothPixmapTransform)
         painter.fillRect(self.rect(), QColor(40, 40, 40))
         if self.image is None:
             painter.setPen(QColor(150, 150, 150))
