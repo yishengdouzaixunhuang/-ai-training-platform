@@ -187,7 +187,7 @@ class AnnotationCanvas(QWidget):
         if self.image is None:
             return QRectF()
         iw, ih = self.image.size
-        if self._mixed_cls_mode and self._view_mode == 2 and self._height_image is not None:
+        if self._mixed_cls_mode and self._height_image is not None:
             # Side-by-side: gray | height with a small gap
             gap = 10
             hiw, hih = self._height_image.size
@@ -209,7 +209,7 @@ class AnnotationCanvas(QWidget):
         ix = (pos.x() - rect.x()) / self.zoom_level
         iy = (pos.y() - rect.y()) / self.zoom_level
         # Side-by-side: only left half (grayscale) is annotatable
-        side_by_side = (getattr(self, "_mixed_cls_mode", False) and self._view_mode == 2
+        side_by_side = (getattr(self, "_mixed_cls_mode", False)
                         and self._height_image is not None)
         if side_by_side:
             iw_total = self.image.size[0] + self._height_image.size[0] + 10
@@ -235,7 +235,7 @@ class AnnotationCanvas(QWidget):
         ix = (pos.x() - rect.x()) / self.zoom_level
         iy = (pos.y() - rect.y()) / self.zoom_level
         # Side-by-side: clamp to grayscale image bounds for annotation
-        side_by_side = (getattr(self, "_mixed_cls_mode", False) and self._view_mode == 2
+        side_by_side = (getattr(self, "_mixed_cls_mode", False)
                         and self._height_image is not None)
         if side_by_side:
             # Clamp to grayscale image
@@ -256,6 +256,7 @@ class AnnotationCanvas(QWidget):
         gray_img = Image.open(gray_path).convert("RGB")
         self._gray_image = gray_img
         self.image = gray_img
+        self._cache_qimage()
         self.current_image_path = gray_path
         # Load height map if available (keep native bit depth for rainbow render)
         import numpy as np
@@ -406,16 +407,16 @@ class AnnotationCanvas(QWidget):
 
     def paintEvent(self, event):
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.SmoothPixmapTransform)  # always smooth scaling
+        if self.zoom_level < 1.0:
+            painter.setRenderHint(QPainter.SmoothPixmapTransform)
         painter.fillRect(self.rect(), QColor(40, 40, 40))
         if self.image is None:
             painter.setPen(QColor(150, 150, 150))
             painter.drawText(self.rect(), Qt.AlignCenter, "No image loaded")
             return
         rect = self._image_to_widget_rect()
-        side_by_side = (getattr(self, "_mixed_cls_mode", False) and self._view_mode == 2
+        side_by_side = (getattr(self, "_mixed_cls_mode", False)
                         and self._cached_height_qimage is not None and self._cached_qimage is not None)
-
         if side_by_side:
             # Side-by-side: gray (left) | height (right)
             iw, ih = self.image.size

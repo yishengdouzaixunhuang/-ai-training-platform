@@ -28,6 +28,7 @@ from annotation.label_manager import LabelManager
 from annotation.mask_editor import AnnotationCanvas
 from ui.color_palette import ColorPalette
 from ui.crop_tool import CropToolDialog
+from ui.mixed_add_dialog import MixedAddImagesDialog
 from annotation.labelme_io import save_mask_to_json, save_labelme_json, mask_to_shapes
 from annotation.version_manager import list_versions, restore_version, get_version_diff
 from training.trainer import Trainer
@@ -448,24 +449,7 @@ class MainWindow(QMainWindow):
         outer = QSplitter(Qt.Vertical)
         # Canvas area (no header - canvas fills entire space)
         cc = QWidget(); cl = QVBoxLayout(cc); cl.setContentsMargins(0, 0, 0, 0)
-        # Mixed classification view mode buttons (hidden by default, shown in mixed mode)
-        self._mixed_view_btns_layout = QHBoxLayout()
-        self._mixed_view_btns_layout.setSpacing(1)
-        for mode_id, label, tip in [
-            (0, "1×1 G", "Single: Grayscale"),
-            (1, "1×1 H", "Single: Height Map"),
-            (2, "1×2", "Side-by-side"),
-        ]:
-            btn = QPushButton(label)
-            btn.setCheckable(True); btn.setFixedSize(38, 18)
-            btn.setToolTip(tip)
-            btn.setStyleSheet("QPushButton { font-size: 9px; padding: 0; } QPushButton:checked { background-color: #2C5F8A; color: white; }")
-            btn.clicked.connect(lambda checked, m=mode_id: self._set_mixed_view_mode(m))
-            self._mixed_view_btns_layout.addWidget(btn)
-        self._mixed_view_group = [self._mixed_view_btns_layout.itemAt(i).widget() for i in range(3)]
-        self._mixed_view_group[0].setChecked(True)
-        for btn in self._mixed_view_group:
-            btn.setVisible(False)
+# View mode: mixed projects always use 1x2 side-by-side
         self.image_count_label = QLabel(""); self.image_count_label.setVisible(False)
         self.canvas = AnnotationCanvas()
         self.canvas.status_message.connect(self.statusBar().showMessage)
@@ -862,7 +846,6 @@ class MainWindow(QMainWindow):
         self.hm_cmap_combo.setCurrentText("JET")
         hml.addWidget(self.hm_cmap_combo)
         bth = QHBoxLayout()
-        print('[DEBUG] Creating HM buttons')
         auto_btn = QPushButton("Auto Range")
         auto_btn.clicked.connect(self._hm_auto_range)
         bth.addWidget(auto_btn)
@@ -955,12 +938,10 @@ class MainWindow(QMainWindow):
         self.hm_colorbar.setPixmap(pix)
 
     def _hm_auto_range(self):
-        print('[DEBUG _hm_auto_range] CALLED')
         self.canvas.set_height_range(None, None, self._hm_get_colormap())
         self._update_height_controls()
 
     def _hm_apply(self):
-        print('[DEBUG _hm_apply] CALLED')
         vmin = self.hm_vmin.value()
         vmax = self.hm_vmax.value()
         cmap = self._hm_get_colormap()
@@ -1138,6 +1119,31 @@ class MainWindow(QMainWindow):
                 lm = LabelManager(str(self.pm.get_project_dir(name)))
                 for c in [x.strip() for x in class_text.split(",") if x.strip()]:
                     lm.add_class(c)
+            # For mixed classification, show paired image loader first
+            if task_type == "混合分类":
+                dlg2 = MixedAddImagesDialog(self)
+                if dlg2.exec_() != QDialog.Accepted:
+                    # User cancelled - project already created, log it
+                    self.log(f"Project created without images: {name}")
+                else:
+                    gray_paths, height_paths = dlg2.get_paired_paths()
+                    img_dir = os.path.join(str(self.pm.get_project_dir(name)), "images")
+                    for gp, hp in zip(gray_paths, height_paths):
+                        shutil.copy2(gp, os.path.join(img_dir, os.path.basename(gp)))
+                        shutil.copy2(hp, os.path.join(img_dir, os.path.basename(hp)))
+                        # Create blank JSON for grayscale (not for tif)
+                        json_path = os.path.join(img_dir, os.path.splitext(os.path.basename(gp))[0] + ".json")
+                        if not os.path.exists(json_path):
+                            from PyQt5.QtCore import QSize
+                            try:
+                                sz = Image.open(gp).size
+                            except:
+                                sz = (0, 0)
+                            blank = {"version":"5.3.1","flags":{},"shapes":[],"imagePath":os.path.basename(gp),"imageData":None,"imageHeight":sz[1],"imageWidth":sz[0]}
+                            import json as _json
+                            with open(json_path, "w", encoding="utf-8") as jf:
+                                _json.dump(blank, jf, indent=2, ensure_ascii=False)
+                    self.log(f"Imported {len(gray_paths)} paired image sets")
             self._open_project_by_name(name)
             self._refresh_projects()
             self.log(f"Created project: {name}")
@@ -1166,10 +1172,6 @@ class MainWindow(QMainWindow):
                     task_type = meta.get("task_type", "语义分割")
                     internal = task_map.get(task_type, "segmentation")
                     self._set_task(internal)
-                    # Show mixed view buttons if mixed project
-                    if internal == "mixed_classification" and hasattr(self, "_mixed_view_group"):
-                        for btn in self._mixed_view_group:
-                            btn.setVisible(True)
                 except Exception:
                     pass
         except Exception as e:
@@ -1226,9 +1228,6 @@ class MainWindow(QMainWindow):
             self.canvas._det_overlay = None
             self.canvas._cls_mode = True
             self.canvas.update()
-            if hasattr(self, "_mixed_view_group"):
-                for btn in self._mixed_view_group:
-                    btn.setVisible(False)
             self._load_classification_labels()
             self._refresh_cls_model_list()
             self._filter_images(self.search_input.text())
@@ -1243,9 +1242,6 @@ class MainWindow(QMainWindow):
             self.canvas._cls_mode = True
             self.canvas.update()
             self._load_classification_labels()
-            if hasattr(self, "_mixed_view_group"):
-                for btn in self._mixed_view_group:
-                    btn.setVisible(True)
             self._refresh_cls_model_list()
             self._filter_images(self.search_input.text())
             self._right_stack.setCurrentIndex(7)
@@ -1453,8 +1449,6 @@ class MainWindow(QMainWindow):
             pass
 
     def _filter_images(self, text):
-        if getattr(self, "_mixed_cls_mode", False) and self._all_images:
-            self.log(f"[DEBUG] _filter_images: mixed=True, all_images={len(self._all_images)}")
         self._suppress_cell_change = True
         self.image_list_widget.setRowCount(0)
         text_lower = text.lower().strip()
@@ -1491,7 +1485,33 @@ class MainWindow(QMainWindow):
                 pass
         # Build filtered data list (deferred rendering)
         self._filtered_data = []
-        for path in self._all_images:
+
+        # Mixed classification: build paired image list
+        _mixed = getattr(self, "_mixed_cls_mode", False)
+        _image_sources = self._all_images
+        if _mixed:
+            _gray_map = {}
+            _height_map = {}
+            for p in self._all_images:
+                b = os.path.splitext(os.path.basename(p))[0]
+                e = os.path.splitext(p)[1].lower()
+                if e in (".tif", ".tiff"):
+                    _height_map[b] = p
+                else:
+                    _gray_map[b] = p
+            _paired = []
+            for base, gp in sorted(_gray_map.items()):
+                hp = _height_map.get(base, "")
+                _paired.append((gp, hp))
+            _image_sources = _paired
+
+        for _img_entry in _image_sources:
+            if _mixed:
+                path = _img_entry[0]
+                height_path = _img_entry[1]
+            else:
+                path = _img_entry
+                height_path = ""
             fname = os.path.basename(path)
             base = os.path.splitext(fname)[0]
             mask_path = os.path.join(ann_dir, base + "_mask.png")
@@ -1659,6 +1679,8 @@ class MainWindow(QMainWindow):
                 'ocr_score': ocr_score, 'ocr_time': ocr_time,
                 'score_str': score_str, 'infer_ms': infer_ms,
                 'pred_cnt': pred_cnt,
+                'height_path': height_path,
+                'height_fname': os.path.basename(height_path) if height_path else "",
             })
 
             if split_status == " [Train]":
@@ -1726,15 +1748,17 @@ class MainWindow(QMainWindow):
         start = self._current_page * self._page_size
         end = min(start + self._page_size, total)
 
-        if getattr(self, "_mixed_cls_mode", False):
-            self.log(f"[DEBUG] _render_page: _mixed_cls_mode=True, data_count={len(self._filtered_data)}")
         for i, data in enumerate(self._filtered_data[start:end]):
             row = self.image_list_widget.rowCount()
             self.image_list_widget.insertRow(row)
             global_idx = start + i
+            if getattr(self, "_mixed_cls_mode", False) and data.get('height_fname'):
+                name_text = data['fname'] + '\n' + data['height_fname']
+            else:
+                name_text = data['fname']
             items_data = [
                 (str(global_idx + 1), True),
-                (data['fname'], False),
+                (name_text, False),
                 (f"{data['img_w']}x{data['img_h']}" if data['img_w'] else "", True),
                 (data['split_status'].replace("[", "").replace("]", "").strip(), True),
                 (", ".join(data['shape_labels']) if self._cls_mode else (str(data['shape_count']) if data['shape_count'] > 0 else ""), True),
@@ -1758,6 +1782,8 @@ class MainWindow(QMainWindow):
                 clr = QColor(0, 120, 0)
             else:
                 clr = QColor(0, 0, 0)
+            if getattr(self, "_mixed_cls_mode", False) and data.get('height_fname'):
+                self.image_list_widget.setRowHeight(row, 40)
             for col in range(8):
                 item = self.image_list_widget.item(row, col)
                 if item:
@@ -2090,6 +2116,8 @@ class MainWindow(QMainWindow):
                 if getattr(self, "_mixed_cls_mode", False):
                     self.log(f"[Mixed] Loading pair for: {os.path.basename(path)}")
                     self.canvas.set_mixed_pair(path)
+                    self.canvas._view_mode = 2
+                    self.canvas._mixed_cls_mode = True
                 else:
                     self.canvas.load_image(path)
                 self._update_height_controls()
@@ -3238,20 +3266,7 @@ class MainWindow(QMainWindow):
             self._saved_right = v
             self._save_ui_setting("right_panel_visible", v)
 
-    def _set_mixed_view_mode(self, mode):
-        """Switch mixed classification view mode."""
-        self.canvas._view_mode = mode
-        for i, btn in enumerate(self._mixed_view_group):
-            btn.setChecked(i == mode)
-        if mode == 0:
-            self.canvas.image = self.canvas._gray_image
-            self.canvas._cache_qimage()
-        elif mode == 1:
-            if self.canvas._height_image:
-                self.canvas.image = self.canvas._height_image.convert("RGB") if hasattr(self.canvas._height_image, "mode") else self.canvas._height_image
-                self.canvas._cache_qimage()
-        self.canvas._fit_to_window()
-        self.canvas.update()
+
 
 
 
