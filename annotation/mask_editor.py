@@ -41,7 +41,8 @@ class AnnotationCanvas(QWidget):
         self._height_image = None      # PIL Image for height map
         self._cached_height_qimage = None
         self._height_path = None
-        self._view_mode = 0           # 0=single gray, 1=single height, 2=side-by-side (1x2)
+        self._view_mode = 2           # 0/1=1x1, 2=1x2, 3=2x1
+        self._single_page = 0        # 0=gray, 1=height (for 1x1 mode)
         self._height_vmin = None       # user-specified min for height colormap (None=auto)
         self._height_vmax = None       # user-specified max for height colormap
         self._height_colormap = cv2.COLORMAP_JET  # default colormap
@@ -175,6 +176,13 @@ class AnnotationCanvas(QWidget):
         if self.image is None:
             return
         iw, ih = self.image.size
+        # In side-by-side mixed mode, use combined image size for zoom
+        _mixed = getattr(self, "_mixed_cls_mode", False)
+        _hi = getattr(self, "_height_image", None)
+        if _mixed and _hi is not None:
+            hiw, hih = _hi.size
+            iw = iw + hiw + 10  # gap
+            ih = max(ih, hih)
         ww, wh = self.width(), self.height()
         if ww < 10 or wh < 10:
             return
@@ -187,12 +195,19 @@ class AnnotationCanvas(QWidget):
         if self.image is None:
             return QRectF()
         iw, ih = self.image.size
+        _vm = getattr(self, "_view_mode", 2)
         if self._mixed_cls_mode and self._height_image is not None:
-            # Side-by-side: gray | height with a small gap
             gap = 10
             hiw, hih = self._height_image.size
-            total_w = iw + hiw + gap
-            total_h = max(ih, hih)
+            if _vm == 3:  # 2x1 stacked
+                total_w = max(iw, hiw)
+                total_h = ih + hih + gap
+            elif _vm >= 2:  # 1x2 (or any other dual mode)
+                total_w = iw + hiw + gap
+                total_h = max(ih, hih)
+            else:  # 1x1
+                total_w = iw
+                total_h = ih
             dw = total_w * self.zoom_level
             dh = total_h * self.zoom_level
         else:
@@ -267,8 +282,11 @@ class AnnotationCanvas(QWidget):
             for ext in [".tif", ".tiff"]:
                 candidate = base + ext
                 if os.path.exists(candidate):
-                    self._height_image = Image.open(candidate)
-                    self._height_path = candidate
+                    try:
+                        self._height_image = Image.open(candidate)
+                        self._height_path = candidate
+                    except Exception:
+                        pass
                     break
         self._cache_height_qimage()
         self._heatmap_qimage = None
@@ -283,6 +301,7 @@ class AnnotationCanvas(QWidget):
         self._overlay_dirty = True
         self._fit_to_window()
         self._load_prediction_overlay(gray_path)
+        self._view_mode = 2  # force 1x2 for mixed classification
         self.update()
 
     def set_height_range(self, vmin=None, vmax=None, colormap=None):
@@ -291,10 +310,6 @@ class AnnotationCanvas(QWidget):
         if colormap is not None:
             self._height_colormap = colormap
         self._cache_height_qimage()
-        if self._cached_height_pil is not None:
-            self.image = self._cached_height_pil
-            self._cache_qimage()
-            self._view_mode = 0
         self.update()
 
     def _get_height_auto_range(self):
@@ -415,7 +430,14 @@ class AnnotationCanvas(QWidget):
             painter.drawText(self.rect(), Qt.AlignCenter, "No image loaded")
             return
         rect = self._image_to_widget_rect()
-        side_by_side = (getattr(self, "_mixed_cls_mode", False)
+        # Fallback: if mixed mode but height QImage is missing, try to regenerate
+        _mixed = getattr(self, "_mixed_cls_mode", False)
+        if _mixed and self._cached_qimage is not None and self._height_image is not None and self._cached_height_qimage is None:
+            try:
+                self._cache_height_qimage()
+            except Exception:
+                pass
+        side_by_side = (_mixed
                         and self._cached_height_qimage is not None and self._cached_qimage is not None)
         if side_by_side:
             # Side-by-side: gray (left) | height (right)
@@ -444,8 +466,57 @@ class AnnotationCanvas(QWidget):
             painter.setPen(QColor(200, 180, 100))
             painter.drawText(height_rect, Qt.AlignBottom | Qt.AlignHCenter, "Height Map")
         elif self._cached_qimage is not None:
-            if self._view_mode == 1 and self._cached_height_qimage is not None:
-                # Single height mode: use rainbow height map
+            _vm2 = getattr(self, "_view_mode", 2)
+            _hq = self._cached_height_qimage
+            _mixed2 = getattr(self, "_mixed_cls_mode", False)
+            if _mixed2 and _hq is not None and _vm2 == 3:
+                # 2x1 stacked: gray (top) | height (bottom)
+                iw2, ih2 = self.image.size
+                hiw2, hih2 = self._height_image.size
+                gap = 10
+                scale = self.zoom_level
+                cw = max(iw2, hiw2)
+                gray_rect = QRectF(rect.x() + (rect.width() - cw * scale) / 2.0,
+                                   rect.y(), cw * scale, ih2 * scale)
+                painter.drawImage(gray_rect, self._cached_qimage)
+                height_rect = QRectF(rect.x() + (rect.width() - cw * scale) / 2.0,
+                                     rect.y() + ih2 * scale + gap * scale,
+                                     cw * scale, hih2 * scale)
+                painter.drawImage(height_rect, _hq)
+                div_y = rect.y() + ih2 * scale + gap * scale / 2.0
+                painter.setPen(QPen(QColor(100, 100, 100), 2))
+                painter.drawLine(QPointF(rect.x(), div_y), QPointF(rect.x() + rect.width(), div_y))
+                font = QFont("Consolas", max(8, int(10 * scale)))
+                painter.setFont(font)
+                painter.setPen(QColor(200, 200, 200))
+                painter.drawText(gray_rect, Qt.AlignBottom | Qt.AlignHCenter, "Grayscale")
+                painter.setPen(QColor(200, 180, 100))
+                painter.drawText(height_rect, Qt.AlignBottom | Qt.AlignHCenter, "Height Map")
+            elif _mixed2 and _hq is not None and _vm2 == 0:
+                # 1x1 single page flip
+                _sp = getattr(self, "_single_page", 0)
+                if _sp == 1:
+                    sp_img = self._cached_height_pil or self._height_image
+                    sp_qimg = _hq
+                    sp_label = "Height Map"
+                else:
+                    sp_img = self._gray_image or self.image
+                    sp_qimg = self._cached_qimage
+                    sp_label = "Grayscale"
+                if sp_img:
+                    siw, sih = sp_img.size
+                    scale = self.zoom_level
+                    sr = QRectF(rect.x() + (rect.width() - siw * scale) / 2.0,
+                                rect.y() + (rect.height() - sih * scale) / 2.0,
+                                siw * scale, sih * scale)
+                    painter.drawImage(sr, sp_qimg)
+                    font = QFont("Consolas", max(8, int(10 * scale)))
+                    painter.setFont(font)
+                    painter.setPen(QColor(200, 200, 200))
+                    painter.drawText(sr, Qt.AlignBottom | Qt.AlignHCenter, sp_label)
+                else:
+                    painter.drawImage(rect, sp_qimg)
+            elif self._view_mode == 1 and self._cached_height_qimage is not None:
                 painter.drawImage(rect, self._cached_height_qimage)
             else:
                 painter.drawImage(rect, self._cached_qimage)

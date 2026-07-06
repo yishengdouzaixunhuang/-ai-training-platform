@@ -26,6 +26,7 @@ from core.config import APP_NAME, APP_VERSION, CLASS_COLORS, load_config, save_c
 from core.project_manager import ProjectManager
 from annotation.label_manager import LabelManager
 from annotation.mask_editor import AnnotationCanvas
+from ui.mixed_viewer import MixedViewer
 from ui.color_palette import ColorPalette
 from ui.crop_tool import CropToolDialog
 from ui.mixed_add_dialog import MixedAddImagesDialog
@@ -449,10 +450,16 @@ class MainWindow(QMainWindow):
         outer = QSplitter(Qt.Vertical)
         # Canvas area (no header - canvas fills entire space)
         cc = QWidget(); cl = QVBoxLayout(cc); cl.setContentsMargins(0, 0, 0, 0)
-# View mode: mixed projects always use 1x2 side-by-side
         self.image_count_label = QLabel(""); self.image_count_label.setVisible(False)
+
+        # Stacked widget: index 0 = AnnotationCanvas, index 1 = MixedViewer
+        self._viewer_stack = QStackedWidget()
         self.canvas = AnnotationCanvas()
         self.canvas.status_message.connect(self.statusBar().showMessage)
+        self.mixed_viewer = MixedViewer()
+
+        self._viewer_stack.addWidget(self.canvas)       # index 0
+        self._viewer_stack.addWidget(self.mixed_viewer)  # index 1
 
         self._version_refresh_timer = QTimer()
         self._version_refresh_timer.setSingleShot(True)
@@ -460,7 +467,8 @@ class MainWindow(QMainWindow):
         self._version_refresh_timer.timeout.connect(self._refresh_versions)
         self.canvas.mask_changed.connect(lambda: self._version_refresh_timer.start())
         self.canvas.det_boxes_changed.connect(self._on_det_boxes_changed)
-        cl.addWidget(self.canvas)
+        cl.addWidget(self._viewer_stack)
+
         outer.addWidget(cc)
         return outer
 
@@ -1157,12 +1165,9 @@ class MainWindow(QMainWindow):
             self.current_project = self.pm.open_project(name)
             self._project_dir = str(self.pm.get_project_dir(name))
             self.canvas.set_project(self.pm.get_project_dir(name))
-            self._load_image_list_async()
-            self._load_classes()
-            self.log(f"Opened: {name}")
-            self.setWindowTitle(f"{APP_NAME} - {name}")
 
-            # Auto-detect task type from project config
+            # Auto-detect task type BEFORE async image scan
+            # (prevents race condition where scan completes before _mixed_cls_mode is set)
             task_map = {"语义分割":"segmentation","目标检测":"detection","图像分类":"classification","混合分类":"mixed_classification","OCR文字识别":"ocr","OCV字符质检":"ocv"}
             config_path = os.path.join(self._project_dir, "project.json")
             if os.path.exists(config_path):
@@ -1174,6 +1179,11 @@ class MainWindow(QMainWindow):
                     self._set_task(internal)
                 except Exception:
                     pass
+
+            self._load_image_list_async()
+            self._load_classes()
+            self.log(f"Opened: {name}")
+            self.setWindowTitle(f"{APP_NAME} - {name}")
         except Exception as e:
             QMessageBox.warning(self, "Error", str(e))
 
@@ -1203,18 +1213,14 @@ class MainWindow(QMainWindow):
         if task == "detection":
             self._detection_mode = True
             self.log("Task: Object Detection")
-            
             from detection.box_manager import BoxManager
             from detection.box_overlay import DetectionOverlay
-            
             classes = getattr(self, "_cached_classes", None) or ["background"]
             self._box_manager = BoxManager(categories=classes)
             self.canvas._det_overlay = DetectionOverlay(self.canvas, self._box_manager)
-            
             if "pan" in getattr(self, "_mode_buttons", {}):
                 self._mode_buttons["pan"].setChecked(True)
                 self.canvas._mode = self.canvas.MODE_PAN
-            
             self._load_det_annotations()
             self._populate_det_class_list()
             self._right_stack.setCurrentIndex(5)
@@ -1224,6 +1230,7 @@ class MainWindow(QMainWindow):
             self._cls_mode = True
             self._mixed_cls_mode = False
             self.canvas._mixed_cls_mode = False
+            self._viewer_stack.setCurrentIndex(0)  # Show AnnotationCanvas
             self.log("Task: Image Classification")
             self.canvas._det_overlay = None
             self.canvas._cls_mode = True
@@ -1237,6 +1244,8 @@ class MainWindow(QMainWindow):
             self._cls_mode = True
             self._mixed_cls_mode = True
             self.canvas._mixed_cls_mode = True
+            self.canvas._view_mode = 2
+            self._viewer_stack.setCurrentIndex(1)  # Show MixedViewer
             self.log("Task: Mixed Classification (Gray+Height)")
             self.canvas._det_overlay = None
             self.canvas._cls_mode = True
@@ -2065,25 +2074,20 @@ class MainWindow(QMainWindow):
             self.det_btn.setText("Detection: ON")
             self.det_btn.blockSignals(False)
             self.log("Switched to Detection mode")
-            
             from detection.box_manager import BoxManager
             from detection.box_overlay import DetectionOverlay
-            
             classes = getattr(self, "_cached_classes", None) or ["background"]
             self._box_manager = BoxManager(categories=classes)
             self.canvas._det_overlay = DetectionOverlay(self.canvas, self._box_manager)
-            
             if "pan" in getattr(self, "_mode_buttons", {}):
                 self._mode_buttons["pan"].setChecked(True)
                 self.canvas._mode = self.canvas.MODE_PAN
-            
             self._load_det_annotations()
         else:
             self.det_btn.setChecked(False)
             self.det_btn.setText("Detection: OFF")
             self.det_btn.blockSignals(False)
             self.log("Switched to Segmentation mode")
-            
             self.canvas._det_overlay = None
             self.canvas.update()
 
@@ -2112,21 +2116,30 @@ class MainWindow(QMainWindow):
         item = self.image_list_widget.item(idx, 0)
         if item:
             path = item.data(Qt.UserRole)
+            _mixed = getattr(self, "_mixed_cls_mode", False)
+            _hp = ""
+            if _mixed and hasattr(self, "_filtered_data"):
+                _global_idx = getattr(self, "_current_page", 0) * getattr(self, "_page_size", 50) + idx
+                if 0 <= _global_idx < len(self._filtered_data):
+                    _hp = self._filtered_data[_global_idx].get("height_path", "")
             if path and os.path.exists(path):
-                if getattr(self, "_mixed_cls_mode", False):
+                if _mixed:
                     self.log(f"[Mixed] Loading pair for: {os.path.basename(path)}")
-                    self.canvas.set_mixed_pair(path)
-                    self.canvas._view_mode = 2
-                    self.canvas._mixed_cls_mode = True
+                    self.mixed_viewer.set_pair(path, _hp if _hp else None)
+                    self._viewer_stack.setCurrentIndex(1)
                 else:
                     self.canvas.load_image(path)
+                    self._viewer_stack.setCurrentIndex(0)
                 self._update_height_controls()
                 self._refresh_versions()
-                w, h = self.canvas.image.width, self.canvas.image.height
-                self.statusBar().showMessage(
-                    f"Image: {os.path.basename(path)}  |  {w}x{h}")
+                img = self.mixed_viewer._gray_image if _mixed else self.canvas.image
+                if img:
+                    w, h = img.width, img.height
+                    self.statusBar().showMessage(
+                        f"Image: {os.path.basename(path)}  |  {w}x{h}")
                 self._stats_timer.start(150)
                 self._load_det_annotations()
+
 
     # ============ Annotation Modes ============
 
@@ -3273,6 +3286,14 @@ class MainWindow(QMainWindow):
 
 
 
+    def _update_page_label(self):
+        sp = getattr(self.canvas, "_single_page", 0)
+        self._page_label.setText(f"{sp + 1}/2")
+
+    def _update_page_label(self):
+        sp = getattr(self.canvas, "_single_page", 0)
+        self._page_label.setText(f"{sp + 1}/2")
+
     def _toggle_log_panel(self):
         v = not self._log_splitter.isVisible() if hasattr(self, "_log_splitter") else False
         if hasattr(self, "_log_splitter"):
@@ -3326,7 +3347,6 @@ class MainWindow(QMainWindow):
         images_dir = os.path.join(project_dir, "images")
         if not os.path.exists(images_dir):
             return QMessageBox.warning(self, "Warning", "No images directory found")
-        
         # Show training settings dialog
         dlg = TrainSettingsDialog(self)
         if dlg.exec_() != dlg.Accepted:
@@ -3354,7 +3374,6 @@ class MainWindow(QMainWindow):
                  + (f", {cv_folds}-fold CV" if cv_folds > 1 else "")
                  + f", loss={loss_name}, aug={augment}"
                  + (f", resume" if resume else ""))
-        
         def run():
             try:
                 self.trainer.train(
@@ -3385,18 +3404,15 @@ class MainWindow(QMainWindow):
         if not self.current_project:
             return QMessageBox.warning(self, "Warning", "Please open a project first")
         project_dir = str(self.pm.get_project_dir(self.current_project["name"]))
-        
         model_name = self.det_model_combo.currentText() if hasattr(self, 'det_model_combo') else "yolov8s"
         epochs = self.det_epochs_spin.value() if hasattr(self, 'det_epochs_spin') else 200
         batch_size = self.det_batch_spin.value() if hasattr(self, 'det_batch_spin') else 16
         image_size = self.det_img_size_spin.value() if hasattr(self, 'det_img_size_spin') else 640
-        
         self._stop_flag = False
         self.btn_det_train_stop.setEnabled(True)
         self.det_train_status.setText("Preparing...")
         self.det_train_progress.setVisible(True)
         self.det_train_progress.setValue(0)
-        
         def run():
             try:
                 # Step 1: Build dataset
@@ -3410,19 +3426,16 @@ class MainWindow(QMainWindow):
                 self.log_signal.emit(
                     f"Dataset: {ds_info['train_images']} train + {ds_info['val_images']} val, "
                     f"{ds_info['num_classes']} classes: {', '.join(ds_info['class_names'])}")
-                
                 # Step 2: Train
                 self.log_signal.emit(
                     f"Training: {model_name}, {epochs} epochs, batch={batch_size}, imgsz={image_size}")
                 from detection.trainer import DetectionTrainer
                 det_trainer = DetectionTrainer(project_dir)
-                
                 def epoch_cb(ep, tot, m):
                     self.log_signal.emit(
                         f"Epoch {ep}/{tot} | mAP50: {m.get('metrics/mAP50(B)', 0):.4f} | "
                         f"mAP: {m.get('metrics/mAP50-95(B)', 0):.4f}")
                     self.progress_signal.emit(ep, tot)
-                
                 result = det_trainer.train(
                     data_yaml=ds_info["data_yaml"],
                     model_name=model_name,
@@ -3431,14 +3444,12 @@ class MainWindow(QMainWindow):
                     image_size=image_size,
                     epoch_callback=epoch_cb,
                 )
-                
                 if "error" not in result:
                     self.log_signal.emit(
                         f"Training complete! mAP50: {result.get('best_map50', 0):.4f}, "
                         f"mAP: {result.get('best_map', 0):.4f}")
                 else:
                     self.log_signal.emit("Training stopped by user")
-                    
             except Exception as e:
                 import traceback
                 self.log_signal.emit(f"Detection training error: {e}")
@@ -3451,9 +3462,7 @@ class MainWindow(QMainWindow):
                 self.log_signal.emit("GPU memory released")
                 # Use invokeMethod to safely update UI from thread
                 self.log_signal.emit("__DET_TRAINING_DONE__")
-        
         threading.Thread(target=run, daemon=True).start()
-    
     def _on_det_training_done(self):
         """Called from main thread via signal to update UI after training."""
         self.btn_det_train_stop.setEnabled(False)
@@ -3498,12 +3507,10 @@ class MainWindow(QMainWindow):
         if self.canvas.image is None:
             return QMessageBox.warning(self, "Warning", "Please load an image first")
         project_dir = str(self.pm.get_project_dir(self.current_project["name"]))
-        
         if self._detection_mode:
             self._run_det_inference_single(project_dir)
         else:
             self._run_seg_inference_single(project_dir)
-    
     def _run_seg_inference_single(self, project_dir):
         model_file = self.model_combo.currentText()
         model_path = os.path.join(project_dir, "models", model_file)
@@ -3529,7 +3536,6 @@ class MainWindow(QMainWindow):
             import traceback
             self.log(traceback.format_exc())
             QMessageBox.warning(self, "Error", f"Inference failed: {e}")
-    
     def _run_det_inference_single(self, project_dir):
         """Run detection inference on current image and display boxes."""
         model_path = os.path.join(project_dir, "models", "detection", "best.pt")
@@ -3566,12 +3572,10 @@ class MainWindow(QMainWindow):
         if self._detection_mode:
             return self._start_det_batch_inference()
         project_dir = str(self.pm.get_project_dir(self.current_project["name"]))
-        
         if self._detection_mode:
             self._run_det_batch_inference(project_dir)
         else:
             self._run_seg_batch_inference(project_dir)
-    
     def _run_seg_batch_inference(self, project_dir):
         model_file = self.model_combo.currentText()
         model_path = os.path.join(project_dir, "models", model_file)
@@ -3636,7 +3640,6 @@ class MainWindow(QMainWindow):
                 self.infer_progress.setVisible(False)
 
         threading.Thread(target=run, daemon=True).start()
-    
     def _run_det_batch_inference(self, project_dir):
         """Batch detection inference on all images."""
         model_path = os.path.join(project_dir, "models", "detection", "best.pt")
@@ -3659,7 +3662,6 @@ class MainWindow(QMainWindow):
         self.infer_status.setText("Running...")
         self.log(f"Batch detection inference on {total} images...")
         import time
-        
         def run():
             try:
                 from detection.trainer import DetectionTrainer
@@ -3711,7 +3713,6 @@ class MainWindow(QMainWindow):
             finally:
                 self.btn_infer_stop.setEnabled(False)
                 self.infer_progress.setVisible(False)
-        
         threading.Thread(target=run, daemon=True).start()
 
     # ============ Import / Export ============
