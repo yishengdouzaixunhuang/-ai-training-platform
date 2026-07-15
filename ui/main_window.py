@@ -29,6 +29,7 @@ from annotation.mask_editor import AnnotationCanvas
 from ui.mixed_viewer import MixedViewer
 from ui.color_palette import ColorPalette
 from ui.crop_tool import CropToolDialog
+from ui.resize_tool import ResizeToolDialog
 from ui.mixed_add_dialog import MixedAddImagesDialog
 from annotation.labelme_io import save_mask_to_json, save_labelme_json, mask_to_shapes
 from annotation.version_manager import list_versions, restore_version, get_version_diff
@@ -233,6 +234,7 @@ class MainWindow(QMainWindow):
         tm.addAction("OCV Quality Inspection", lambda: self._set_task("ocv"))
         tm.addSeparator()
         tm.addAction("Image Crop Tool...", self._open_crop_tool)
+        tm.addAction("Image Resize Tool...", self._open_resize_tool)
         sm = mb.addMenu("Settings(&S)")
         sm.addAction("Workspace...", self._set_workspace)
         vm = mb.addMenu("View(&V)")
@@ -1096,7 +1098,8 @@ class MainWindow(QMainWindow):
             self._open_project_by_name(name)
 
     def _new_project(self):
-        from PyQt5.QtWidgets import QDialog, QFormLayout, QLineEdit, QDialogButtonBox, QLabel, QComboBox
+        from pathlib import Path
+        from PyQt5.QtWidgets import QDialog, QFormLayout, QLineEdit, QDialogButtonBox, QLabel, QComboBox, QHBoxLayout, QPushButton, QFileDialog
         dlg = QDialog(self)
         dlg.setWindowTitle("New Project")
         form = QFormLayout(dlg)
@@ -1105,10 +1108,21 @@ class MainWindow(QMainWindow):
         task_combo = QComboBox()
         task_combo.addItems(["语义分割", "目标检测", "图像分类", "混合分类", "OCR文字识别", "OCV字符质检"])
         form.addRow("Task Type:", task_combo)
-        classes_edit = QLineEdit()
-        classes_edit.setPlaceholderText("e.g. defect, scratch, dent (comma separated)")
-        form.addRow("Classes:", classes_edit)
-        form.addRow(QLabel("Leave empty to auto-detect from imported JSONs"))
+        # Directory chooser
+        dir_row = QHBoxLayout()
+        dir_edit = QLineEdit()
+        dir_edit.setPlaceholderText("Default: workspace")
+        dir_edit.setReadOnly(True)
+        dir_btn = QPushButton("Browse...")
+        def choose_dir():
+            d = QFileDialog.getExistingDirectory(dlg, "Select Project Directory",
+                                                  str(Path.home() / "Documents"))
+            if d:
+                dir_edit.setText(d)
+        dir_btn.clicked.connect(choose_dir)
+        dir_row.addWidget(dir_edit)
+        dir_row.addWidget(dir_btn)
+        form.addRow("Location:", dir_row)
         btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         btns.accepted.connect(dlg.accept)
         btns.rejected.connect(dlg.reject)
@@ -1120,13 +1134,8 @@ class MainWindow(QMainWindow):
             return QMessageBox.warning(self, "Error", "Project name is required")
         try:
             task_type = task_combo.currentText()
-            self.pm.create_project(name, task_type)
-            # Register classes
-            class_text = classes_edit.text().strip()
-            if class_text:
-                lm = LabelManager(str(self.pm.get_project_dir(name)))
-                for c in [x.strip() for x in class_text.split(",") if x.strip()]:
-                    lm.add_class(c)
+            parent_dir = dir_edit.text().strip() or None
+            self.pm.create_project(name, task_type, parent_dir=parent_dir)
             # For mixed classification, show paired image loader first
             if task_type == "混合分类":
                 dlg2 = MixedAddImagesDialog(self)
@@ -3908,6 +3917,11 @@ class MainWindow(QMainWindow):
             self.det_class_list.addItem(c)
 
 
+
+    def _open_resize_tool(self):
+        """Open the image resize tool dialog."""
+        dlg = ResizeToolDialog(self)
+        dlg.exec_()
     def _open_crop_tool(self):
         """Open the image crop tool dialog."""
         dlg = CropToolDialog(self)
