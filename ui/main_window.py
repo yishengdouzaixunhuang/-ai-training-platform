@@ -3763,6 +3763,9 @@ class MainWindow(QMainWindow):
             return
         import shutil
         count = 0
+        label_map = {}       # image_name -> category
+        split_map = {}        # image_name -> train/val/test
+        img_sizes = {}        # image_name -> (w, h)
         for f in os.listdir(folder):
             if f.lower().endswith(".json"):
                 src = os.path.join(folder, f)
@@ -3777,9 +3780,54 @@ class MainWindow(QMainWindow):
                                         os.path.splitext(os.path.basename(img_path))[0] + ".json")
                     shutil.copy2(src, dest)
                     count += 1
+                    base = os.path.splitext(img_name)[0]
+                    # Extract classification label and split from iSenseFlow format
+                    base_data = data.get("baseData", [])
+                    if base_data and isinstance(base_data, list):
+                        cat = base_data[0].get("category", "")
+                        ds = base_data[0].get("dataSet", "")
+                        if cat:
+                            label_map[f"images/{img_name}"] = cat
+                        if ds:
+                            split_map[base] = ds.lower()
+                    # Image dimensions
+                    iw = data.get("imageWidth", 0)
+                    ih = data.get("imageHeight", 0)
+                    if iw and ih:
+                        img_sizes[base] = (iw, ih)
                 except Exception:
                     pass
+        
+        ann_dir = os.path.join(project_dir, "annotations")
+        os.makedirs(ann_dir, exist_ok=True)
+        
+        # Generate class_labels.json
+        if label_map:
+            labels_list = sorted(set(label_map.values()))
+            # Map image_name -> label_id
+            mapping = {}
+            for k, v in label_map.items():
+                mapping[k] = labels_list.index(v)
+                # Also add without "images/" prefix
+                short_key = os.path.basename(k)
+                mapping[short_key] = labels_list.index(v)
+            lbl_path = os.path.join(ann_dir, "class_labels.json")
+            with open(lbl_path, "w", encoding="utf-8") as lf:
+                json.dump({"labels": labels_list, "mapping": mapping}, lf, indent=2, ensure_ascii=False)
+            self.log(f"Updated class_labels.json: {labels_list} ({len(label_map)} images)")
+        
+        # Generate train_test_split.json
+        if split_map:
+            split_path = os.path.join(project_dir, "train_test_split.json")
+            with open(split_path, "w", encoding="utf-8") as sf:
+                json.dump(split_map, sf, indent=2, ensure_ascii=False)
+            train_cnt = sum(1 for v in split_map.values() if v == "train")
+            val_cnt = sum(1 for v in split_map.values() if v == "val")
+            self.log(f"Updated train_test_split.json: {train_cnt} train, {val_cnt} val")
+        
         self.log(f"Batch imported {count} JSON files")
+        self._load_classification_labels()  # refresh _cached_classes
+        self._load_image_list_async()
 
     def _export_json(self):
         if self.canvas.image is None:

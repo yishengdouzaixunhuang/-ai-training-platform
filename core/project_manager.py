@@ -12,8 +12,8 @@ class ProjectManager:
         self._custom_dirs = self._load_custom_dirs()
     
     MIXED_CLS_LABEL = "????"
-    VALID_TASK_TYPES = ("????", "????", "????", "OCR????", "OCV????")
-    VALID_TASK_TYPES_FULL = ("????", "????", "????", "????", "OCR????", "OCV????")
+    VALID_TASK_TYPES = ("语义分割", "目标检测", "图像分类", "OCR文字识别", "OCV字符质检")
+    VALID_TASK_TYPES_FULL = ("语义分割", "目标检测", "图像分类", "混合分类", "OCR文字识别", "OCV字符质检")
 
     def _custom_registry_path(self):
         return self.workspace / ".custom_projects.json"
