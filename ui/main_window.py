@@ -392,6 +392,7 @@ class MainWindow(QMainWindow):
         self.image_list_widget.verticalHeader().setVisible(False)
         self.image_list_widget.verticalHeader().setDefaultSectionSize(22)
         self.image_list_widget.currentCellChanged.connect(self._on_current_cell_changed)
+        self.image_list_widget.itemSelectionChanged.connect(self._update_selection_count)
         self.image_list_widget.setContextMenuPolicy(Qt.CustomContextMenu)
         self.image_list_widget.customContextMenuRequested.connect(self._on_image_context_menu)
         self.image_list_widget.setColumnWidth(0, 40)
