@@ -703,11 +703,26 @@ class MainWindow(QMainWindow):
         cfl.addRow("Epochs:", self.cls_epochs_spin)
         self.cls_batch_spin = QSpinBox(); self.cls_batch_spin.setRange(1, 256); self.cls_batch_spin.setValue(32)
         cfl.addRow("Batch:", self.cls_batch_spin)
-        self.cls_img_size_spin = QSpinBox(); self.cls_img_size_spin.setRange(32, 512); self.cls_img_size_spin.setValue(224)
-        cfl.addRow("Image Size:", self.cls_img_size_spin)
         self.cls_full_img_check = QCheckBox("Full Image (no resize)")
-        self.cls_full_img_check.toggled.connect(lambda checked: self.cls_img_size_spin.setDisabled(checked))
         cfl.addRow("", self.cls_full_img_check)
+        hl_img_size = QHBoxLayout()
+        self.cls_img_w_spin = QSpinBox(); self.cls_img_w_spin.setRange(32, 4096); self.cls_img_w_spin.setValue(224)
+        self.cls_img_w_spin.setToolTip("Target width")
+        hl_img_size.addWidget(QLabel("W:"))
+        hl_img_size.addWidget(self.cls_img_w_spin)
+        self.cls_img_h_spin = QSpinBox(); self.cls_img_h_spin.setRange(32, 4096); self.cls_img_h_spin.setValue(224)
+        self.cls_img_h_spin.setToolTip("Target height")
+        hl_img_size.addWidget(QLabel("H:"))
+        hl_img_size.addWidget(self.cls_img_h_spin)
+        self.cls_img_link_btn = QPushButton("🔗"); self.cls_img_link_btn.setFixedWidth(30)
+        self.cls_img_link_btn.setCheckable(True); self.cls_img_link_btn.setChecked(True)
+        self.cls_img_link_btn.setToolTip("Lock aspect ratio")
+        self.cls_img_link_btn.toggled.connect(self._on_cls_img_link_toggled)
+        hl_img_size.addWidget(self.cls_img_link_btn)
+        self.cls_img_w_spin.valueChanged.connect(lambda: self._sync_img_size("w"))
+        self.cls_img_h_spin.valueChanged.connect(lambda: self._sync_img_size("h"))
+        cfl.addRow("Image Size:", hl_img_size)
+        self.cls_full_img_check.toggled.connect(lambda checked: (self.cls_img_w_spin.setDisabled(checked), self.cls_img_h_spin.setDisabled(checked)))
         self.cls_optim_combo = QComboBox()
         self.cls_optim_combo.addItems(["AdamW", "Adam", "SGD"])
         cfl.addRow("Optimizer:", self.cls_optim_combo)
@@ -2443,6 +2458,26 @@ class MainWindow(QMainWindow):
 
     # ============ Classification ============
 
+    def _on_cls_img_link_toggled(self, checked):
+        """Sync W/H spinboxes when link is on."""
+        if checked:
+            self._cls_img_ratio = self.cls_img_w_spin.value() / max(1, self.cls_img_h_spin.value())
+
+    def _sync_img_size(self, changed_spin):
+        """When link is on, keep the other spinbox in sync."""
+        if not self.cls_img_link_btn.isChecked():
+            return
+        if changed_spin == "w":
+            h = max(1, round(self.cls_img_w_spin.value() / max(0.001, self._cls_img_ratio)))
+            self.cls_img_h_spin.blockSignals(True)
+            self.cls_img_h_spin.setValue(h)
+            self.cls_img_h_spin.blockSignals(False)
+        else:
+            w = max(1, round(self.cls_img_h_spin.value() * self._cls_img_ratio))
+            self.cls_img_w_spin.blockSignals(True)
+            self.cls_img_w_spin.setValue(w)
+            self.cls_img_w_spin.blockSignals(False)
+
     def _start_cls_training(self):
         """Start classification model training."""
         if not self.current_project:
@@ -2451,9 +2486,10 @@ class MainWindow(QMainWindow):
         model_name = self.cls_model_combo.currentText()
         epochs = self.cls_epochs_spin.value()
         batch_size = self.cls_batch_spin.value()
-        image_size = self.cls_img_size_spin.value()
         if self.cls_full_img_check.isChecked():
             image_size = None
+        else:
+            image_size = (self.cls_img_w_spin.value(), self.cls_img_h_spin.value())
         lr = self.cls_lr_spin.value()
         optim_name = self.cls_optim_combo.currentText()
         loss_name = self.cls_loss_combo.currentText()
@@ -2478,6 +2514,7 @@ class MainWindow(QMainWindow):
         self.cls_train_status.setText("Preparing...")
         self._cls_stop_btn.setEnabled(True)
         self._stop_flag = False
+        self._cls_img_ratio = 1.0
 
         def run():
             try:
