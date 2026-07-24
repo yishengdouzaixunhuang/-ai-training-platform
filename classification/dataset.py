@@ -109,15 +109,17 @@ class ClassificationDataset(Dataset):
     - train/val split via train_test_split.json (same format as segmentation module)
     """
 
-    def __init__(self, project_dir, split="train", transform=None, image_size=224):
+    def __init__(self, project_dir, split="train", transform=None, image_size=224, scale_factor=1.0):
         self.project_dir = Path(project_dir)
         self.split = split
         self.image_size = image_size if (image_size is None or isinstance(image_size, (tuple, list))) else (image_size, image_size)
+        self.scale_factor = scale_factor
 
         split_map = _default_split_map(project_dir)
         pairs, class_names = _list_images_mapping(project_dir, split, split_map)
 
         self._pairs = pairs  # [(rel_path, abs_path, label_id), ...]
+        self._target_size = self._compute_target_size() if scale_factor != 1.0 else None
         self.class_names = class_names
         self.num_classes = len(class_names)
 
@@ -156,17 +158,48 @@ class ClassificationDataset(Dataset):
         else:
             self.transform = transform
 
+    def _compute_target_size(self):
+        """Find max dimensions across all images, scale by factor to get uniform target size."""
+        max_w, max_h = 0, 0
+        for _, abs_path, _ in self._pairs:
+            try:
+                with Image.open(abs_path) as img:
+                    w, h = img.size
+                max_w = max(max_w, w)
+                max_h = max(max_h, h)
+            except Exception:
+                pass
+        tw = max(int(max_w * self.scale_factor), 1)
+        th = max(int(max_h * self.scale_factor), 1)
+        return (tw, th)
+
     def __len__(self):
         return len(self._pairs)
 
     def __getitem__(self, idx):
         rel_path, abs_path, label = self._pairs[idx]
         image = Image.open(abs_path).convert("RGB")
+        # Pre-scale: all images to a uniform size based on the largest image
+        if self.scale_factor != 1.0:
+            image = image.resize(self._target_size, Image.BILINEAR)
         if self.transform:
             image = self.transform(image)
         return image, label
 
 
+
+def _preserve_test_entries(project_dir, split_map):
+    """Keep existing test entries from the old split file."""
+    split_path = Path(project_dir) / "train_test_split.json"
+    if split_path.exists():
+        try:
+            with open(split_path, "r", encoding="utf-8") as f:
+                old_split = json.load(f)
+            for k, v in old_split.items():
+                if v in ("test", "Test"):
+                    split_map[k] = "test"
+        except Exception:
+            pass
 def auto_split(project_dir, val_split=0.2, seed=42):
     """Generate train_test_split.json for classification projects.
 
@@ -227,6 +260,7 @@ def auto_split(project_dir, val_split=0.2, seed=42):
         for i, k in enumerate(keys):
             split_map[k] = "val" if i < n_val else "train"
 
+    _preserve_test_entries(project_dir, split_map)
     _save_split_map(project_dir, split_map)
     return split_map
 

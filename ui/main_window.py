@@ -1177,6 +1177,7 @@ class MainWindow(QMainWindow):
 
             # Auto-detect task type BEFORE async image scan
             # (prevents race condition where scan completes before _mixed_cls_mode is set)
+            self._load_classes()
             task_map = {"语义分割":"segmentation","目标检测":"detection","图像分类":"classification","混合分类":"mixed_classification","OCR文字识别":"ocr","OCV字符质检":"ocv"}
             config_path = os.path.join(self._project_dir, "project.json")
             if os.path.exists(config_path):
@@ -1190,7 +1191,6 @@ class MainWindow(QMainWindow):
                     pass
 
             self._load_image_list_async()
-            self._load_classes()
             self.log(f"Opened: {name}")
             self.setWindowTitle(f"{APP_NAME} - {name}")
         except Exception as e:
@@ -2625,6 +2625,29 @@ class MainWindow(QMainWindow):
                         except Exception as ex:
                             self.log_signal.emit(f"[{i+1}/{total}] {base}: FAILED - {ex}")
                         self.infer_progress_signal.emit(i + 1, total)
+                else:
+                    from classification.trainer import ClassificationTrainer
+                    ct = ClassificationTrainer(project_dir)
+                    ct.load_model(model_file)
+                    for i, img_path in enumerate(images):
+                        if self._stop_flag:
+                            self.log_signal.emit(f"Batch classification stopped at {i}/{total}")
+                            break
+                        base = os.path.splitext(os.path.basename(img_path))[0]
+                        t0 = time.time()
+                        try:
+                            result = ct.predict_single(img_path, model_file, top_k=top_k)
+                            elapsed = time.time() - t0
+                            if result and result.get("predictions"):
+                                pred = result["predictions"][0]
+                                results[base] = {"class": pred["class"], "confidence": pred["confidence"]}
+                                self.log_signal.emit(
+                                    f"[{i+1}/{total}] {base}: {pred["class"]} ({pred["confidence"]:.2%}, {elapsed:.2f}s)")
+                            else:
+                                self.log_signal.emit(f"[{i+1}/{total}] {base}: no result")
+                        except Exception as ex:
+                            self.log_signal.emit(f"[{i+1}/{total}] {base}: FAILED - {ex}")
+                        self.infer_progress_signal.emit(i + 1, total)
                 out_path = os.path.join(out_dir, "classification_results.json")
                 with open(out_path, "w", encoding="utf-8") as f:
                     _json.dump(results, f, indent=2, ensure_ascii=False)
@@ -3790,6 +3813,8 @@ class MainWindow(QMainWindow):
                             label_map[f"images/{img_name}"] = cat
                         if ds:
                             split_map[base] = ds.lower()
+                        else:
+                            split_map[base] = "test"  # unassigned -> test set
                     # Image dimensions
                     iw = data.get("imageWidth", 0)
                     ih = data.get("imageHeight", 0)

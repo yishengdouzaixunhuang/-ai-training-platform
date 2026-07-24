@@ -19,6 +19,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
+import sys
 from tqdm import tqdm
 
 from .dataset import (
@@ -174,7 +175,7 @@ class ClassificationTrainer:
             padded.append(img)
         return torch.stack(padded), torch.tensor(labels)
 
-    def train(self, epochs=50, batch_size=32, image_size=224,
+    def train(self, epochs=50, batch_size=32, image_size=224, scale_factor=1.0,
               loss_func="cross_entropy", optimizer="adam", lr=1e-4,
               pretrained=True, resume=False, k_folds=1,
               augment="none", use_amp=True,
@@ -261,7 +262,7 @@ class ClassificationTrainer:
             start_epoch = 0
 
         # Build datasets and dataloaders
-        self._prepare_data(batch_size, image_size)
+        self._prepare_data(batch_size, image_size, scale_factor)
 
         # Build loss function
         self._build_loss(loss_func)
@@ -338,18 +339,26 @@ class ClassificationTrainer:
         else:
             self.criterion = nn.CrossEntropyLoss()
 
-    def _prepare_data(self, batch_size, image_size):
+    def _prepare_data(self, batch_size, image_size, scale_factor=1.0):
         train_ds = ClassificationDataset(
-            str(self.project_dir), split="train", image_size=image_size
+            str(self.project_dir), split="train", image_size=image_size, scale_factor=scale_factor
         )
         val_ds = ClassificationDataset(
-            str(self.project_dir), split="val", image_size=image_size
+            str(self.project_dir), split="val", image_size=image_size, scale_factor=scale_factor
         )
 
         if len(train_ds) == 0:
             raise ValueError("Training set is empty!")
+        if len(val_ds) == 0 and len(train_ds) >= 2:
+            auto_split(str(self.project_dir), val_split=0.2)
+            train_ds = ClassificationDataset(
+                str(self.project_dir), split="train", image_size=image_size, scale_factor=scale_factor
+            )
+            val_ds = ClassificationDataset(
+                str(self.project_dir), split="val", image_size=image_size, scale_factor=scale_factor
+            )
         if len(val_ds) == 0:
-            raise ValueError("Validation set is empty! Use auto_split() first.")
+            raise ValueError("Validation set is empty! Not enough samples.")
 
         self.num_classes = train_ds.num_classes
         self.class_names = train_ds.class_names
@@ -378,7 +387,7 @@ class ClassificationTrainer:
         self.model.train()
         total_loss = 0.0
         batches = 0
-        pbar = tqdm(self.train_loader, desc="Training", ncols=80)
+        pbar = tqdm(self.train_loader, desc="Training", ncols=80, file=sys.stderr if sys.stderr else None, disable=sys.stderr is None)
 
         for images, labels in pbar:
             if self._stop_flag or (self._stop_check_fn and self._stop_check_fn()):
@@ -419,7 +428,7 @@ class ClassificationTrainer:
         correct = 0
         total = 0
 
-        pbar = tqdm(self.val_loader, desc="Validating", ncols=80)
+        pbar = tqdm(self.val_loader, desc="Validating", ncols=80, file=sys.stderr if sys.stderr else None, disable=sys.stderr is None)
         for images, labels in pbar:
             if self._stop_flag:
                 break
@@ -763,7 +772,7 @@ class DualClassificationTrainer:
         self.model.train()
         total_loss = 0
         batches = 0
-        pbar = tqdm(self.train_loader, desc="Train", ncols=80)
+        pbar = tqdm(self.train_loader, desc="Train", ncols=80, file=sys.stderr if sys.stderr else None, disable=sys.stderr is None)
         for (gray, height), labels in pbar:
             if self._stop_requested or (self._stop_check_fn and self._stop_check_fn()):
                 self._stop_requested = True
@@ -825,7 +834,7 @@ class DualClassificationTrainer:
                 self.model_name = ckpt.get("model_name", self.model_name)
                 self.history = ckpt.get("history", {"train_loss": [], "val_loss": [], "val_acc": []})
                 start_epoch = len(self.history.get("train_loss", []))
-                self._prepare_data(batch_size, image_size)
+                self._prepare_data(batch_size, image_size, scale_factor)
                 from .dual_model import create_dual_model
                 self.model = create_dual_model(self.model_name, self.num_classes).to(self.device)
                 self.model.load_state_dict(ckpt["model_state_dict"], strict=False)
