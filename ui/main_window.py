@@ -703,26 +703,6 @@ class MainWindow(QMainWindow):
         cfl.addRow("Epochs:", self.cls_epochs_spin)
         self.cls_batch_spin = QSpinBox(); self.cls_batch_spin.setRange(1, 256); self.cls_batch_spin.setValue(32)
         cfl.addRow("Batch:", self.cls_batch_spin)
-        self.cls_full_img_check = QCheckBox("Full Image (no resize)")
-        cfl.addRow("", self.cls_full_img_check)
-        hl_img_size = QHBoxLayout()
-        self.cls_img_w_spin = QSpinBox(); self.cls_img_w_spin.setRange(32, 4096); self.cls_img_w_spin.setValue(224)
-        self.cls_img_w_spin.setToolTip("Target width")
-        hl_img_size.addWidget(QLabel("W:"))
-        hl_img_size.addWidget(self.cls_img_w_spin)
-        self.cls_img_h_spin = QSpinBox(); self.cls_img_h_spin.setRange(32, 4096); self.cls_img_h_spin.setValue(224)
-        self.cls_img_h_spin.setToolTip("Target height")
-        hl_img_size.addWidget(QLabel("H:"))
-        hl_img_size.addWidget(self.cls_img_h_spin)
-        self.cls_img_link_btn = QPushButton("🔗"); self.cls_img_link_btn.setFixedWidth(30)
-        self.cls_img_link_btn.setCheckable(True); self.cls_img_link_btn.setChecked(True)
-        self.cls_img_link_btn.setToolTip("Lock aspect ratio")
-        self.cls_img_link_btn.toggled.connect(self._on_cls_img_link_toggled)
-        hl_img_size.addWidget(self.cls_img_link_btn)
-        self.cls_img_w_spin.valueChanged.connect(lambda: self._sync_img_size("w"))
-        self.cls_img_h_spin.valueChanged.connect(lambda: self._sync_img_size("h"))
-        cfl.addRow("Image Size:", hl_img_size)
-        self.cls_full_img_check.toggled.connect(lambda checked: (self.cls_img_w_spin.setDisabled(checked), self.cls_img_h_spin.setDisabled(checked)))
         self.cls_optim_combo = QComboBox()
         self.cls_optim_combo.addItems(["AdamW", "Adam", "SGD"])
         cfl.addRow("Optimizer:", self.cls_optim_combo)
@@ -736,6 +716,25 @@ class MainWindow(QMainWindow):
         self.cls_augment_combo.addItems(["none", "light", "medium", "heavy"])
         self.cls_augment_combo.setCurrentText("medium")
         cfl.addRow("Augment:", self.cls_augment_combo)
+        hl_scale = QHBoxLayout()
+        self.cls_scale_w_spin = QDoubleSpinBox(); self.cls_scale_w_spin.setRange(0.1, 1.0); self.cls_scale_w_spin.setSingleStep(0.05)
+        self.cls_scale_w_spin.setDecimals(2); self.cls_scale_w_spin.setValue(1.0)
+        self.cls_scale_w_spin.setToolTip("Width scale factor (0.1~1.0)")
+        hl_scale.addWidget(QLabel("W:"))
+        hl_scale.addWidget(self.cls_scale_w_spin)
+        self.cls_scale_h_spin = QDoubleSpinBox(); self.cls_scale_h_spin.setRange(0.1, 1.0); self.cls_scale_h_spin.setSingleStep(0.05)
+        self.cls_scale_h_spin.setDecimals(2); self.cls_scale_h_spin.setValue(1.0)
+        self.cls_scale_h_spin.setToolTip("Height scale factor (0.1~1.0)")
+        hl_scale.addWidget(QLabel("H:"))
+        hl_scale.addWidget(self.cls_scale_h_spin)
+        self.cls_scale_link_btn = QPushButton("🔗"); self.cls_scale_link_btn.setFixedWidth(30)
+        self.cls_scale_link_btn.setCheckable(True); self.cls_scale_link_btn.setChecked(True)
+        self.cls_scale_link_btn.setToolTip("Lock W/H ratio")
+        self.cls_scale_link_btn.toggled.connect(self._on_cls_scale_link_toggled)
+        hl_scale.addWidget(self.cls_scale_link_btn)
+        self.cls_scale_w_spin.valueChanged.connect(lambda: self._sync_cls_scale("w"))
+        self.cls_scale_h_spin.valueChanged.connect(lambda: self._sync_cls_scale("h"))
+        cfl.addRow("Pre-Scale:", hl_scale)
         self.cls_amp_check = QCheckBox("AMP (mixed precision)"); self.cls_amp_check.setChecked(True)
         cfl.addRow("", self.cls_amp_check)
         self.cls_kfold_spin = QSpinBox(); self.cls_kfold_spin.setRange(1, 10); self.cls_kfold_spin.setValue(1)
@@ -2458,25 +2457,28 @@ class MainWindow(QMainWindow):
 
     # ============ Classification ============
 
-    def _on_cls_img_link_toggled(self, checked):
-        """Sync W/H spinboxes when link is on."""
-        if checked:
-            self._cls_img_ratio = self.cls_img_w_spin.value() / max(1, self.cls_img_h_spin.value())
+    def _on_cls_scale_link_toggled(self, checked):
+        """Sync W/H scale spinboxes when link is on."""
+        if checked and self.cls_scale_h_spin.value() > 0:
+            self._cls_scale_ratio = self.cls_scale_w_spin.value() / self.cls_scale_h_spin.value()
 
-    def _sync_img_size(self, changed_spin):
-        """When link is on, keep the other spinbox in sync."""
-        if not self.cls_img_link_btn.isChecked():
+    def _sync_cls_scale(self, changed):
+        """When link is on, keep the other scale spinbox in sync."""
+        if not self.cls_scale_link_btn.isChecked():
             return
-        if changed_spin == "w":
-            h = max(1, round(self.cls_img_w_spin.value() / max(0.001, self._cls_img_ratio)))
-            self.cls_img_h_spin.blockSignals(True)
-            self.cls_img_h_spin.setValue(h)
-            self.cls_img_h_spin.blockSignals(False)
+        ratio = getattr(self, "_cls_scale_ratio", 1.0)
+        if changed == "w":
+            h = round(self.cls_scale_w_spin.value() / max(0.001, ratio), 2)
+            h = max(0.1, min(1.0, h))
+            self.cls_scale_h_spin.blockSignals(True)
+            self.cls_scale_h_spin.setValue(h)
+            self.cls_scale_h_spin.blockSignals(False)
         else:
-            w = max(1, round(self.cls_img_h_spin.value() * self._cls_img_ratio))
-            self.cls_img_w_spin.blockSignals(True)
-            self.cls_img_w_spin.setValue(w)
-            self.cls_img_w_spin.blockSignals(False)
+            w = round(self.cls_scale_h_spin.value() * ratio, 2)
+            w = max(0.1, min(1.0, w))
+            self.cls_scale_w_spin.blockSignals(True)
+            self.cls_scale_w_spin.setValue(w)
+            self.cls_scale_w_spin.blockSignals(False)
 
     def _start_cls_training(self):
         """Start classification model training."""
@@ -2486,10 +2488,10 @@ class MainWindow(QMainWindow):
         model_name = self.cls_model_combo.currentText()
         epochs = self.cls_epochs_spin.value()
         batch_size = self.cls_batch_spin.value()
-        if self.cls_full_img_check.isChecked():
-            image_size = None
-        else:
-            image_size = (self.cls_img_w_spin.value(), self.cls_img_h_spin.value())
+        scale_w = self.cls_scale_w_spin.value()
+        scale_h = self.cls_scale_h_spin.value()
+        scale_factor = (scale_w, scale_h) if scale_w != 1.0 or scale_h != 1.0 else 1.0
+        image_size = None  # let dataset handle via scale_factor
         lr = self.cls_lr_spin.value()
         optim_name = self.cls_optim_combo.currentText()
         loss_name = self.cls_loss_combo.currentText()
@@ -2514,7 +2516,7 @@ class MainWindow(QMainWindow):
         self.cls_train_status.setText("Preparing...")
         self._cls_stop_btn.setEnabled(True)
         self._stop_flag = False
-        self._cls_img_ratio = 1.0
+        self._cls_scale_ratio = 1.0
 
         def run():
             try:
@@ -2534,7 +2536,7 @@ class MainWindow(QMainWindow):
                 self._cls_trainer.train(
                     epochs=epochs, batch_size=batch_size, lr=lr,
                     optimizer=optim_name, loss_func=loss_name,
-                    image_size=image_size, use_amp=use_amp,
+                    image_size=image_size, scale_factor=scale_factor, use_amp=use_amp,
                     augment=augment, k_folds=k_folds, resume=resume,
                     weight_decay=weight_decay, momentum=momentum_val,
                     label_smoothing=label_smoothing, focal_gamma=focal_gamma,

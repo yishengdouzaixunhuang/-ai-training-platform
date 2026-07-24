@@ -159,7 +159,11 @@ class ClassificationDataset(Dataset):
             self.transform = transform
 
     def _compute_target_size(self):
-        """Find max dimensions across all images, scale by factor to get uniform target size."""
+        """Compute target size from scale_factor.
+        If scale_factor is a tuple (sw, sh), use per-image scaling in __getitem__.
+        If float, compute uniform target from max dimensions."""
+        if isinstance(self.scale_factor, (tuple, list)):
+            return None  # per-image scaling
         max_w, max_h = 0, 0
         for _, abs_path, _ in self._pairs:
             try:
@@ -179,8 +183,12 @@ class ClassificationDataset(Dataset):
     def __getitem__(self, idx):
         rel_path, abs_path, label = self._pairs[idx]
         image = Image.open(abs_path).convert("RGB")
-        # Pre-scale: all images to a uniform size based on the largest image
-        if self.scale_factor != 1.0:
+        # Pre-scale
+        if isinstance(self.scale_factor, (tuple, list)):
+            sw, sh = self.scale_factor
+            w, h = image.size
+            image = image.resize((max(1, int(w * sw)), max(1, int(h * sh))), Image.BILINEAR)
+        elif self.scale_factor != 1.0 and self._target_size is not None:
             image = image.resize(self._target_size, Image.BILINEAR)
         if self.transform:
             image = self.transform(image)
