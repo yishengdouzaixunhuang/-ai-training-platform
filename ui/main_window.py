@@ -1288,6 +1288,7 @@ class MainWindow(QMainWindow):
             self._load_classification_labels()
             self._refresh_cls_model_list()
             self._filter_images(self.search_input.text())
+            self._restore_confusion_matrix()
             self._right_stack.setCurrentIndex(7)
         elif task == "mixed_classification":
             self._detection_mode = False
@@ -1303,6 +1304,7 @@ class MainWindow(QMainWindow):
             self._load_classification_labels()
             self._refresh_cls_model_list()
             self._filter_images(self.search_input.text())
+            self._restore_confusion_matrix()
             self._right_stack.setCurrentIndex(7)
         elif task == "ocr":
             self._detection_mode = False
@@ -2888,6 +2890,13 @@ class MainWindow(QMainWindow):
                     self.cls_eval_status.setText("Acc: {:.2%}  ({}/{} matched)".format(acc, matched, total_matched))
                     # Store per-image mapping for click-to-filter
                     self._cls_cm_data = {"cm": cm_display, "names": display_names, "gt_map": gt_map, "pred_map": pred_map}
+                    # Persist to disk
+                    cm_path = os.path.join(out_dir, "confusion_matrix.json")
+                    try:
+                        with open(cm_path, "w", encoding="utf-8") as cmf:
+                            json.dump(self._cls_cm_data, cmf, indent=2, ensure_ascii=False)
+                    except Exception:
+                        pass
                     self.cls_cm_table.cellClicked.disconnect() if self.cls_cm_table.receivers(self.cls_cm_table.cellClicked) > 0 else None
                     self.cls_cm_table.cellClicked.connect(self._on_cm_cell_clicked)
                 except Exception as ex:
@@ -3370,6 +3379,59 @@ class MainWindow(QMainWindow):
         self.cls_cm_table.setItem(n, n, item)
         self.cls_cm_table.resizeColumnsToContents()
         self.cls_eval_status.setText(f"Top-1: {acc:.2%}")
+
+    def _restore_confusion_matrix(self):
+        """Restore confusion matrix from disk after project open."""
+        if not self.current_project:
+            return
+        project_dir = str(self.pm.get_project_dir(self.current_project["name"]))
+        cm_path = os.path.join(project_dir, "outputs", "classification", "confusion_matrix.json")
+        if not os.path.exists(cm_path):
+            return
+        try:
+            with open(cm_path, "r", encoding="utf-8") as cmf:
+                data = json.load(cmf)
+            cm = data.get("cm", [])
+            names = data.get("names", [])
+            gt_map = data.get("gt_map", {})
+            pred_map = data.get("pred_map", {})
+            if not cm or not names:
+                return
+            n = len(names)
+            self.cls_cm_table.setRowCount(n + 1)
+            self.cls_cm_table.setColumnCount(n + 1)
+            headers = names + ["Total"]
+            self.cls_cm_table.setHorizontalHeaderLabels(headers)
+            self.cls_cm_table.setVerticalHeaderLabels(names + ["Total"])
+            row_sums = [sum(row) for row in cm]
+            col_sums = [sum(cm[r][c] for r in range(n)) for c in range(n)]
+            cm_total = sum(row_sums)
+            for i in range(n):
+                for j in range(n):
+                    item = QTableWidgetItem(str(cm[i][j]))
+                    item.setTextAlignment(Qt.AlignCenter)
+                    if i == j:
+                        item.setBackground(QColor(180, 255, 180))
+                    self.cls_cm_table.setItem(i, j, item)
+                item = QTableWidgetItem(str(row_sums[i]))
+                item.setTextAlignment(Qt.AlignCenter)
+                self.cls_cm_table.setItem(i, n, item)
+            for j in range(n):
+                item = QTableWidgetItem(str(col_sums[j]))
+                item.setTextAlignment(Qt.AlignCenter)
+                self.cls_cm_table.setItem(n, j, item)
+            item = QTableWidgetItem(str(cm_total))
+            item.setTextAlignment(Qt.AlignCenter)
+            self.cls_cm_table.setItem(n, n, item)
+            self.cls_cm_table.resizeColumnsToContents()
+            self._cls_cm_data = data
+            self.cls_cm_table.cellClicked.disconnect() if self.cls_cm_table.receivers(self.cls_cm_table.cellClicked) > 0 else None
+            self.cls_cm_table.cellClicked.connect(self._on_cm_cell_clicked)
+            matched = sum(cm[i][i] for i in range(n))
+            acc = matched / cm_total if cm_total > 0 else 0
+            self.cls_eval_status.setText("Acc: {:.2%}  ({}/{} matched)".format(acc, matched, cm_total))
+        except Exception:
+            pass
 
     def _on_cm_cell_clicked(self, row, col):
         """Filter image list when clicking a confusion matrix cell."""
