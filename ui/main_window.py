@@ -1873,7 +1873,7 @@ class MainWindow(QMainWindow):
 
     def _update_selection_count(self):
         """Update list_status with current selection count."""
-        selected = len(self.image_list_widget.selectedItems())
+        selected = len(set(idx.row() for idx in self.image_list_widget.selectedIndexes()))
         current_text = self.list_status.text()
         if " | Selected:" in current_text:
             current_text = current_text[:current_text.rfind(" | Selected:")]
@@ -3389,7 +3389,9 @@ class MainWindow(QMainWindow):
                         break
         if matched:
             self._cm_filter_bases = set(matched)
+            self.search_input.blockSignals(True)
             self.search_input.setText("")
+            self.search_input.blockSignals(False)
             self._filter_images("")
             self._cm_filter_bases = None
         self.log(f"CM click: {gt_cls}->{pred_cls} = {len(matched)} images")
