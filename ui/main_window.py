@@ -1784,6 +1784,7 @@ class MainWindow(QMainWindow):
         else:
             parts2.append(f"Classes: {len(getattr(self, '_cached_classes', []))}")
         self.list_status.setText(" | ".join(parts2))
+        self._update_selection_count()
 
         # Update accordion header counts
         self._update_accordion_counts(
@@ -1870,6 +1871,16 @@ class MainWindow(QMainWindow):
         self._current_page = 0
         self._render_page()
 
+    def _update_selection_count(self):
+        """Update list_status with current selection count."""
+        selected = len(self.image_list_widget.selectedItems())
+        current_text = self.list_status.text()
+        if " | Selected:" in current_text:
+            current_text = current_text[:current_text.rfind(" | Selected:")]
+        if selected > 0:
+            current_text += f" | Selected: {selected}"
+        self.list_status.setText(current_text)
+
     def _on_current_cell_changed(self, currentRow, currentColumn, previousRow, previousColumn):
         """Handle mouse click and keyboard navigation in image list."""
         if getattr(self, "_suppress_cell_change", False):
@@ -1879,7 +1890,7 @@ class MainWindow(QMainWindow):
             path = item.data(Qt.UserRole) if item else None
             if path and os.path.exists(path):
                 self._load_image_by_index(currentRow)
-
+        self._update_selection_count()
 
 
     def eventFilter(self, obj, event):
@@ -2528,6 +2539,38 @@ class MainWindow(QMainWindow):
         self._mixed_cls_mode = checked
         if checked:
             self.log("Mixed mode ON: using grayscale + height map pairs")
+
+    def _update_cls_loss_curve(self):
+        """Update classification loss/acc curve from training history."""
+        if not hasattr(self, "_cls_trainer") or self._cls_trainer is None:
+            return
+        history = getattr(self._cls_trainer, "history", None)
+        if history is None:
+            return
+        train_loss = history.get("train_loss", [])
+        val_loss = history.get("val_loss", [])
+        val_acc = history.get("val_acc", [])
+        if not train_loss:
+            return
+        self.cls_loss_canvas.setVisible(True)
+        ax = self.cls_loss_ax
+        ax.clear()
+        epochs = list(range(1, len(train_loss) + 1))
+        ax.plot(epochs, train_loss, "b-", label="Train Loss", alpha=0.6)
+        if val_loss:
+            ax.plot(epochs, val_loss, "r-", label="Val Loss", alpha=0.6)
+        if val_acc:
+            ax2 = ax.twinx()
+            ax2.plot(epochs, val_acc, "g-", label="Val Acc", alpha=0.8)
+            ax2.set_ylabel("Accuracy")
+            ax2.set_ylim(0, 1.05)
+            ax2.legend(loc="upper right")
+        ax.set_xlabel("Epoch")
+        ax.set_ylabel("Loss")
+        ax.legend(loc="upper left")
+        ax.grid(True, alpha=0.3)
+        self.cls_loss_canvas.figure.tight_layout(pad=0.5)
+        self.cls_loss_canvas.draw()
 
     def _refresh_cls_model_list(self):
         """Refresh classification model list for inference."""
