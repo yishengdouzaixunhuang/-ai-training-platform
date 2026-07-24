@@ -727,6 +727,46 @@ class MainWindow(QMainWindow):
         cfl.addRow("K-Fold:", self.cls_kfold_spin)
         self.cls_resume_check = QCheckBox("Resume from last")
         cfl.addRow("", self.cls_resume_check)
+
+        # --- Hyperparameters ---
+        self.cls_wd_spin = QDoubleSpinBox(); self.cls_wd_spin.setRange(0, 0.1); self.cls_wd_spin.setSingleStep(0.0001)
+        self.cls_wd_spin.setDecimals(5); self.cls_wd_spin.setValue(0.0001)
+        self.cls_wd_spin.setToolTip("L2 regularization strength (0 = off)")
+        cfl.addRow("Weight Decay:", self.cls_wd_spin)
+
+        self.cls_momentum_spin = QDoubleSpinBox(); self.cls_momentum_spin.setRange(0, 0.999); self.cls_momentum_spin.setSingleStep(0.1)
+        self.cls_momentum_spin.setDecimals(3); self.cls_momentum_spin.setValue(0.9)
+        self.cls_momentum_spin.setToolTip("SGD momentum (ignored for Adam/AdamW)")
+        cfl.addRow("Momentum:", self.cls_momentum_spin)
+
+        self.cls_ls_spin = QDoubleSpinBox(); self.cls_ls_spin.setRange(0, 0.5); self.cls_ls_spin.setSingleStep(0.05)
+        self.cls_ls_spin.setDecimals(2); self.cls_ls_spin.setValue(0.1)
+        self.cls_ls_spin.setToolTip("Label smoothing epsilon (0 = hard labels)")
+        cfl.addRow("Label Smooth:", self.cls_ls_spin)
+
+        self.cls_focal_gamma_spin = QDoubleSpinBox(); self.cls_focal_gamma_spin.setRange(0.5, 5.0); self.cls_focal_gamma_spin.setSingleStep(0.5)
+        self.cls_focal_gamma_spin.setDecimals(1); self.cls_focal_gamma_spin.setValue(2.0)
+        self.cls_focal_gamma_spin.setToolTip("Focal loss gamma (higher = more focus on hard samples)")
+        cfl.addRow("Focal Gamma:", self.cls_focal_gamma_spin)
+
+        self.cls_dropout_spin = QDoubleSpinBox(); self.cls_dropout_spin.setRange(0, 0.8); self.cls_dropout_spin.setSingleStep(0.1)
+        self.cls_dropout_spin.setDecimals(2); self.cls_dropout_spin.setValue(0.0)
+        self.cls_dropout_spin.setToolTip("Dropout rate in classifier head (0 = off)")
+        cfl.addRow("Dropout:", self.cls_dropout_spin)
+
+        self.cls_scheduler_combo = QComboBox()
+        self.cls_scheduler_combo.addItems(["none", "step", "cosine", "plateau"])
+        self.cls_scheduler_combo.setToolTip("LR scheduler type")
+        cfl.addRow("LR Scheduler:", self.cls_scheduler_combo)
+
+        self.cls_warmup_spin = QSpinBox(); self.cls_warmup_spin.setRange(0, 50); self.cls_warmup_spin.setValue(0)
+        self.cls_warmup_spin.setToolTip("Linear LR warmup epochs (0 = off)")
+        cfl.addRow("Warmup Epochs:", self.cls_warmup_spin)
+
+        self.cls_early_stop_spin = QSpinBox(); self.cls_early_stop_spin.setRange(0, 200); self.cls_early_stop_spin.setValue(0)
+        self.cls_early_stop_spin.setToolTip("Stop if val loss not improved for N epochs (0 = off)")
+        cfl.addRow("Early Stop:", self.cls_early_stop_spin)
+
         ctl.addLayout(cfl)
         ctl.addWidget(QPushButton("Start Training", clicked=self._start_cls_training))
         ctl.addWidget(QLabel("<b>Loss / Accuracy Curve</b>"))
@@ -2408,6 +2448,14 @@ class MainWindow(QMainWindow):
         k_folds = self.cls_kfold_spin.value()
         resume = self.cls_resume_check.isChecked()
         mixed_mode = self.cls_mixed_check.isChecked()
+        weight_decay = self.cls_wd_spin.value()
+        momentum_val = self.cls_momentum_spin.value()
+        label_smoothing = self.cls_ls_spin.value()
+        focal_gamma = self.cls_focal_gamma_spin.value()
+        dropout = self.cls_dropout_spin.value()
+        lr_scheduler = self.cls_scheduler_combo.currentText()
+        warmup_epochs = self.cls_warmup_spin.value()
+        early_stop_patience = self.cls_early_stop_spin.value()
 
         mode_label = "Mixed Classification" if mixed_mode else "Classification"
         self.log(f"{mode_label}: {model_name}, {epochs} epochs, batch={batch_size}, lr={lr}")
@@ -2437,6 +2485,11 @@ class MainWindow(QMainWindow):
                     optimizer=optim_name, loss_func=loss_name,
                     image_size=image_size, use_amp=use_amp,
                     augment=augment, k_folds=k_folds, resume=resume,
+                    weight_decay=weight_decay, momentum=momentum_val,
+                    label_smoothing=label_smoothing, focal_gamma=focal_gamma,
+                    dropout=dropout,
+                    lr_scheduler=lr_scheduler, warmup_epochs=warmup_epochs,
+                    early_stop_patience=early_stop_patience,
                     progress_callback=epoch_cb, stop_check=stop_check,
                     log_callback=lambda msg: self.log_signal.emit(msg),
                     plot_callback=lambda h: self.chart_signal.emit(h),

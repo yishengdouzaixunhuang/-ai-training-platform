@@ -70,7 +70,7 @@ class FocalLoss(nn.Module):
 
 
 # ── Model factory ───────────────────────────────────────────────────────
-def _create_classification_model(model_name, num_classes, pretrained=True):
+def _create_classification_model(model_name, num_classes, pretrained=True, dropout=0.0):
     """Create a classification model by name."""
     cfg = CLS_MODELS.get(model_name, CLS_MODELS["resnet18"])
     family = cfg["family"]
@@ -83,7 +83,13 @@ def _create_classification_model(model_name, num_classes, pretrained=True):
         model = model_fn(weights="DEFAULT" if pretrained else None)
         # Replace final FC
         in_features = model.fc.in_features
-        model.fc = nn.Linear(in_features, num_classes)
+        if dropout > 0:
+            model.fc = nn.Sequential(
+                nn.Dropout(dropout),
+                nn.Linear(in_features, num_classes)
+            )
+        else:
+            model.fc = nn.Linear(in_features, num_classes)
 
     elif family == "efficientnet":
         import torchvision.models as models
@@ -97,7 +103,13 @@ def _create_classification_model(model_name, num_classes, pretrained=True):
             model_fn = models.efficientnet_b0
         model = model_fn(weights="DEFAULT" if pretrained else None)
         in_features = model.classifier[1].in_features
-        model.classifier[1] = nn.Linear(in_features, num_classes)
+        if dropout > 0:
+            model.classifier[1] = nn.Sequential(
+                nn.Dropout(dropout),
+                nn.Linear(in_features, num_classes)
+            )
+        else:
+            model.classifier[1] = nn.Linear(in_features, num_classes)
 
     elif family == "mobilenet":
         import torchvision.models as models
@@ -106,7 +118,13 @@ def _create_classification_model(model_name, num_classes, pretrained=True):
             model_fn = models.mobilenet_v2
         model = model_fn(weights="DEFAULT" if pretrained else None)
         in_features = model.classifier[1].in_features
-        model.classifier[1] = nn.Linear(in_features, num_classes)
+        if dropout > 0:
+            model.classifier[1] = nn.Sequential(
+                nn.Dropout(dropout),
+                nn.Linear(in_features, num_classes)
+            )
+        else:
+            model.classifier[1] = nn.Linear(in_features, num_classes)
 
     elif family == "mobilenet3":
         import torchvision.models as models
@@ -115,7 +133,13 @@ def _create_classification_model(model_name, num_classes, pretrained=True):
             model_fn = models.mobilenet_v3_large
         model = model_fn(weights="DEFAULT" if pretrained else None)
         in_features = model.classifier[3].in_features
-        model.classifier[3] = nn.Linear(in_features, num_classes)
+        if dropout > 0:
+            model.classifier[3] = nn.Sequential(
+                nn.Dropout(dropout),
+                nn.Linear(in_features, num_classes)
+            )
+        else:
+            model.classifier[3] = nn.Linear(in_features, num_classes)
 
     elif family == "vit":
         import torchvision.models as models
@@ -124,7 +148,13 @@ def _create_classification_model(model_name, num_classes, pretrained=True):
             model_fn = models.vit_b_16
         model = model_fn(weights="DEFAULT" if pretrained else None)
         in_features = model.heads.head.in_features
-        model.heads.head = nn.Linear(in_features, num_classes)
+        if dropout > 0:
+            model.heads.head = nn.Sequential(
+                nn.Dropout(dropout),
+                nn.Linear(in_features, num_classes)
+            )
+        else:
+            model.heads.head = nn.Linear(in_features, num_classes)
 
     else:
         raise ValueError(f"Unknown model family: {family}")
@@ -179,6 +209,11 @@ class ClassificationTrainer:
               loss_func="cross_entropy", optimizer="adam", lr=1e-4,
               pretrained=True, resume=False, k_folds=1,
               augment="none", use_amp=True,
+              weight_decay=1e-4, momentum=0.9,
+              label_smoothing=0.1, focal_gamma=2.0,
+              dropout=0.0,
+              lr_scheduler="none", warmup_epochs=0,
+              early_stop_patience=0,
               progress_callback=None, log_callback=None,
               stop_check=None, plot_callback=None, batch_callback=None):
         """Train classification model.
@@ -210,6 +245,8 @@ class ClassificationTrainer:
             return self._train_kfold(
                 k_folds, epochs, batch_size, image_size,
                 loss_func, optimizer, lr, pretrained,
+                weight_decay, momentum, label_smoothing, focal_gamma,
+                dropout, lr_scheduler, warmup_epochs, early_stop_patience,
                 progress_callback, log_callback, stop_check,
                 plot_callback, batch_callback
             )
@@ -235,11 +272,11 @@ class ClassificationTrainer:
                 start_epoch = len(self.history.get("train_loss", []))
 
                 self.model = _create_classification_model(
-                    self.model_name, self.num_classes, pretrained=False
+                    self.model_name, self.num_classes, pretrained=False, dropout=dropout
                 ).to(self.device)
                 self.model.load_state_dict(ckpt["model_state_dict"])
                 self.model.train()
-                self._build_optimizer(optimizer, lr)
+                self._build_optimizer(optimizer, lr, weight_decay, momentum)
                 if "optimizer_state_dict" in ckpt:
                     try:
                         self.optimizer.load_state_dict(ckpt["optimizer_state_dict"])
@@ -256,16 +293,16 @@ class ClassificationTrainer:
 
         if not resume:
             self.model = _create_classification_model(
-                self.model_name, self.num_classes, pretrained=pretrained
+                self.model_name, self.num_classes, pretrained=pretrained, dropout=dropout
             ).to(self.device)
-            self._build_optimizer(optimizer, lr)
+            self._build_optimizer(optimizer, lr, weight_decay, momentum)
             start_epoch = 0
 
         # Build datasets and dataloaders
         self._prepare_data(batch_size, image_size, scale_factor)
 
         # Build loss function
-        self._build_loss(loss_func)
+        self._build_loss(loss_func, label_smoothing, focal_gamma)
 
         # Run epochs
         epochs_total = start_epoch + epochs
@@ -319,23 +356,23 @@ class ClassificationTrainer:
         self._stop_flag = True
 
     # ── Internal methods ────────────────────────────────────────────
-    def _build_optimizer(self, optimizer_name, lr):
+    def _build_optimizer(self, optimizer_name, lr, weight_decay=1e-4, momentum=0.9):
         if optimizer_name.lower() == "adam":
-            self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
+            self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr, weight_decay=weight_decay)
         elif optimizer_name.lower() == "adamw":
-            self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=lr, weight_decay=1e-4)
+            self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=lr, weight_decay=weight_decay)
         elif optimizer_name.lower() == "sgd":
-            self.optimizer = torch.optim.SGD(self.model.parameters(), lr=lr, momentum=0.9, weight_decay=1e-4)
+            self.optimizer = torch.optim.SGD(self.model.parameters(), lr=lr, momentum=momentum, weight_decay=weight_decay)
         else:
-            self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
+            self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr, weight_decay=weight_decay)
 
-    def _build_loss(self, loss_name):
+    def _build_loss(self, loss_name, label_smoothing=0.1, focal_gamma=2.0):
         if loss_name == "cross_entropy":
             self.criterion = nn.CrossEntropyLoss()
         elif loss_name == "label_smoothing":
-            self.criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
+            self.criterion = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
         elif loss_name == "focal":
-            self.criterion = FocalLoss()
+            self.criterion = FocalLoss(gamma=focal_gamma)
         else:
             self.criterion = nn.CrossEntropyLoss()
 
@@ -529,10 +566,10 @@ class ClassificationTrainer:
 
             # Re-init model per fold
             self.model = _create_classification_model(
-                self.model_name, self.num_classes, pretrained=pretrained
+                self.model_name, self.num_classes, pretrained=pretrained, dropout=dropout
             ).to(self.device)
             self._build_optimizer(optimizer, lr)
-            self._build_loss(loss_func)
+            self._build_loss(loss_func, label_smoothing, focal_gamma)
             self._stop_flag = False
 
             if log_callback:
