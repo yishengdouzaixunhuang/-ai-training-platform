@@ -1281,6 +1281,14 @@ class MainWindow(QMainWindow):
             # Restore classification training settings (Pre-Scale, etc.)
             if internal in ("classification", "mixed_classification"):
                 self._load_cls_train_settings()
+                self._load_cls_predictions()
+                # Restore heatmap display mode if auto-heatmap was on and heatmaps exist
+                if (not self._mixed_cls_mode
+                        and hasattr(self, "cls_auto_heatmap") and self.cls_auto_heatmap.isChecked()):
+                    hm_dir = os.path.join(self._project_dir, "outputs", "classification", "heatmaps")
+                    if os.path.isdir(hm_dir) and any(
+                            f.endswith("_heatmap.jpg") for f in os.listdir(hm_dir)):
+                        self.canvas._show_heatmap = True
             self._load_image_list_async()
             self.log(f"Opened: {name}")
             self.setWindowTitle(f"{APP_NAME} - {name}")
@@ -1991,6 +1999,34 @@ class MainWindow(QMainWindow):
         else:
             self.statusBar().showMessage("No heatmap file: " + os.path.basename(hm_file), 2000)
 
+    def _auto_load_heatmap_for_current(self):
+        """When heatmap display mode is ON, load heatmap for the current image.
+
+        Called after switching images so the heatmap view persists across images.
+        """
+        from PyQt5.QtGui import QImage
+        if not getattr(self, "_cls_mode", False):
+            return
+        current_path = getattr(self.canvas, "current_image_path", "")
+        if not current_path or not self.current_project:
+            return
+        base = os.path.splitext(os.path.basename(current_path))[0]
+        pd = str(self.pm.get_project_dir(self.current_project["name"]))
+        hm_file = os.path.join(pd, "outputs", "classification", "heatmaps", base + "_heatmap.jpg")
+        if not os.path.exists(hm_file):
+            self.statusBar().showMessage("No heatmap for: " + os.path.basename(current_path), 2000)
+            return
+        qimg = QImage(hm_file)
+        if qimg.isNull():
+            return
+        iw, ih = self.canvas.image.size
+        if qimg.width() != iw or qimg.height() != ih:
+            qimg = qimg.scaled(iw, ih)
+        self.canvas._heatmap_qimage = qimg.copy()
+        self.canvas._show_heatmap = True
+        self.canvas.update()
+        self.statusBar().showMessage("Heatmap: ON", 2000)
+
 
     def _on_image_item_clicked(self, row, col):
         item = self.image_list_widget.item(row, 0)
@@ -2247,6 +2283,9 @@ class MainWindow(QMainWindow):
                 else:
                     self.canvas.load_image(path)
                     self._viewer_stack.setCurrentIndex(0)
+                    # Keep heatmap display state when switching images
+                    if getattr(self.canvas, "_show_heatmap", False):
+                        self._auto_load_heatmap_for_current()
                 self._update_height_controls()
                 self._refresh_versions()
                 img = self.mixed_viewer._gray_image if _mixed else self.canvas.image
@@ -2562,6 +2601,38 @@ class MainWindow(QMainWindow):
                 self.cls_scale_h_spin.blockSignals(False)
         except Exception:
             pass
+
+    def _load_cls_predictions(self):
+        """Restore classification inference results from classification_results.json.
+
+        Called when opening a project so the Result column and heatmap state survive restarts.
+        """
+        if not self.current_project or not self._project_dir:
+            return
+        out_path = os.path.join(self._project_dir, "outputs", "classification", "classification_results.json")
+        if not os.path.exists(out_path):
+            return
+        try:
+            with open(out_path, "r", encoding="utf-8") as f:
+                results = json.load(f)
+        except Exception:
+            return
+        if not isinstance(results, dict) or not results:
+            return
+        self._cls_predictions = {}
+        img_dir = os.path.join(self._project_dir, "images")
+        for base, info in results.items():
+            if not isinstance(info, dict):
+                continue
+            found = False
+            for ext in (".bmp", ".png", ".jpg", ".jpeg"):
+                img_path = os.path.join(img_dir, base + ext)
+                if os.path.exists(img_path):
+                    self._cls_predictions[img_path] = info
+                    found = True
+                    break
+            self._cls_predictions[base] = info
+        self.log(f"Restored {len(results)} classification result(s)")
 
     def _start_cls_training(self):
         """Start classification model training."""
