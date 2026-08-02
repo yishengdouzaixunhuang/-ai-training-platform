@@ -844,6 +844,11 @@ class MainWindow(QMainWindow):
         cfl.addRow("Early Stop:", self.cls_early_stop_spin)
 
         ctl.addLayout(cfl)
+        self.cls_recommend_btn = QPushButton("🧠 智能推荐训练参数", clicked=self._open_cls_recommend)
+        self.cls_recommend_btn.setStyleSheet(
+            "QPushButton { background:#1565c0; color:white; font-weight:bold; padding:6px; }"
+            "QPushButton:hover { background:#1976d2; }")
+        ctl.addWidget(self.cls_recommend_btn)
         self._cls_start_btn = QPushButton("Start Training", clicked=self._start_cls_training)
         ctl.addWidget(self._cls_start_btn)
         # Loss/Acc curve now lives in an independent window
@@ -2635,6 +2640,57 @@ class MainWindow(QMainWindow):
                     break
             self._cls_predictions[base] = info
         self.log(f"Restored {len(results)} classification result(s)")
+
+    def _open_cls_recommend(self):
+        """打开智能推荐训练参数弹窗。"""
+        if not self.current_project:
+            return QMessageBox.warning(self, "Warning", "Please open a project first")
+        project_dir = str(self.pm.get_project_dir(self.current_project["name"]))
+        try:
+            from ui.recommend_dialog import RecommendationDialog
+        except Exception as e:
+            import traceback
+            self.log_signal.emit(f"推荐弹窗打开失败: {e}")
+            self.log_signal.emit(traceback.format_exc())
+            return
+        dlg = RecommendationDialog(project_dir, self)
+        dlg.apply_requested.connect(self._apply_cls_recommend)
+        dlg.exec_()
+
+    def _apply_cls_recommend(self, params, start):
+        """把推荐参数套用到训练面板控件。"""
+        try:
+            self.cls_model_combo.setCurrentText(params["model"])
+            self.cls_scale_w_spin.setValue(params["scale_w"])
+            self.cls_scale_h_spin.setValue(params["scale_h"])
+            self.cls_epochs_spin.setValue(params["epochs"])
+            self.cls_batch_spin.setValue(params["batch_size"])
+            self.cls_lr_spin.setValue(params["lr"])
+            self.cls_optim_combo.setCurrentText(params["optimizer"])
+            self.cls_loss_combo.setCurrentText(params["loss"])
+            self.cls_augment_combo.setCurrentText(params["augment"])
+            self.cls_amp_check.setChecked(params["use_amp"])
+            self.cls_kfold_spin.setValue(params["k_folds"])
+            self.cls_wd_spin.setValue(params["weight_decay"])
+            self.cls_momentum_spin.setValue(params["momentum"])
+            self.cls_ls_spin.setValue(params["label_smoothing"])
+            self.cls_focal_gamma_spin.setValue(params["focal_gamma"])
+            self.cls_dropout_spin.setValue(params["dropout"])
+            self.cls_scheduler_combo.setCurrentText(params["lr_scheduler"])
+            self.cls_warmup_spin.setValue(params["warmup_epochs"])
+            self.cls_early_stop_spin.setValue(params["early_stop_patience"])
+            self.cls_resume_check.setChecked(params["resume"])
+            self.log_signal.emit(
+                f"[智能推荐] 已套用: {params['model']}, {params['epochs']}ep, "
+                f"batch={params['batch_size']}, lr={params['lr']}, loss={params['loss']}, "
+                f"scale={params['scale_w']}x{params['scale_h']}")
+        except Exception as e:
+            import traceback
+            self.log_signal.emit(f"[智能推荐] 套用失败: {e}")
+            self.log_signal.emit(traceback.format_exc())
+            return
+        if start:
+            self._start_cls_training()
 
     def _start_cls_training(self):
         """Start classification model training."""
