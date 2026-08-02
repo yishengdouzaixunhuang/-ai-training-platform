@@ -17,12 +17,12 @@ from PyQt5.QtCore import QPointF, QRectF, Qt, pyqtSignal
 from PyQt5.QtGui import (QBrush, QColor, QFont, QPainter, QPainterPath,
                          QPen)
 from PyQt5.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox,
-                             QDoubleSpinBox, QFileDialog, QFormLayout,
+                             QDialog, QDoubleSpinBox, QFileDialog, QFormLayout,
                              QGraphicsItem, QGraphicsPathItem, QGraphicsScene,
                              QGraphicsView, QHBoxLayout, QLabel, QLineEdit,
                              QListWidget, QListWidgetItem, QMainWindow,
-                             QMessageBox, QSpinBox, QSplitter, QTextEdit,
-                             QToolBar, QVBoxLayout, QWidget,
+                             QMessageBox, QPushButton, QSpinBox, QSplitter,
+                             QTextEdit, QVBoxLayout, QWidget,
                              QGraphicsSceneMouseEvent)
 
 from flow.registry import create_node, list_nodes
@@ -461,15 +461,21 @@ class FlowEditorWidget(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
 
-        tb = QToolBar("Flow")
-        tb.setMovable(False)
-        tb.setStyleSheet("QToolBar { background: #2b2b30; border: none; padding: 4px; }")
-        act_open = tb.addAction("打开方案")
-        act_save = tb.addAction("保存方案")
-        tb.addSeparator()
-        act_run = tb.addAction("▶ 运行")
-        act_stop = tb.addAction("■ 停止")
-        act_pick = tb.addAction("选择输入图...")
+        tb = QWidget()
+        tb.setStyleSheet("QWidget { background: #2b2b30; }")
+        tbh = QHBoxLayout(tb)
+        tbh.setContentsMargins(6, 4, 6, 4)
+        tbh.setSpacing(6)
+        b_open = QPushButton("打开方案")
+        b_save = QPushButton("保存方案")
+        b_run = QPushButton("▶ 运行")
+        b_stop = QPushButton("■ 停止")
+        b_pick = QPushButton("选择输入图...")
+        for b in (b_open, b_save, b_run, b_stop, b_pick):
+            b.setStyleSheet("QPushButton { background:#3a3a42; color:#eee; border:1px solid #555; border-radius:3px; padding:4px 10px; }"
+                            "QPushButton:hover { background:#4a4a55; }")
+            tbh.addWidget(b)
+        tbh.addStretch(1)
         root.addWidget(tb)
 
         splitter = QSplitter(Qt.Horizontal)
@@ -506,11 +512,11 @@ class FlowEditorWidget(QWidget):
         self.log_view.setStyleSheet("QTextEdit { background: #101014; color: #9fe08a; font-family: Consolas; }")
         root.addWidget(self.log_view)
 
-        act_open.triggered.connect(self._open_flow)
-        act_save.triggered.connect(self._save_flow)
-        act_run.triggered.connect(self._run_flow)
-        act_stop.triggered.connect(self._stop_run)
-        act_pick.triggered.connect(self._pick_input)
+        b_open.clicked.connect(self._open_flow)
+        b_save.clicked.connect(self._save_flow)
+        b_run.clicked.connect(self._run_flow)
+        b_stop.clicked.connect(self._stop_run)
+        b_pick.clicked.connect(self._pick_input)
         self.scene.selectionChanged.connect(self._on_selection_changed)
 
     def _load_palette(self):
@@ -659,11 +665,13 @@ def _brief(result: dict) -> str:
     return ", ".join(parts) if parts else "(空)"
 
 
-class FlowEditorDialog(QMainWindow):
-    """以独立窗口打开的流程编辑器。"""
+class FlowEditorDialog(QDialog):
+    """以独立窗口打开的流程编辑器（QDialog 才有 exec_()）。"""
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("流程编辑器 - Vision Flow")
-        self.setCentralWidget(FlowEditorWidget(self))
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.addWidget(FlowEditorWidget(self))
         self.resize(1280, 820)

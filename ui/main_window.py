@@ -4339,9 +4339,23 @@ class MainWindow(QMainWindow):
             self.log_signal.emit(f"Flow Editor 打开失败: {e}")
             self.log_signal.emit(traceback.format_exc())
             return
-        dlg = FlowEditorDialog(self)
-        dlg.resize(1280, 820)
-        dlg.exec_()
+        try:
+            dlg = FlowEditorDialog(self)
+            dlg.resize(1280, 820)
+            dlg.exec_()
+        except Exception as e:
+            import traceback
+            self.log_signal.emit(f"Flow Editor 异常: {e}")
+            self.log_signal.emit(traceback.format_exc())
+            try:
+                crash_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                          os.pardir, "crash_log.txt")
+                with open(crash_path, "a", encoding="utf-8") as f:
+                    f.write("\n===== FLOW EDITOR @ %s =====\n"
+                            % __import__("datetime").datetime.now())
+                    traceback.print_exc(file=f)
+            except Exception:
+                pass
 
     def _open_crop_tool(self):
         """Open the image crop tool dialog."""
