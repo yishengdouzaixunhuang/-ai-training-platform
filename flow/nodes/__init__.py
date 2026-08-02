@@ -7,3 +7,4 @@ from . import segmentation  # noqa: F401
 from . import ocr  # noqa: F401
 from . import ocv  # noqa: F401
 from . import output  # noqa: F401
+from . import visualize  # noqa: F401
