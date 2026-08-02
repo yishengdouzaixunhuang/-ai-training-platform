@@ -1,0 +1,15 @@
+{
+  "name": "分类最小流程示例",
+  "version": 1,
+  "nodes": [
+    {"id": "src", "type": "file_source", "params": {"path": ""}},
+    {"id": "resize", "type": "resize", "params": {"scale_w": 0.5, "scale_h": 0.5}},
+    {"id": "cls", "type": "cls_infer", "params": {"project_dir": "D:/01_D盘/01_Arthur/23_Agent项目/柳州国轩_3期_正面铝极_区域2_极耳分类_AI训练平台_Arthur_20260717", "model_name": "best_model.pth", "top_k": 1}},
+    {"id": "out", "type": "result_to_json", "params": {"out_path": "results.jsonl"}}
+  ],
+  "edges": [
+    {"from": "src", "to": "resize"},
+    {"from": "resize", "to": "cls"},
+    {"from": "cls", "to": "out"}
+  ]
+}
