@@ -3,6 +3,14 @@ import sys
 import os
 import traceback
 
+# pythonw 无控制台时 sys.stdout/sys.stderr 为 None，
+# torch/tqdm 等第三方库直接 write 会 AttributeError 崩溃。
+# 统一重定向到空设备，避免 'NoneType' object has no attribute 'write'。
+if sys.stdout is None:
+    sys.stdout = open(os.devnull, "w", encoding="utf-8")
+if sys.stderr is None:
+    sys.stderr = open(os.devnull, "w", encoding="utf-8")
+
 # 关键：在 sys.path 修改前先导入 torch，避免工作目录 DLL 干扰
 import torch
 
