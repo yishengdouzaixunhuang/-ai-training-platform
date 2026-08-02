@@ -8,11 +8,16 @@ import torch
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from PyQt5.QtWidgets import QApplication
+from PyQt5.QtGui import QIcon
 from ui.main_window import MainWindow
 
 def main():
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
+
+    icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "resources", "app_icon.ico")
+    if os.path.exists(icon_path):
+        app.setWindowIcon(QIcon(icon_path))
     
     app.setStyleSheet("""
         QMainWindow { background: #f5f5f5; }
