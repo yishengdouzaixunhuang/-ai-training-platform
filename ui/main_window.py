@@ -38,6 +38,65 @@ from training.dataset import get_train_test_split, save_train_test_split
 from inference.predictor import Predictor
 from ui.system_monitor import SystemMonitor
 print("main_window imports OK")
+class LossCurveWindow(QWidget):
+    """Independent Loss/Accuracy curve window for classification training.
+
+    - Shown automatically when training starts
+    - Can be minimized / closed / reopened anytime
+    - Not affected by the collapsed sidebar panel
+    """
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Loss / Accuracy Curve")
+        self.resize(760, 480)
+        self.setWindowFlag(Qt.Window)
+        layout = QVBoxLayout(self)
+        self.canvas = FigureCanvas(Figure(figsize=(7, 4.5), dpi=100))
+        self.ax = self.canvas.figure.subplots()
+        self.ax.set_xlabel("Epoch")
+        self.ax.set_ylabel("Loss / Acc")
+        self.ax.grid(True, alpha=0.3)
+        self.canvas.figure.tight_layout(pad=0.5)
+        layout.addWidget(self.canvas)
+        self.setLayout(layout)
+
+    def update_curve(self, history):
+        """Redraw loss/acc curves from training history dict."""
+        train_loss = history.get("train_loss", [])
+        val_loss = history.get("val_loss", [])
+        val_acc = history.get("val_acc", [])
+        if not train_loss:
+            return
+        ax = self.ax
+        ax.clear()
+        epochs = list(range(1, len(train_loss) + 1))
+        ax.plot(epochs, train_loss, "b-", label="Train Loss", alpha=0.6)
+        if val_loss:
+            ax.plot(epochs, val_loss, "r-", label="Val Loss", alpha=0.6)
+        ax.set_xlabel("Epoch")
+        ax.set_ylabel("Loss", color="b")
+        ax.tick_params(axis="y", labelcolor="b")
+        ax.grid(True, alpha=0.3)
+        if val_acc:
+            ax2 = ax.twinx()
+            ax2.plot(epochs, val_acc, "g-", label="Val Acc", alpha=0.8)
+            ax2.set_ylabel("Accuracy", color="g")
+            ax2.tick_params(axis="y", labelcolor="g")
+            ax2.set_ylim(0, 1.05)
+            lines1, labels1 = ax.get_legend_handles_labels()
+            lines2, labels2 = ax2.get_legend_handles_labels()
+            ax.legend(lines1 + lines2, labels1 + labels2, loc="upper right", fontsize=8)
+        else:
+            ax.legend(loc="upper left")
+        self.canvas.figure.tight_layout(pad=0.5)
+        self.canvas.draw()
+
+    def closeEvent(self, event):
+        """Close button hides the window so it can be reopened later."""
+        self.hide()
+        event.ignore()
+
+
 class TrainSettingsDialog(QDialog):
     SETTINGS_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "AI_Training_Platform", ".train_settings.json")
 
@@ -783,15 +842,12 @@ class MainWindow(QMainWindow):
         cfl.addRow("Early Stop:", self.cls_early_stop_spin)
 
         ctl.addLayout(cfl)
-        ctl.addWidget(QPushButton("Start Training", clicked=self._start_cls_training))
-        ctl.addWidget(QLabel("<b>Loss / Accuracy Curve</b>"))
-        self.cls_loss_canvas = FigureCanvas(Figure(figsize=(4, 2.5), dpi=100))
-        self.cls_loss_ax = self.cls_loss_canvas.figure.subplots()
-        self.cls_loss_ax.set_xlabel("Epoch"); self.cls_loss_ax.set_ylabel("Loss / Acc")
-        self.cls_loss_ax.grid(True, alpha=0.3)
-        self.cls_loss_canvas.figure.tight_layout(pad=0.5)
-        ctl.addWidget(self.cls_loss_canvas)
-        self.cls_loss_canvas.setVisible(False)
+        self._cls_start_btn = QPushButton("Start Training", clicked=self._start_cls_training)
+        ctl.addWidget(self._cls_start_btn)
+        # Loss/Acc curve now lives in an independent window
+        self._cls_loss_window = LossCurveWindow(self)
+        self._cls_loss_open_btn = QPushButton("?? Open Loss/Acc Curve Window", clicked=self._show_cls_loss_window)
+        ctl.addWidget(self._cls_loss_open_btn)
         ctl.addStretch()
         self._right_stack.addWidget(panel_det_train)  # 6
         self._right_stack.addWidget(panel_cls_train)  # 7
@@ -1038,32 +1094,9 @@ class MainWindow(QMainWindow):
     def _update_loss_chart(self, history):
         """Update loss curve from training thread (seg or cls)."""
         try:
-            if self._cls_mode and hasattr(self, "cls_loss_ax"):
-                # Classification mode: show on CL panel
-                self.cls_loss_ax.clear()
-                train_loss = history.get("train_loss", [])
-                val_acc = history.get("val_acc", [])
-                epochs = range(1, len(train_loss) + 1)
-                if len(epochs) > 0:
-                    self.cls_loss_ax.plot(epochs, train_loss, "b-", label="Train Loss", linewidth=1)
-                    if val_acc and len(val_acc) == len(train_loss):
-                        ax2 = self.cls_loss_ax.twinx()
-                        ax2.plot(epochs, val_acc, "r-", label="Val Acc", linewidth=1)
-                        ax2.set_ylabel("Accuracy", color="r")
-                        ax2.tick_params(axis="y", labelcolor="r")
-                        ax2.set_ylim(0, 1.05)
-                        lines2, labels2 = ax2.get_legend_handles_labels()
-                    else:
-                        lines2, labels2 = [], []
-                    self.cls_loss_ax.set_xlabel("Epoch")
-                    self.cls_loss_ax.set_ylabel("Loss", color="b")
-                    self.cls_loss_ax.tick_params(axis="y", labelcolor="b")
-                    self.cls_loss_ax.grid(True, alpha=0.3)
-                    lines1, labels1 = self.cls_loss_ax.get_legend_handles_labels()
-                    self.cls_loss_ax.legend(lines1 + lines2, labels1 + labels2, loc="upper right", fontsize=7)
-                    self.cls_loss_ax.figure.tight_layout(pad=0.5)
-                self.cls_loss_canvas.setVisible(True)
-                self.cls_loss_canvas.draw()
+            if self._cls_mode and hasattr(self, "_cls_loss_window"):
+                # Classification mode: draw in the independent Loss/Acc window
+                self._cls_loss_window.update_curve(history)
             else:
                 # Segmentation mode: show on Loss Curve panel
                 self.loss_ax.clear()
@@ -1245,6 +1278,9 @@ class MainWindow(QMainWindow):
                 except Exception:
                     pass
 
+            # Restore classification training settings (Pre-Scale, etc.)
+            if internal in ("classification", "mixed_classification"):
+                self._load_cls_train_settings()
             self._load_image_list_async()
             self.log(f"Opened: {name}")
             self.setWindowTitle(f"{APP_NAME} - {name}")
@@ -1252,6 +1288,10 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Error", str(e))
 
     def _close_project(self):
+        # Save classification training settings before closing
+        if self._project_dir and getattr(self, "_cls_mode", False):
+            self._save_cls_train_settings()
+        
         self._project_gen += 1  # Invalidate any pending scan threads
         self.current_project = None
         self._project_dir = None
@@ -2480,6 +2520,49 @@ class MainWindow(QMainWindow):
             self.cls_scale_w_spin.setValue(w)
             self.cls_scale_w_spin.blockSignals(False)
 
+    def _save_cls_train_settings(self):
+        """Save classification training settings (Pre-Scale, etc.) to project dir."""
+        if not self._project_dir:
+            return
+        import json as _json, os as _os
+        settings_path = _os.path.join(self._project_dir, ".cls_train_settings.json")
+        settings = {}
+        if _os.path.exists(settings_path):
+            try:
+                with open(settings_path, "r", encoding="utf-8") as _f:
+                    settings = _json.load(_f)
+            except Exception:
+                pass
+        settings["scale_w"] = self.cls_scale_w_spin.value()
+        settings["scale_h"] = self.cls_scale_h_spin.value()
+        try:
+            with open(settings_path, "w", encoding="utf-8") as _f:
+                _json.dump(settings, _f, indent=2)
+        except Exception:
+            pass
+
+    def _load_cls_train_settings(self):
+        """Load classification training settings from project dir."""
+        if not self._project_dir:
+            return
+        import json as _json, os as _os
+        settings_path = _os.path.join(self._project_dir, ".cls_train_settings.json")
+        if not _os.path.exists(settings_path):
+            return
+        try:
+            with open(settings_path, "r", encoding="utf-8") as _f:
+                settings = _json.load(_f)
+            if "scale_w" in settings:
+                self.cls_scale_w_spin.blockSignals(True)
+                self.cls_scale_w_spin.setValue(float(settings["scale_w"]))
+                self.cls_scale_w_spin.blockSignals(False)
+            if "scale_h" in settings:
+                self.cls_scale_h_spin.blockSignals(True)
+                self.cls_scale_h_spin.setValue(float(settings["scale_h"]))
+                self.cls_scale_h_spin.blockSignals(False)
+        except Exception:
+            pass
+
     def _start_cls_training(self):
         """Start classification model training."""
         if not self.current_project:
@@ -2491,6 +2574,7 @@ class MainWindow(QMainWindow):
         scale_w = self.cls_scale_w_spin.value()
         scale_h = self.cls_scale_h_spin.value()
         scale_factor = (scale_w, scale_h) if scale_w != 1.0 or scale_h != 1.0 else 1.0
+        self._save_cls_train_settings()  # persist Pre-Scale values
         image_size = None  # let dataset handle via scale_factor
         lr = self.cls_lr_spin.value()
         optim_name = self.cls_optim_combo.currentText()
@@ -2515,7 +2599,13 @@ class MainWindow(QMainWindow):
         self.cls_train_progress.setValue(0)
         self.cls_train_status.setText("Preparing...")
         self._cls_stop_btn.setEnabled(True)
+        self._cls_start_btn.setEnabled(False)
         self._stop_flag = False
+        # Auto-pop the independent Loss/Acc window when training starts
+        if hasattr(self, "_cls_loss_window"):
+            self._cls_loss_window.show()
+            self._cls_loss_window.raise_()
+            self._cls_loss_window.activateWindow()
         self._cls_scale_ratio = 1.0
 
         def run():
@@ -2558,6 +2648,7 @@ class MainWindow(QMainWindow):
                 self.cls_train_progress.setVisible(False)
                 self.cls_train_status.setText("Ready")
                 self._cls_stop_btn.setEnabled(False)
+                self._cls_start_btn.setEnabled(True)
         import threading
         threading.Thread(target=run, daemon=True).start()
 
@@ -2583,36 +2674,20 @@ class MainWindow(QMainWindow):
             self.log("Mixed mode ON: using grayscale + height map pairs")
 
     def _update_cls_loss_curve(self):
-        """Update classification loss/acc curve from training history."""
+        """Update classification loss/acc curve in the independent window."""
         if not hasattr(self, "_cls_trainer") or self._cls_trainer is None:
             return
         history = getattr(self._cls_trainer, "history", None)
         if history is None:
             return
-        train_loss = history.get("train_loss", [])
-        val_loss = history.get("val_loss", [])
-        val_acc = history.get("val_acc", [])
-        if not train_loss:
-            return
-        self.cls_loss_canvas.setVisible(True)
-        ax = self.cls_loss_ax
-        ax.clear()
-        epochs = list(range(1, len(train_loss) + 1))
-        ax.plot(epochs, train_loss, "b-", label="Train Loss", alpha=0.6)
-        if val_loss:
-            ax.plot(epochs, val_loss, "r-", label="Val Loss", alpha=0.6)
-        if val_acc:
-            ax2 = ax.twinx()
-            ax2.plot(epochs, val_acc, "g-", label="Val Acc", alpha=0.8)
-            ax2.set_ylabel("Accuracy")
-            ax2.set_ylim(0, 1.05)
-            ax2.legend(loc="upper right")
-        ax.set_xlabel("Epoch")
-        ax.set_ylabel("Loss")
-        ax.legend(loc="upper left")
-        ax.grid(True, alpha=0.3)
-        self.cls_loss_canvas.figure.tight_layout(pad=0.5)
-        self.cls_loss_canvas.draw()
+        self._cls_loss_window.update_curve(history)
+
+    def _show_cls_loss_window(self):
+        """Reopen the Loss/Acc curve window (after user closed it)."""
+        if hasattr(self, "_cls_loss_window"):
+            self._cls_loss_window.show()
+            self._cls_loss_window.raise_()
+            self._cls_loss_window.activateWindow()
 
     def _refresh_cls_model_list(self):
         """Refresh classification model list for inference."""

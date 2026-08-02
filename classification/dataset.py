@@ -127,7 +127,25 @@ class ClassificationDataset(Dataset):
         if transform is None:
             import torchvision.transforms as T
             if self.image_size is None:
-                if split == "train":
+                if self._target_size is not None:
+                    # scale_factor mode - Resize to common target size after per-image pre-scaling
+                    ts = (self._target_size[1], self._target_size[0])  # (h, w) for T.Resize
+                    if split == "train":
+                        self.transform = T.Compose([
+                            T.Resize(ts),
+                            T.RandomHorizontalFlip(p=0.5),
+                            T.RandomRotation(degrees=10),
+                            T.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
+                            T.ToTensor(),
+                            T.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
+                        ])
+                    else:
+                        self.transform = T.Compose([
+                            T.Resize(ts),
+                            T.ToTensor(),
+                            T.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
+                        ])
+                elif split == "train":
                     self.transform = T.Compose([
                         T.RandomHorizontalFlip(p=0.5),
                         T.RandomRotation(degrees=10),
@@ -163,7 +181,19 @@ class ClassificationDataset(Dataset):
         If scale_factor is a tuple (sw, sh), use per-image scaling in __getitem__.
         If float, compute uniform target from max dimensions."""
         if isinstance(self.scale_factor, (tuple, list)):
-            return None  # per-image scaling
+            sw, sh = self.scale_factor
+            max_w, max_h = 0, 0
+            for _, abs_path, _ in self._pairs:
+                try:
+                    with Image.open(abs_path) as img:
+                        w, h = img.size
+                    max_w = max(max_w, w)
+                    max_h = max(max_h, h)
+                except Exception:
+                    pass
+            tw = max(int(max_w * sw), 1)
+            th = max(int(max_h * sh), 1)
+            return (tw, th)
         max_w, max_h = 0, 0
         for _, abs_path, _ in self._pairs:
             try:

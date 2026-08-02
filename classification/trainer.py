@@ -407,7 +407,7 @@ class ClassificationTrainer:
             pass
 
         drop = len(train_ds) > batch_size
-        collate = self._pad_collate if image_size is None else None
+        collate = self._pad_collate if (image_size is None and getattr(train_ds, "_target_size", None) is None) else None
         self.train_loader = DataLoader(
             train_ds, batch_size=batch_size, shuffle=True,
             num_workers=min(4, multiprocessing.cpu_count() or 4),
@@ -552,7 +552,7 @@ class ClassificationTrainer:
             val_subset = torch.utils.data.Subset(all_ds, list(val_indices))
 
             drop = len(train_subset) > batch_size
-            collate = self._pad_collate if image_size is None else None
+            collate = self._pad_collate if (image_size is None and getattr(train_ds, "_target_size", None) is None) else None
             self.train_loader = DataLoader(
                 train_subset, batch_size=batch_size, shuffle=True,
                 num_workers=4, pin_memory=True, prefetch_factor=2, drop_last=drop,
