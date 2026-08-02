@@ -237,6 +237,7 @@ class ClassificationTrainer:
             batch_callback: (batch, total, avg_loss) → None
         """
         self._image_size = image_size
+        self._scale_factor = scale_factor
         self._stop_flag = False
         self._stop_check_fn = stop_check
 
@@ -268,6 +269,8 @@ class ClassificationTrainer:
                 self.class_names = ckpt.get("class_names", [f"class_{i}" for i in range(self.num_classes)])
                 self.model_name = ckpt.get("model_name", self.model_name)
                 self._image_size = ckpt.get("image_size", self._image_size)
+                self._scale_factor = ckpt.get("scale_factor", self._scale_factor)
+                self._target_size = ckpt.get("target_size", None)
                 self.history = ckpt.get("history", {"train_loss": [], "val_loss": [], "val_acc": []})
                 start_epoch = len(self.history.get("train_loss", []))
 
@@ -383,6 +386,8 @@ class ClassificationTrainer:
         val_ds = ClassificationDataset(
             str(self.project_dir), split="val", image_size=image_size, scale_factor=scale_factor
         )
+        self._target_size = getattr(train_ds, "_target_size", None)
+        self._scale_factor = scale_factor
 
         if len(train_ds) == 0:
             raise ValueError("Training set is empty!")
@@ -622,6 +627,8 @@ class ClassificationTrainer:
             "class_names": self.class_names,
             "model_name": self.model_name,
             "image_size": self._image_size,
+            "scale_factor": getattr(self, "_scale_factor", 1.0),
+            "target_size": getattr(self, "_target_size", None),
             "history": self.history,
         }, path)
 
@@ -635,6 +642,8 @@ class ClassificationTrainer:
         self.class_names = ckpt.get("class_names", [f"class_{i}" for i in range(self.num_classes)])
         self.model_name = ckpt.get("model_name", self.model_name)
         self._image_size = ckpt.get("image_size", 224)
+        self._scale_factor = ckpt.get("scale_factor", 1.0)
+        self._target_size = ckpt.get("target_size", None)
 
         self.model = _create_classification_model(
             self.model_name, self.num_classes, pretrained=False
@@ -643,14 +652,70 @@ class ClassificationTrainer:
         self.model.eval()
         return ckpt.get("history", {})
 
+    def _resolve_inference_resize(self):
+        """Return (h, w) resize tuple for inference, or None when no resize applies.
+
+        Precedence: stored image_size (square) -> stored target_size (from
+        scale_factor training) -> project scale settings + train split max dims.
+        """
+        if self._image_size is not None:
+            return (self._image_size, self._image_size)
+        if getattr(self, "_target_size", None):
+            tw, th = self._target_size
+            if tw and th:
+                return (th, tw)
+        # Fallback for checkpoints trained before target_size was persisted:
+        # replicate dataset._compute_target_size() using train split + scale settings.
+        try:
+            from PIL import Image
+            settings = {}
+            sf_path = self.project_dir / ".cls_train_settings.json"
+            if sf_path.exists():
+                with open(sf_path, "r", encoding="utf-8") as f:
+                    settings = json.load(f)
+            sw = float(settings.get("scale_w", 1.0))
+            sh = float(settings.get("scale_h", 1.0))
+            if sw == 1.0 and sh == 1.0:
+                return None
+            img_dir = self.project_dir / "images"
+            if not img_dir.exists():
+                return None
+            split_map = {}
+            sp = self.project_dir / "train_test_split.json"
+            if sp.exists():
+                with open(sp, "r", encoding="utf-8") as f:
+                    split_map = json.load(f)
+            candidates = [k for k, s in split_map.items() if s == "train"]
+            if not candidates:
+                candidates = [os.path.splitext(f)[0] for f in os.listdir(str(img_dir))
+                              if f.lower().endswith((".bmp", ".png", ".jpg", ".jpeg"))]
+            max_w = max_h = 0
+            for base in candidates:
+                for ext in (".bmp", ".png", ".jpg", ".jpeg"):
+                    fp = img_dir / (base + ext)
+                    if fp.exists():
+                        try:
+                            with Image.open(str(fp)) as im:
+                                max_w = max(max_w, im.size[0])
+                                max_h = max(max_h, im.size[1])
+                        except Exception:
+                            pass
+                        break
+            if max_w > 0 and max_h > 0:
+                return (max(int(max_h * sh), 1), max(int(max_w * sw), 1))
+        except Exception:
+            pass
+        return None
+
     def _export_for_inference(self):
         """Export trained model to TorchScript and ONNX."""
         self.model.eval()
         models_dir = self.project_dir / "models" / "classification"
         models_dir.mkdir(parents=True, exist_ok=True)
 
-        img_sz = self._image_size if self._image_size is not None else 224
-        dummy = torch.randn(1, 3, img_sz, img_sz).to(self.device)
+        rsz = self._resolve_inference_resize()
+        img_h, img_w = rsz if rsz else (224, 224)
+        dummy = torch.randn(1, 3, img_h, img_w).to(self.device)
 
         # TorchScript
         try:
@@ -704,8 +769,9 @@ class ClassificationTrainer:
         if is_single:
             images = [images]
 
+        rsz = self._resolve_inference_resize()
         transform = T.Compose([
-            T.Resize((self._image_size, self._image_size)) if self._image_size is not None else T.Lambda(lambda x: x),
+            T.Resize(rsz) if rsz is not None else T.Lambda(lambda x: x),
             T.ToTensor(),
             T.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
         ])

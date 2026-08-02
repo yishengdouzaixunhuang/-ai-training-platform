@@ -87,7 +87,7 @@ class HeatmapOverlay(Node):
             ct.model, image,
             model_name=getattr(ct, "model_name", "resnet18"),
             target_class=target_class,
-            image_size=getattr(ct, "_image_size", None),
+            resize_size=ct._resolve_inference_resize(),
         )
         if overlay is None:
             raise RuntimeError("HeatmapOverlay: 模型不支持热力图（ViT 等）或生成失败")

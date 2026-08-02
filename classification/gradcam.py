@@ -21,7 +21,7 @@ def _find_target_layer(model, model_name: str):
             return m
     return None
 
-def generate_gradcam_heatmap(model, image_np, model_name="resnet18", target_class=None, image_size=None):
+def generate_gradcam_heatmap(model, image_np, model_name="resnet18", target_class=None, image_size=None, resize_size=None):
     try:
         target_layer = _find_target_layer(model, model_name)
         if target_layer is None:
@@ -29,7 +29,10 @@ def generate_gradcam_heatmap(model, image_np, model_name="resnet18", target_clas
         from torchvision.transforms import functional as TF
         from PIL import Image
         h_orig, w_orig = image_np.shape[:2]
-        if image_size is not None:
+        if resize_size is not None:
+            rh, rw = resize_size
+            pil_img = Image.fromarray(image_np).resize((int(rw), int(rh)))
+        elif image_size is not None:
             pil_img = Image.fromarray(image_np).resize((image_size, image_size))
         else:
             pil_img = Image.fromarray(image_np)
