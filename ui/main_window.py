@@ -1,4 +1,4 @@
-﻿"""Main Window - Optimized for large datasets"""
+"""Main Window - Optimized for large datasets"""
 import os, json, re, sys, threading, shutil, cv2
 import torch
 from datetime import datetime
@@ -11,7 +11,7 @@ from PyQt5.QtWidgets import (
     QMainWindow, QMenu, QAction, QSplitter, QTreeWidget, QTreeWidgetItem,
     QTextEdit, QFileDialog, QMessageBox, QInputDialog, QVBoxLayout, QHBoxLayout,
     QWidget, QLabel, QPushButton, QComboBox, QSpinBox, QDoubleSpinBox, QProgressBar, QGroupBox,
-    QListWidget, QListWidgetItem, QSlider, QDialog, QFormLayout, QDialogButtonBox,
+    QListWidget, QSlider, QDialog, QFormLayout, QDialogButtonBox,
     QLineEdit, QCheckBox, QTableWidget, QTableWidgetItem, QHeaderView
 ,
     QStackedWidget
@@ -28,6 +28,7 @@ from annotation.label_manager import LabelManager
 from annotation.mask_editor import AnnotationCanvas
 from ui.mixed_viewer import MixedViewer
 from ui.color_palette import ColorPalette
+from ui.class_table import ClassTableView
 from ui.crop_tool import CropToolDialog
 from ui.resize_tool import ResizeToolDialog
 from ui.mixed_add_dialog import MixedAddImagesDialog
@@ -253,7 +254,7 @@ class MainWindow(QMainWindow):
         self._main_splitter.addWidget(self._left_panel)
         self._main_splitter.addWidget(self._center_panel)
         self._main_splitter.addWidget(self._right_panel)
-        self._main_splitter.setSizes([200, 850, 250])
+        self._main_splitter.setSizes([200, 800, 300])
         self._main_splitter.setStretchFactor(0, 0)  # left: no stretch
         self._main_splitter.setStretchFactor(1, 1)  # canvas: stretches
         self._main_splitter.setStretchFactor(2, 0)  # right: no stretch
@@ -561,21 +562,15 @@ class MainWindow(QMainWindow):
         # Panel 0: Annotation Tools
         panel_annot = QWidget(); al = QVBoxLayout(panel_annot); al.setContentsMargins(4, 2, 2, 2)
         al.addWidget(QLabel("<b>Class:</b>"))
-        self.class_list = QListWidget()
+        self.class_list = ClassTableView()
         self.class_list.currentRowChanged.connect(self._on_class_changed)
+        self.class_list.add_requested.connect(self._add_class)
+        self.class_list.delete_requested.connect(self._delete_class)
+        self.class_list.refresh_requested.connect(self._refresh_class_stats)
+        self.class_list.move_up_requested.connect(lambda: self._move_class(-1))
+        self.class_list.move_down_requested.connect(lambda: self._move_class(1))
+        self.class_list.rename_requested.connect(self._rename_class)
         al.addWidget(self.class_list)
-
-        # Class management buttons
-        cl = QHBoxLayout()
-        self.btn_add_class = QPushButton("+"); self.btn_add_class.setToolTip("Add class")
-        self.btn_add_class.clicked.connect(self._add_class)
-        self.btn_del_class = QPushButton("-"); self.btn_del_class.setToolTip("Delete selected class")
-        self.btn_del_class.clicked.connect(self._delete_class)
-        self.btn_ren_class = QPushButton("R"); self.btn_ren_class.setToolTip("Rename selected class")
-        self.btn_ren_class.clicked.connect(self._rename_class)
-        for b in [self.btn_add_class, self.btn_del_class, self.btn_ren_class]: b.setFixedWidth(28); b.setFixedHeight(22)
-        cl.addWidget(self.btn_add_class); cl.addWidget(self.btn_del_class); cl.addWidget(self.btn_ren_class)
-        cl.addStretch(); al.addLayout(cl)
         bl = QHBoxLayout(); bl.addWidget(QLabel("Brush:"))
         al.addWidget(QLabel("<b>Palette:</b>"))
         self.color_palette = ColorPalette()
@@ -1418,6 +1413,7 @@ class MainWindow(QMainWindow):
         try:
             project_dir = str(self.pm.get_project_dir(self.current_project["name"]))
             from classification.label_manager import LabelManager as ClsLabelManager
+            self.class_list.set_project_dir(project_dir)
             lm = ClsLabelManager(project_dir)
             data = lm.load()
             labels = data.get("labels", [])
@@ -1426,9 +1422,7 @@ class MainWindow(QMainWindow):
                 labels = data.get("labels", [])
             if labels:
                 self._cached_classes = labels
-                self.class_list.clear()
-                for c in labels:
-                    self.class_list.addItem(c)
+                self.class_list.set_classes(labels)
                 self.log(f"Classification labels: {len(labels)} classes")
             else:
                 self.log("No classification labels found")
@@ -2445,9 +2439,7 @@ class MainWindow(QMainWindow):
     def _on_palette_class_clicked(self, idx):
         """Sync palette click to class list and canvas."""
         if hasattr(self, "class_list") and idx < self.class_list.count():
-            self.class_list.blockSignals(True)
-            self.class_list.setCurrentRow(idx)
-            self.class_list.blockSignals(False)
+            self.class_list.setCurrentRow(idx, emit=False)
             if hasattr(self.canvas, "label_manager"):
                 self.canvas.set_class(idx)
 
@@ -2526,15 +2518,46 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 self.log(f"[Class] Save error: {e}")
 
+    def _project_dir_or_none(self):
+        """Return the current project directory, or None."""
+        if not self.current_project:
+            return None
+        try:
+            return str(self.pm.get_project_dir(self.current_project["name"]))
+        except Exception:
+            return None
+
+    def _move_class(self, delta):
+        """Move the selected class up/down in the class list."""
+        row = self.class_list.currentRow()
+        if row < 0:
+            return
+        new_row = row + delta
+        classes = list(self._cached_classes)
+        if not (0 <= new_row < len(classes)):
+            return
+        classes[row], classes[new_row] = classes[new_row], classes[row]
+        self._cached_classes = classes
+        self._save_classes_to_project(classes)
+        self._refresh_class_ui()
+        if 0 <= new_row < self.class_list.count():
+            self.class_list.setCurrentRow(new_row, emit=False)
+            if hasattr(self.canvas, "label_manager"):
+                self.canvas.set_class(new_row)
+        self.log(f"[Class] Moved '{classes[new_row]}' {'up' if delta < 0 else 'down'}")
+
+    def _refresh_class_stats(self):
+        """Re-read classification labels and refresh the class table."""
+        self._load_classification_labels()
+        self._refresh_class_ui()
+        self.log("[Class] Stats refreshed")
+
     def _refresh_class_ui(self):
         """Refresh class list and palette from _cached_classes."""
         classes = self._cached_classes
         if hasattr(self, "class_list"):
-            self.class_list.blockSignals(True)
-            self.class_list.clear()
-            for c in classes:
-                self.class_list.addItem(QListWidgetItem(c))
-            self.class_list.blockSignals(False)
+            self.class_list.set_project_dir(self._project_dir_or_none())
+            self.class_list.set_classes(classes)
         if hasattr(self, "color_palette"):
             self.color_palette.set_classes(classes, [CLASS_COLORS[k % len(CLASS_COLORS)] for k in range(len(classes))])
 
@@ -3016,7 +3039,7 @@ class MainWindow(QMainWindow):
                         from classification.gradcam import generate_gradcam_heatmap
                         ct2 = ClassificationTrainer(project_dir)
                         ct2.load_model(model_file)
-                        img_sz = getattr(ct2, "_image_size", None)
+                        rsz = ct2._resolve_inference_resize()
                         model_nm = getattr(ct2, "model_name", "resnet18")
                         hm_total = len(images)
                         hm_done = 0
@@ -3041,7 +3064,7 @@ class MainWindow(QMainWindow):
                                     ct2.model, img_np,
                                     model_name=model_nm,
                                     target_class=target_cls,
-                                    image_size=img_sz,
+                                    resize_size=rsz,
                                 )
                                 if overlay is not None:
                                     Image.fromarray(overlay).save(hm_file, quality=85)
@@ -3199,7 +3222,7 @@ class MainWindow(QMainWindow):
             if ct.model is None:
                 self.log_signal.emit("Heatmap: model not loaded")
                 return
-            img_sz = getattr(ct, "_image_size", None)
+            rsz = ct._resolve_inference_resize()
             cls_preds = getattr(self, "_cls_predictions", {}).get(current_path, None)
             target_class = None
             if cls_preds is not None and isinstance(cls_preds, dict):
@@ -3214,7 +3237,7 @@ class MainWindow(QMainWindow):
                 ct.model, img_np,
                 model_name=getattr(ct, "model_name", "resnet18"),
                 target_class=target_class,
-                image_size=img_sz,
+                resize_size=rsz,
             )
             if overlay is not None:
                 h, w, ch = overlay.shape
