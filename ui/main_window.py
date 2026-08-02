@@ -294,6 +294,8 @@ class MainWindow(QMainWindow):
         tm.addSeparator()
         tm.addAction("Image Crop Tool...", self._open_crop_tool)
         tm.addAction("Image Resize Tool...", self._open_resize_tool)
+        tm.addSeparator()
+        tm.addAction("Flow Editor...", self._open_flow_editor)
         sm = mb.addMenu("Settings(&S)")
         sm.addAction("Workspace...", self._set_workspace)
         vm = mb.addMenu("View(&V)")
@@ -3212,16 +3214,37 @@ class MainWindow(QMainWindow):
         if not self.current_project:
             return
         pd = str(self.pm.get_project_dir(self.current_project["name"]))
-        img_dir = os.path.join(pd, "images")
         out_dir = os.path.join(pd, "outputs", "ocr")
         self.ocr_status.setText("Batch OCR running...")
         self.ocr_progress.setVisible(True)
         def run():
             import time as _time
             try:
-                from ocr.pipeline import run_batch_ocr
+                from flow.batch import BatchRunner, build_ocr_flow, list_images
+                images = list_images(pd)
+                if not images:
+                    self.log_signal.emit("No images found")
+                    return
+                flow = build_ocr_flow(out_dir=out_dir)
                 t0 = _time.time()
-                results = run_batch_ocr(img_dir, out_dir)
+                results = {}
+                def on_progress(i, total, path, frame, err):
+                    fname = os.path.basename(path)
+                    if err is None:
+                        results[fname] = frame.result.get("regions", [])
+                        self.log_signal.emit("[%d/%d] %s: %d regions" % (i, total, fname, frame.result.get("count", 0)))
+                    else:
+                        results[fname] = {"error": str(err)}
+                        self.log_signal.emit("[%d/%d] %s: FAILED - %s" % (i, total, fname, err))
+                    self.ocr_progress.setMaximum(total)
+                    self.ocr_progress.setValue(i)
+                br = BatchRunner(flow, project_dir=pd, stop_check=lambda: self._stop_flag)
+                br.run(images, on_progress=on_progress)
+                # ?????????? ocr_results.json ?????
+                import json as _json
+                json_path = os.path.join(out_dir, "ocr_results.json")
+                with open(json_path, "w", encoding="utf-8") as f:
+                    _json.dump(results, f, ensure_ascii=False, indent=2)
                 self._ocr_results_cache = results  # Store for image-switch auto-load
                 # Populate image list columns
                 self._ocr_predictions = {}
@@ -3235,7 +3258,6 @@ class MainWindow(QMainWindow):
                 total_elapsed = _time.time() - t0
                 total = sum(1 for v in results.values() if isinstance(v, list) and len(v) > 0)
                 avg_time = total_elapsed / max(total, 1) if total > 0 else 0
-                # Store per-image time estimate (average)
                 for fname in results:
                     if isinstance(results[fname], list) and len(results[fname]) > 0:
                         if avg_time > 0:
@@ -3258,7 +3280,6 @@ class MainWindow(QMainWindow):
                 self.ocr_progress.setVisible(False)
         import threading
         threading.Thread(target=run, daemon=True).start()
-
     def _update_ocr_table(self, results):
         """Update OCR result table."""
         self.ocr_result_table.setRowCount(len(results))
@@ -3381,35 +3402,36 @@ class MainWindow(QMainWindow):
         """Batch inspect all images in the project."""
         if not self.current_project:
             return
-        inspector = getattr(self, "_ocv_inspector", None)
-        if inspector is None:
-            self.log_signal.emit("No OCV model loaded.")
-            return
-        inspector.threshold = self.ocv_threshold.value()
         pd = str(self.pm.get_project_dir(self.current_project["name"]))
-        img_dir = os.path.join(pd, "images")
-        ext_set = {".bmp", ".png", ".jpg", ".jpeg"}
-        images = [os.path.join(img_dir, f) for f in os.listdir(img_dir)
-                  if os.path.splitext(f)[1].lower() in ext_set]
+        model_path = os.path.join(pd, "models", "ocv_model.pkl")
+        if not os.path.exists(model_path):
+            self.log_signal.emit("No OCV model loaded. Build one first.")
+            return
         self.ocv_status.setText("Batch inspecting...")
         def run():
+            from flow.batch import BatchRunner, build_ocv_flow, list_images
+            images = list_images(pd)
+            if not images:
+                self.log_signal.emit("No images found")
+                self.ocv_status.setText("Ready")
+                return
+            out_path = os.path.join(pd, "outputs", "ocv_results.jsonl")
+            flow = build_ocv_flow(model_path=model_path, threshold=self.ocv_threshold.value(), out_path=out_path)
             ok_cnt = ng_cnt = 0
-            for img_path in images:
-                try:
-                    from PIL import Image
-                    img = Image.open(img_path).convert("RGB")
-                    result = inspector.inspect(img)
-                    if result["ok"]:
-                        ok_cnt += 1
-                    else:
-                        ng_cnt += 1
-                except Exception:
-                    pass
+            def on_progress(i, total, path, frame, err):
+                nonlocal ok_cnt, ng_cnt
+                if err is not None:
+                    return
+                if frame.result.get("ok"):
+                    ok_cnt += 1
+                else:
+                    ng_cnt += 1
+            br = BatchRunner(flow, project_dir=pd, stop_check=lambda: self._stop_flag)
+            br.run(images, on_progress=on_progress)
             self.log_signal.emit(f"OCV batch: {ok_cnt} OK, {ng_cnt} NG out of {len(images)}")
             self.ocv_status.setText("Ready")
         import threading
         threading.Thread(target=run, daemon=True).start()
-
     def _eval_cls_model(self):
         """Evaluate classification model and show confusion matrix."""
         if not self.current_project:
@@ -3960,11 +3982,10 @@ class MainWindow(QMainWindow):
         if not os.path.exists(model_path):
             return QMessageBox.warning(self, "Error",
                 "Model not found: %s\nPlease train a model first." % model_path)
-        img_dir = os.path.join(project_dir, "images")
         out_dir = os.path.join(project_dir, "outputs")
         os.makedirs(out_dir, exist_ok=True)
-        images = [os.path.join(img_dir, f) for f in os.listdir(img_dir)
-                  if f.lower().endswith((".bmp", ".png", ".jpg", ".jpeg"))]
+        from flow.batch import BatchRunner, build_seg_flow, list_images
+        images = list_images(project_dir)
         if not images:
             return QMessageBox.warning(self, "Warning", "No images found")
         total = len(images)
@@ -3975,35 +3996,25 @@ class MainWindow(QMainWindow):
         self.infer_progress.setValue(0)
         self.infer_status.setText("Running...")
         self.log(f"Batch inference on {total} images...")
-        from inference.predictor import Predictor
-        import time
-
+        flow = build_seg_flow(
+            project_dir, model_file, out_dir=out_dir,
+            backend=self._backend_key(),
+            tiled=self.tiled_check.isChecked(),
+            scale=self.scale_slider.value() / 100.0,
+        )
         def run():
             try:
-                predictor = Predictor(project_dir, model_file, backend=self._backend_key())
                 if not hasattr(self, "_infer_times"):
                     self._infer_times = {}
-                for i, img_path in enumerate(images):
-                    t0 = time.time()
-                    if self._stop_flag:
-                        self.log_signal.emit("Batch inference stopped by user at %d/%d" % (i, total))
-                        break
-                    try:
-                        image = Image.open(img_path).convert("RGB")
-                    except Exception:
-                        self.log_signal.emit("[%d/%d] SKIP: cannot read %s" % (i + 1, total, os.path.basename(img_path)))
-                        continue
-                    pred, overlay = predictor.predict(image, return_overlay=True,
-                        tiled=self.tiled_check.isChecked(), scale=self.scale_slider.value() / 100.0)
-                    base = os.path.splitext(os.path.basename(img_path))[0]
-                    mask_out = os.path.join(out_dir, base + "_pred.png")
-                    Image.fromarray(pred.astype(np.uint8)).save(mask_out)
-                    overlay_out = os.path.join(out_dir, base + "_overlay.jpg")
-                    Image.fromarray(overlay).save(overlay_out)
-                    elapsed = time.time() - t0
-                    self._infer_times[base] = "%.1fs" % elapsed
-                    self.log_signal.emit("[%d/%d] %s (%.1fs)" % (i + 1, total, base, elapsed))
-                    self.infer_progress_signal.emit(i + 1, total)
+                def on_progress(i, total, path, frame, err):
+                    base = os.path.splitext(os.path.basename(path))[0]
+                    if err is None:
+                        self.log_signal.emit("[%d/%d] %s" % (i, total, base))
+                    else:
+                        self.log_signal.emit("[%d/%d] %s: FAILED - %s" % (i, total, base, err))
+                    self.infer_progress_signal.emit(i, total)
+                br = BatchRunner(flow, project_dir=project_dir, stop_check=lambda: self._stop_flag)
+                br.run(images, on_progress=on_progress)
                 self.log_signal.emit("Batch inference complete! Results: %s" % out_dir)
                 self.infer_status.setText("Complete")
                 self._pred_count_cache_key = None  # force re-scan outputs
@@ -4016,7 +4027,6 @@ class MainWindow(QMainWindow):
             finally:
                 self.btn_infer_stop.setEnabled(False)
                 self.infer_progress.setVisible(False)
-
         threading.Thread(target=run, daemon=True).start()
     def _run_det_batch_inference(self, project_dir):
         """Batch detection inference on all images."""
@@ -4024,13 +4034,13 @@ class MainWindow(QMainWindow):
         if not os.path.exists(model_path):
             return QMessageBox.warning(self, "Error",
                 "Detection model not found: %s\nPlease train a detection model first." % model_path)
-        img_dir = os.path.join(project_dir, "images")
         out_dir = os.path.join(project_dir, "outputs")
         os.makedirs(out_dir, exist_ok=True)
-        images = [os.path.join(img_dir, f) for f in os.listdir(img_dir)
-                  if f.lower().endswith((".bmp", ".png", ".jpg", ".jpeg"))]
+        from flow.batch import BatchRunner, build_det_flow, list_images
+        images = list_images(project_dir)
         if not images:
             return QMessageBox.warning(self, "Warning", "No images found")
+        classes = getattr(self, "_cached_classes", None) or ["background"]
         total = len(images)
         self._stop_flag = False
         self.btn_infer_stop.setEnabled(True)
@@ -4039,42 +4049,22 @@ class MainWindow(QMainWindow):
         self.infer_progress.setValue(0)
         self.infer_status.setText("Running...")
         self.log(f"Batch detection inference on {total} images...")
-        import time
+        flow = build_det_flow(project_dir, out_dir=out_dir, classes=",".join(classes))
         def run():
             try:
-                from detection.trainer import DetectionTrainer
-                dt = DetectionTrainer(project_dir)
-                for i, img_path in enumerate(images):
-                    t0 = time.time()
-                    if self._stop_flag:
-                        self.log_signal.emit("Batch detection stopped by user at %d/%d" % (i, total))
-                        break
-                    base = os.path.splitext(os.path.basename(img_path))[0]
-                    try:
-                        boxes = dt.predict(img_path)
-                        # Remap category_id to match project categories (YOLO uses its own internal indexing)
-                        classes = self._cached_classes if hasattr(self, "_cached_classes") else ["background"]
-                        for b in boxes:
-                            cat_name = b.get("category", "unknown")
-                            b["category_id"] = classes.index(cat_name) if cat_name in classes else 0
-                        # Save detection results as COCO JSON
-                        from detection.coco_io import save_coco_json
-                        try:
-                            img_w, img_h = Image.open(img_path).size
-                        except Exception:
-                            img_w, img_h = 0, 0
-                        json_out = os.path.join(out_dir, base + "_det.json")
-                        save_coco_json(
-                            json_out, img_path, img_w, img_h,
-                            boxes, classes,
-                            bbox_type="hbb"
-                        )
-                        elapsed = time.time() - t0
-                        self.log_signal.emit("[%d/%d] %s: %d boxes (%.1fs)" % (i + 1, total, base, len(boxes), elapsed))
-                    except Exception as ex:
-                        self.log_signal.emit("[%d/%d] %s: FAILED — %s" % (i + 1, total, base, ex))
-                    self.infer_progress_signal.emit(i + 1, total)
-                self.log_signal.emit("Batch detection complete! Results: %s" % out_dir)
+                ok_cnt = 0
+                def on_progress(i, total, path, frame, err):
+                    nonlocal ok_cnt
+                    base = os.path.splitext(os.path.basename(path))[0]
+                    if err is None:
+                        ok_cnt += 1
+                        self.log_signal.emit("[%d/%d] %s: %d boxes" % (i, total, base, frame.result.get("count", 0)))
+                    else:
+                        self.log_signal.emit("[%d/%d] %s: FAILED - %s" % (i, total, base, err))
+                    self.infer_progress_signal.emit(i, total)
+                br = BatchRunner(flow, project_dir=project_dir, stop_check=lambda: self._stop_flag)
+                br.run(images, on_progress=on_progress)
+                self.log_signal.emit("Batch detection complete! %d images, results: %s" % (ok_cnt, out_dir))
                 self.infer_status.setText("Complete")
                 self._pred_count_cache_key = None  # force re-scan outputs
                 threading.Thread(target=self._load_output_stats_async, args=(project_dir,), daemon=True).start()
@@ -4092,7 +4082,6 @@ class MainWindow(QMainWindow):
                 self.btn_infer_stop.setEnabled(False)
                 self.infer_progress.setVisible(False)
         threading.Thread(target=run, daemon=True).start()
-
     # ============ Import / Export ============
 
     def _import_json(self):
@@ -4341,6 +4330,19 @@ class MainWindow(QMainWindow):
         """Open the image resize tool dialog."""
         dlg = ResizeToolDialog(self)
         dlg.exec_()
+    def _open_flow_editor(self):
+        """打开可视化流程编辑器（Vision Flow）。"""
+        try:
+            from ui.flow_editor import FlowEditorDialog
+        except Exception as e:
+            import traceback
+            self.log_signal.emit(f"Flow Editor 打开失败: {e}")
+            self.log_signal.emit(traceback.format_exc())
+            return
+        dlg = FlowEditorDialog(self)
+        dlg.resize(1280, 820)
+        dlg.exec_()
+
     def _open_crop_tool(self):
         """Open the image crop tool dialog."""
         dlg = CropToolDialog(self)
