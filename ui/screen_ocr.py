@@ -201,9 +201,16 @@ class ScreenOcrResultDialog(QDialog):
 
 
 def screen_ocr_and_show(main_win):
-    """入口：隐藏主窗口 -> 截图框选 -> OCR -> 结果对话框。"""
-    main_win.hide()
-    QTimer.singleShot(200, lambda: _capture_and_ocr(main_win))
+    """入口：询问是否隐藏主窗口 -> 截图框选 -> OCR -> 结果对话框。"""
+    ans = QMessageBox.question(
+        main_win, "截图 OCR",
+        "截图前是否隐藏主窗口？\n（选\"是\"可避免平台窗口出现在截图画面里）",
+        QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+    if ans == QMessageBox.Yes:
+        main_win.hide()
+        QTimer.singleShot(200, lambda: _capture_and_ocr(main_win))
+    else:
+        _capture_and_ocr(main_win)
 
 
 def _capture_and_ocr(main_win):
