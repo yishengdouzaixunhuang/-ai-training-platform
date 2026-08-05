@@ -15,7 +15,7 @@ from PyQt5.QtWidgets import (
     QLineEdit, QCheckBox, QTableWidget, QTableWidgetItem, QHeaderView, QGridLayout,
     QStackedWidget, QApplication
 )
-from PyQt5.QtGui import QFont, QColor, QImage, QPixmap, QPainter, QLinearGradient
+from PyQt5.QtGui import QFont, QColor, QImage, QPixmap, QPainter, QLinearGradient, QKeySequence
 from PyQt5.QtCore import Qt, pyqtSignal, QTimer
 import matplotlib
 matplotlib.use("Qt5Agg")
@@ -288,7 +288,8 @@ class MainWindow(QMainWindow):
         tm.addAction("Mixed Classification", lambda: self._set_task("mixed_classification"))
         tm.addSeparator()
         tm.addAction("OCR Text Recognition", lambda: self._set_task("ocr"))
-        tm.addAction("Screen OCR (截图识别)...", self._open_screen_ocr)
+        act_screen_ocr = tm.addAction("Screen OCR (截图识别)...", self._open_screen_ocr)
+        act_screen_ocr.setShortcut(QKeySequence("Ctrl+Alt+S"))
         tm.addAction("OCV Quality Inspection", lambda: self._set_task("ocv"))
         tm.addSeparator()
         tm.addAction("Image Crop Tool...", self._open_crop_tool)
