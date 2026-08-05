@@ -289,7 +289,7 @@ class MainWindow(QMainWindow):
         tm.addSeparator()
         tm.addAction("OCR Text Recognition", lambda: self._set_task("ocr"))
         act_screen_ocr = tm.addAction("Screen OCR (截图识别)...", self._open_screen_ocr)
-        act_screen_ocr.setShortcut(QKeySequence("Ctrl+Alt+S"))
+        act_screen_ocr.setShortcut(QKeySequence("Shift+X"))
         tm.addAction("OCV Quality Inspection", lambda: self._set_task("ocv"))
         tm.addSeparator()
         tm.addAction("Image Crop Tool...", self._open_crop_tool)
