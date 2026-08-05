@@ -239,6 +239,12 @@ class MainWindow(QMainWindow):
         """Clean up system monitor on close."""
         if hasattr(self, "_sys_monitor"):
             self._sys_monitor.stop()
+        # 保存分类训练面板参数，避免重启后回滚
+        if getattr(self, "_project_dir", None):
+            try:
+                self._save_cls_train_settings()
+            except Exception:
+                pass
         super().closeEvent(event)
     def _init_ui(self):
         central = QWidget(); self.setCentralWidget(central)
@@ -2802,8 +2808,32 @@ class MainWindow(QMainWindow):
             self.cls_scale_w_spin.setValue(w)
             self.cls_scale_w_spin.blockSignals(False)
 
+    _CLS_PARAM_SPECS = [
+        ("model", "cls_model_combo", "text"),
+        ("epochs", "cls_epochs_spin", "int"),
+        ("batch_size", "cls_batch_spin", "int"),
+        ("optimizer", "cls_optim_combo", "text"),
+        ("lr", "cls_lr_spin", "float"),
+        ("loss", "cls_loss_combo", "text"),
+        ("scale_w", "cls_scale_w_spin", "float"),
+        ("scale_h", "cls_scale_h_spin", "float"),
+        ("amp", "cls_amp_check", "bool"),
+        ("k_folds", "cls_kfold_spin", "int"),
+        ("resume", "cls_resume_check", "bool"),
+        ("class_balanced", "cls_balanced_check", "bool"),
+        ("ema", "cls_ema_check", "bool"),
+        ("weight_decay", "cls_wd_spin", "float"),
+        ("momentum", "cls_momentum_spin", "float"),
+        ("label_smoothing", "cls_ls_spin", "float"),
+        ("focal_gamma", "cls_focal_gamma_spin", "float"),
+        ("dropout", "cls_dropout_spin", "float"),
+        ("lr_scheduler", "cls_scheduler_combo", "text"),
+        ("warmup_epochs", "cls_warmup_spin", "int"),
+        ("early_stop_patience", "cls_early_stop_spin", "int"),
+    ]
+
     def _save_cls_train_settings(self):
-        """Save classification training settings (Pre-Scale, etc.) to project dir."""
+        """Save ALL classification training settings to project dir (.cls_train_settings.json)."""
         if not self._project_dir:
             return
         import json as _json, os as _os
@@ -2815,9 +2845,21 @@ class MainWindow(QMainWindow):
                     settings = _json.load(_f)
             except Exception:
                 pass
-        settings["scale_w"] = self.cls_scale_w_spin.value()
-        settings["scale_h"] = self.cls_scale_h_spin.value()
-        settings["class_balanced"] = self.cls_balanced_check.isChecked()
+        for key, attr, kind in self._CLS_PARAM_SPECS:
+            w = getattr(self, attr, None)
+            if w is None:
+                continue
+            try:
+                if kind == "text":
+                    settings[key] = w.currentText()
+                elif kind == "bool":
+                    settings[key] = w.isChecked()
+                elif kind == "int":
+                    settings[key] = int(w.value())
+                else:
+                    settings[key] = float(w.value())
+            except Exception:
+                pass
         try:
             with open(settings_path, "w", encoding="utf-8") as _f:
                 _json.dump(settings, _f, indent=2)
@@ -2825,7 +2867,7 @@ class MainWindow(QMainWindow):
             pass
 
     def _load_cls_train_settings(self):
-        """Load classification training settings from project dir."""
+        """Restore ALL classification training settings from project dir."""
         if not self._project_dir:
             return
         import json as _json, os as _os
@@ -2835,18 +2877,28 @@ class MainWindow(QMainWindow):
         try:
             with open(settings_path, "r", encoding="utf-8") as _f:
                 settings = _json.load(_f)
-            if "scale_w" in settings:
-                self.cls_scale_w_spin.blockSignals(True)
-                self.cls_scale_w_spin.setValue(float(settings["scale_w"]))
-                self.cls_scale_w_spin.blockSignals(False)
-            if "scale_h" in settings:
-                self.cls_scale_h_spin.blockSignals(True)
-                self.cls_scale_h_spin.setValue(float(settings["scale_h"]))
-                self.cls_scale_h_spin.blockSignals(False)
-            if "class_balanced" in settings:
-                self.cls_balanced_check.blockSignals(True)
-                self.cls_balanced_check.setChecked(bool(settings["class_balanced"]))
-                self.cls_balanced_check.blockSignals(False)
+            for key, attr, kind in self._CLS_PARAM_SPECS:
+                if key not in settings:
+                    continue
+                w = getattr(self, attr, None)
+                if w is None:
+                    continue
+                try:
+                    w.blockSignals(True)
+                    if kind == "text":
+                        idx = w.findText(str(settings[key]))
+                        if idx >= 0:
+                            w.setCurrentIndex(idx)
+                    elif kind == "bool":
+                        w.setChecked(bool(settings[key]))
+                    elif kind == "int":
+                        w.setValue(int(settings[key]))
+                    else:
+                        w.setValue(float(settings[key]))
+                except Exception:
+                    pass
+                finally:
+                    w.blockSignals(False)
         except Exception:
             pass
 
