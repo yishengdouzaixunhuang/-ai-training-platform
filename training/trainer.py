@@ -10,6 +10,14 @@ from training.dataset import SegmentationDataset
 from training.models import create_model
 from training.losses_ext import build_loss, LOSS_NAMES
 from training.augment_ext import AUGMENT_PRESETS
+from training.augment_config import build_augment_fn
+
+def _resolve_augment_fn(augment):
+    """augment 兼容旧预设字符串与新增强开关 dict（增强参数面板）。"""
+    if isinstance(augment, dict):
+        return build_augment_fn(augment)
+    return AUGMENT_PRESETS.get(augment)
+
 
 class Trainer:
     def __init__(self, project_dir, model_name="deeplabv3", device=None):
@@ -53,7 +61,7 @@ class Trainer:
                      plot_callback, batch_callback, loss_name="cross_entropy", augment="none"):
         """K-fold cross-validation training."""
         # Load all annotated images
-        full_ds = SegmentationDataset(self.project_dir, split="all", image_size=image_size, augment_fn=AUGMENT_PRESETS.get(augment))
+        full_ds = SegmentationDataset(self.project_dir, split="all", image_size=image_size, augment_fn=_resolve_augment_fn(augment))
         num_images = len(full_ds._image_samples)
         if num_images < k:
             if log_callback:
@@ -153,7 +161,7 @@ class Trainer:
 
     def prepare_data(self, batch_size=4, val_split=0.2, image_size=(512, 512), loss_name="cross_entropy", augment="none"):
         # Use user-assigned train/val splits from train_test_split.json
-        train_ds = SegmentationDataset(self.project_dir, split="train", image_size=image_size, augment_fn=AUGMENT_PRESETS.get(augment))
+        train_ds = SegmentationDataset(self.project_dir, split="train", image_size=image_size, augment_fn=_resolve_augment_fn(augment))
         val_ds = SegmentationDataset(self.project_dir, split="val", image_size=image_size)
 
         # num_classes already set in __init__ via project.json
@@ -217,7 +225,7 @@ class Trainer:
         self.model.train()
         total_loss = 0
         batches = 0
-        pbar = tqdm(self.train_loader, desc="??", ncols=80)
+        pbar = tqdm(self.train_loader, desc="训练", ncols=80)
         for images, masks in pbar:
             if self._stop_requested or (self._stop_check_fn and self._stop_check_fn()):
                 self._stop_requested = True
@@ -251,7 +259,7 @@ class Trainer:
         unions = torch.zeros(self.num_classes).to(self.device)
 
         with torch.no_grad():
-            for images, masks in tqdm(self.val_loader, desc="??", ncols=80):
+            for images, masks in tqdm(self.val_loader, desc="验证", ncols=80):
                 if self._stop_requested:
                     break
                 images, masks = images.to(self.device), masks.to(self.device)

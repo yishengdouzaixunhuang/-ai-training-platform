@@ -6,5 +6,19 @@
   "k_folds": 1,
   "loss": "ce+lovasz",
   "augment": "medium",
-  "resume": true
+  "resume": true,
+  "augment_flags": {
+    "enabled": true,
+    "zoom_out": false,
+    "zoom_in": false,
+    "translate": false,
+    "aspect": false,
+    "shear": false,
+    "rotate": false,
+    "brightness": true,
+    "contrast": true,
+    "invert": false,
+    "noise": false,
+    "flip": true
+  }
 }

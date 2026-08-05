@@ -182,18 +182,28 @@ def recommend(project_dir: str = "",
     latency = max(0.0, target_latency_ms or 0.0)
 
     # ---- 训练尺寸：最大图 x0.6 对齐档位 ----
+    # 类别少的二分类任务对缺陷细节更敏感：档位取高，且缩放保底 0.8，
+    # 避免推荐出过低的训练分辨率导致细节丢失。
     raw_target = max_edge * 0.6
-    tier_dir = "up" if ncls >= 8 else ("down" if ncls <= 2 else "nearest")
+    tier_dir = "up" if (ncls >= 8 or ncls <= 2) else "nearest"
     target = _nearest_tier(raw_target, tier_dir)
     target = max(128, min(768, target))
     if max_edge > 0 and target < max_edge:
         scale = round(target / max_edge, 2)
         scale = max(0.1, min(1.0, scale))
+        if ncls <= 2:
+            scale = max(0.8, scale)
     else:
         scale = 1.0
     params["scale_w"] = params["scale_h"] = scale
+    if ncls >= 8:
+        scale_note = "类别多,取高档"
+    elif ncls <= 2:
+        scale_note = "类别少,取高档,缩放保底0.8"
+    else:
+        scale_note = "就近取档"
     reasons["scale"] = (f"最大图边长 {max_edge}px × 0.6 → 目标 {target}px"
-                        f"（{'类别多,取高档' if ncls >= 8 else ('类别少,取低档' if ncls <= 2 else '就近取档')}）")
+                        f"（{scale_note}）")
 
     # ---- 模型：推理预算优先，类别数/数据量修正 ----
     if latency > 0:
@@ -287,6 +297,14 @@ def recommend(project_dir: str = "",
     params["label_smoothing"] = 0.1
     params["focal_gamma"] = 2.0
 
+    # ---- 类平衡权重：类别不平衡时建议开启 ----
+    if imbalance >= 2.0:
+        params["class_balanced"] = True
+        reasons["class_balanced"] = f"类别不平衡 {imbalance:.1f}:1 → 建议开启类平衡权重"
+    else:
+        params["class_balanced"] = False
+        reasons["class_balanced"] = f"类别较均衡（{imbalance:.1f}:1）→ 无需类平衡权重"
+
     # ---- lr / optimizer / scheduler ----
     lr = 0.0005 if total < 300 else 0.001
     params["lr"] = lr
@@ -311,6 +329,12 @@ def recommend(project_dir: str = "",
     else:
         params["k_folds"] = 1
         reasons["k_folds"] = f"样本 {total} 张 → 单次训练+验证集"
+
+    # ---- EMA / TTA：训练与推理侧稳定化 ----
+    params["ema"] = True
+    reasons["ema"] = "训练时自动启用 EMA 权重平均，验证与最优模型更稳（无额外开销）"
+    params["tta"] = True
+    reasons["tta"] = "单张推理默认开启 TTA 多裁剪投票，提升单图判定稳定性"
 
     summary = {
         "dataset": {
@@ -338,10 +362,11 @@ def recommend(project_dir: str = "",
 PARAM_ORDER = [
     ("model", "模型"), ("scale_w", "宽缩放"), ("scale_h", "高缩放"),
     ("epochs", "训练轮数"), ("batch_size", "Batch"), ("lr", "学习率"),
-    ("optimizer", "优化器"), ("loss", "损失函数"), ("augment", "数据增强"),
+    ("optimizer", "优化器"), ("loss", "损失函数"), ("class_balanced", "类平衡权重"), ("augment", "数据增强"),
     ("use_amp", "AMP"), ("k_folds", "K-Fold"), ("weight_decay", "权重衰减"),
     ("momentum", "动量"), ("label_smoothing", "Label Smooth"),
     ("focal_gamma", "Focal Gamma"), ("dropout", "Dropout"),
     ("lr_scheduler", "LR 调度"), ("warmup_epochs", "Warmup"),
     ("early_stop_patience", "早停耐心"), ("resume", "断点续训"),
+    ("ema", "EMA 权重平均"), ("tta", "推理 TTA"),
 ]

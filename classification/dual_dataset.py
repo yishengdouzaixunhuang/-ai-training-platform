@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Dual-input classification dataset 鈥?grayscale + height map pairs.
+"""Dual-input classification dataset – grayscale + height map pairs.
 
 Supports two naming conventions:
   A) Same base name: 001.bmp + 001.tif
@@ -124,7 +124,18 @@ class MixedClassificationDataset(Dataset):
         label_ids = set(s[2] for s in self.samples if s[2] is not None)
         self.num_classes = max(len(label_ids), 2)
 
-        self.augment = augment
+        # augment: bool(兼容) / str(预设) / dict(增强参数面板开关)
+        if isinstance(augment, dict):
+            from training.augment_config import merge_flags
+            self.augment_flags = merge_flags(augment)
+        elif isinstance(augment, str):
+            from training.augment_config import preset_to_flags
+            self.augment_flags = preset_to_flags(augment)
+        elif augment:
+            from training.augment_config import DEFAULT_AUGMENT_FLAGS
+            self.augment_flags = dict(DEFAULT_AUGMENT_FLAGS)
+        else:
+            self.augment_flags = None
 
     def _resolve_imagefolder_labels(self):
         """Use parent folder names as class labels (ImageFolder convention)."""
@@ -169,17 +180,30 @@ class MixedClassificationDataset(Dataset):
         height_std = 0.25
         height_tensor = (height_tensor - height_mean) / height_std
 
-        # Basic augmentation
-        if self.augment:
-            from torchvision.transforms import RandomHorizontalFlip, RandomVerticalFlip
+        # 增强参数面板：PIL 级别增强，灰度图+高度图使用同一随机种子保持几何同步
+        if self.augment_flags and self.augment_flags.get("enabled"):
             import random
-            p = 0.5
-            if random.random() < p:
-                gray_tensor = torch.flip(gray_tensor, [-1])
-                height_tensor = torch.flip(height_tensor, [-1])
-            if random.random() < p:
-                gray_tensor = torch.flip(gray_tensor, [-2])
-                height_tensor = torch.flip(height_tensor, [-2])
+            from training.augment_config import apply_image_augment
+            seed = random.randint(0, 2 ** 32)
+            gray_img = apply_image_augment(gray_img, self.augment_flags, rng=random.Random(seed))
+            height_img = apply_image_augment(height_img, self.augment_flags, rng=random.Random(seed))
+
+        # Convert to tensors
+        gray_tensor = torch.from_numpy(np.array(gray_img).astype(np.float32) / 255.0)
+        gray_tensor = gray_tensor.permute(2, 0, 1)  # HWC -> CHW
+
+        height_tensor = torch.from_numpy(np.array(height_img).astype(np.float32) / 255.0)
+        height_tensor = height_tensor.unsqueeze(0)  # H,W -> 1,H,W
+
+        # Normalize grayscale with ImageNet stats
+        for c in range(3):
+            gray_tensor[c] = (gray_tensor[c] - IMAGENET_MEAN[c]) / IMAGENET_STD[c]
+
+        # Normalize height to [0,1] (already done by /255)
+        # Optional: standardize height with its own mean/std
+        height_mean = 0.5
+        height_std = 0.25
+        height_tensor = (height_tensor - height_mean) / height_std
 
         return (gray_tensor, height_tensor), label
 

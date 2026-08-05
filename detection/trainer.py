@@ -91,7 +91,7 @@ class DetectionTrainer:
         self._stop_flag = True
     
     def train(self, data_yaml, model_name="yolov8s", epochs=200, batch_size=16,
-              image_size=640, resume=False, k_folds=1,
+              image_size=640, resume=False, k_folds=1, augment=None,
               progress_callback=None, epoch_callback=None):
         """Train YOLO detection model.
         
@@ -131,10 +131,19 @@ class DetectionTrainer:
         else:
             self._model = self._load_model_with_fallback(YOLO, model_variant)
         
+        # 增强参数面板 -> YOLO 训练超参（长宽比/反转/噪声无直接对应参数，忽略）
+        aug_args = {}
+        if augment:
+            from training.augment_config import flags_to_yolo_args
+            aug_args = flags_to_yolo_args(augment)
+        if aug_args:
+            print(f"[Augment] YOLO augment args: {aug_args}")
+
         # K-fold training
         if k_folds > 1:
             return self._train_kfold(data_yaml, model_name, epochs, batch_size,
-                                     image_size, k_folds, progress_callback)
+                                     image_size, k_folds, progress_callback,
+                                     augment=augment)
         
         # Single training run
         results_dir = self.project_dir / "models" / "detection"
@@ -160,7 +169,7 @@ class DetectionTrainer:
                 return not self.trainer._stop_flag
         
         try:
-            self._results = self._model.train(
+            train_kwargs = dict(
                 data=data_yaml,
                 epochs=epochs,
                 batch=batch_size,
@@ -172,6 +181,8 @@ class DetectionTrainer:
                 verbose=False,
                 plots=False,
             )
+            train_kwargs.update(aug_args)
+            self._results = self._model.train(**train_kwargs)
             
             # Find best weights
             best_pt = results_dir / "train" / "weights" / "best.pt"
@@ -206,7 +217,7 @@ class DetectionTrainer:
             raise
     
     def _train_kfold(self, data_yaml, model_name, epochs, batch_size, image_size,
-                     k_folds, progress_callback):
+                     k_folds, progress_callback, augment=None):
         """K-fold cross-validation training."""
         from detection.dataset import build_yolo_dataset
         
@@ -232,7 +243,7 @@ class DetectionTrainer:
             )
             result = self.train(
                 ds_info["data_yaml"], model_name, epochs, batch_size,
-                image_size, resume=False, k_folds=1
+                image_size, resume=False, k_folds=1, augment=augment
             )
             result["fold"] = fold + 1
             all_results.append(result)

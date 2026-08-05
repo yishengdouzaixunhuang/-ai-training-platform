@@ -48,8 +48,8 @@ def evaluate_classification(
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
 
     # Load the model
-    from .trainer import ClassificationTrainer
-    ckpt_path = project_dir / "models" / model_path
+    from .trainer import ClassificationTrainer, resolve_model_path
+    ckpt_path = resolve_model_path(project_dir, model_path)
     if not ckpt_path.exists():
         raise FileNotFoundError(f"Model checkpoint not found: {ckpt_path}")
 

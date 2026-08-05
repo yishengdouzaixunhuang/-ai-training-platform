@@ -12,6 +12,8 @@ Supports:
 
 import os
 import json
+import re
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -67,6 +69,45 @@ class FocalLoss(nn.Module):
             else:
                 focal_loss = self.alpha * focal_loss
         return focal_loss.mean()
+
+
+class ModelEMA:
+    """Exponential moving average of model weights.
+
+    A shadow copy is updated after each training step with an adaptive decay,
+    so short runs (few hundred steps) still converge the shadow toward the
+    trained weights instead of staying frozen near the initial weights.
+    Validation and best-model saving use the smoothed weights.
+    """
+
+    def __init__(self, model, decay=0.999):
+        self.decay = decay
+        self.updates = 0
+        self.shadow = {k: v.detach().clone() for k, v in model.state_dict().items()}
+        self._backup = None
+
+    def update(self, model):
+        self.updates += 1
+        # TF-style adaptive decay: snap toward the current weights at the
+        # start of training, then asymptotically approach self.decay.
+        d = min(self.decay, (self.updates + 1) / (self.updates + 10))
+        with torch.no_grad():
+            for k, v in model.state_dict().items():
+                if k not in self.shadow:
+                    self.shadow[k] = v.detach().clone()
+                elif v.is_floating_point():
+                    self.shadow[k].mul_(d).add_(v.detach(), alpha=1.0 - d)
+                else:
+                    self.shadow[k].copy_(v.detach())
+
+    def apply_shadow(self, model):
+        self._backup = {k: v.detach().clone() for k, v in model.state_dict().items()}
+        model.load_state_dict(self.shadow)
+
+    def restore(self, model):
+        if self._backup is not None:
+            model.load_state_dict(self._backup)
+            self._backup = None
 
 
 # ── Model factory ───────────────────────────────────────────────────────
@@ -163,6 +204,79 @@ def _create_classification_model(model_name, num_classes, pretrained=True, dropo
 
 
 # ── Trainer ─────────────────────────────────────────────────────────────
+def _resolve_cls_augment(augment):
+    """分类增强入参统一解析：dict 开关 / str 预设 / bool / None -> flags dict 或 None。"""
+    if isinstance(augment, dict):
+        from training.augment_config import merge_flags
+        return merge_flags(augment)
+    if isinstance(augment, str):
+        from training.augment_config import preset_to_flags
+        return preset_to_flags(augment)
+    if augment:
+        from training.augment_config import DEFAULT_AUGMENT_FLAGS
+        return dict(DEFAULT_AUGMENT_FLAGS)
+    return None
+
+
+# 模型版本管理
+def resolve_model_path(project_dir, model_ref):
+    """把模型下拉项（旧 .pth 文件名 或 V{n} 版本名）解析为 checkpoint 绝对路径。"""
+    models_dir = Path(project_dir) / "models" / "classification"
+    ref = str(model_ref or "").strip()
+    if ref.startswith("classification/"):
+        ref = ref[len("classification/"):]
+    if re.fullmatch(r"V\d+", ref, re.IGNORECASE):
+        ref = f"V{int(ref[1:])}"  # 统一为 V{n} 规范写法
+        p = models_dir / "versions" / ref / "model.pth"
+        if p.exists():
+            return p
+    p = models_dir / ref
+    if p.exists() and p.is_file():
+        return p
+    p2 = models_dir / "versions" / ref / "model.pth"
+    if p2.exists():
+        return p2
+    return p
+
+
+def next_version_number(project_dir):
+    """扫描 versions/ 目录，返回下一个版本号。"""
+    versions_dir = Path(project_dir) / "models" / "classification" / "versions"
+    nums = []
+    if versions_dir.is_dir():
+        for d in versions_dir.iterdir():
+            if d.is_dir() and re.fullmatch(r"V\d+", d.name, re.IGNORECASE):
+                try:
+                    nums.append(int(d.name[1:]))
+                except ValueError:
+                    pass
+    return (max(nums) + 1) if nums else 1
+
+
+def write_version_archive(project_dir, version_num, state_dict, optimizer_state, meta, history):
+    """把模型权重 + meta + history 归档到 models/classification/versions/V{n}/。"""
+    vdir = Path(project_dir) / "models" / "classification" / "versions" / f"V{version_num}"
+    vdir.mkdir(parents=True, exist_ok=True)
+    torch.save({
+        "model_state_dict": state_dict,
+        "optimizer_state_dict": optimizer_state or {},
+        "num_classes": meta.get("num_classes"),
+        "class_names": meta.get("class_names"),
+        "model_name": meta.get("model_name"),
+        "image_size": meta.get("image_size"),
+        "scale_factor": meta.get("scale_factor"),
+        "target_size": meta.get("target_size"),
+        "history": history,
+        "version": version_num,
+    }, vdir / "model.pth")
+    meta = dict(meta)
+    meta["version"] = version_num
+    meta.setdefault("created", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    (vdir / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    (vdir / "history.json").write_text(json.dumps(history, ensure_ascii=False, indent=2), encoding="utf-8")
+    return vdir
+
+
 class ClassificationTrainer:
     """Wraps classification training with callbacks for Qt UI integration."""
 
@@ -188,6 +302,7 @@ class ClassificationTrainer:
         self._stop_check_fn = None
         self.history = {"train_loss": [], "val_loss": [], "val_acc": []}
         self._image_size = 224
+        self._ema = None
 
     # ── Public API ──────────────────────────────────────────────────
 
@@ -214,6 +329,7 @@ class ClassificationTrainer:
               dropout=0.0,
               lr_scheduler="none", warmup_epochs=0,
               early_stop_patience=0,
+              ema=True, ema_decay=0.999, class_balanced=False,
               progress_callback=None, log_callback=None,
               stop_check=None, plot_callback=None, batch_callback=None):
         """Train classification model.
@@ -249,7 +365,8 @@ class ClassificationTrainer:
                 weight_decay, momentum, label_smoothing, focal_gamma,
                 dropout, lr_scheduler, warmup_epochs, early_stop_patience,
                 progress_callback, log_callback, stop_check,
-                plot_callback, batch_callback
+                plot_callback, batch_callback,
+                ema=ema, ema_decay=ema_decay, class_balanced=class_balanced
             )
 
         # Ensure train/val split exists
@@ -302,10 +419,13 @@ class ClassificationTrainer:
             start_epoch = 0
 
         # Build datasets and dataloaders
-        self._prepare_data(batch_size, image_size, scale_factor)
+        self._prepare_data(batch_size, image_size, scale_factor, augment=augment)
 
         # Build loss function
-        self._build_loss(loss_func, label_smoothing, focal_gamma)
+        self._build_loss(loss_func, label_smoothing, focal_gamma, class_balanced=class_balanced)
+
+        # EMA: smoothed weights for validation & best-model saving (auto-enabled)
+        self._ema = ModelEMA(self.model, decay=ema_decay) if ema else None
 
         # Run epochs
         epochs_total = start_epoch + epochs
@@ -319,7 +439,13 @@ class ClassificationTrainer:
                 break
 
             train_loss = self._train_epoch(batch_callback)
-            val_loss, val_acc = self._validate()
+            if self._ema is not None:
+                self._ema.apply_shadow(self.model)
+            try:
+                val_loss, val_acc = self._validate()
+            finally:
+                if self._ema is not None:
+                    self._ema.restore(self.model)
 
             self.history["train_loss"].append(train_loss)
             self.history["val_loss"].append(val_loss)
@@ -331,7 +457,7 @@ class ClassificationTrainer:
 
             if val_acc > best_acc:
                 best_acc = val_acc
-                self._save_model("best_model.pth")
+                self._save_model("best_model.pth", ema=(self._ema is not None))
                 if log_callback:
                     log_callback(f"  → Best saved (Acc: {best_acc:.4f})")
 
@@ -353,6 +479,27 @@ class ClassificationTrainer:
         except Exception:
             pass
 
+        # 模型版本归档
+        try:
+            vdir = self.save_version(config={
+                "epochs": epochs, "batch_size": batch_size, "lr": lr,
+                "optimizer": optimizer, "loss": loss_func,
+                "image_size": image_size,
+                "scale_factor": list(scale_factor) if isinstance(scale_factor, (tuple, list)) else scale_factor,
+                "k_folds": k_folds, "resume": resume,
+                "weight_decay": weight_decay, "momentum": momentum,
+                "label_smoothing": label_smoothing, "focal_gamma": focal_gamma,
+                "dropout": dropout, "lr_scheduler": lr_scheduler,
+                "warmup_epochs": warmup_epochs, "early_stop_patience": early_stop_patience,
+                "ema": ema, "ema_decay": ema_decay, "class_balanced": class_balanced,
+                "augment": dict(augment) if isinstance(augment, dict) else (augment if augment else None),
+            })
+            if log_callback:
+                log_callback(f"模型版本 {vdir.name} 已归档")
+        except Exception as e:
+            if log_callback:
+                log_callback(f"模型版本归档失败: {e}")
+
         return {"success": True, "best_acc": float(best_acc), "history": self.history}
 
     def stop(self):
@@ -369,22 +516,33 @@ class ClassificationTrainer:
         else:
             self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr, weight_decay=weight_decay)
 
-    def _build_loss(self, loss_name, label_smoothing=0.1, focal_gamma=2.0):
+    def _build_loss(self, loss_name, label_smoothing=0.1, focal_gamma=2.0, class_balanced=False):
+        weights = None
+        if class_balanced:
+            try:
+                from .eval import compute_class_weights
+                weights = compute_class_weights(str(self.project_dir)).to(self.device)
+            except Exception:
+                weights = None
         if loss_name == "cross_entropy":
-            self.criterion = nn.CrossEntropyLoss()
+            self.criterion = nn.CrossEntropyLoss(weight=weights)
         elif loss_name == "label_smoothing":
-            self.criterion = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
+            self.criterion = nn.CrossEntropyLoss(label_smoothing=label_smoothing, weight=weights)
         elif loss_name == "focal":
-            self.criterion = FocalLoss(gamma=focal_gamma)
+            alpha = weights.tolist() if weights is not None else None
+            self.criterion = FocalLoss(gamma=focal_gamma, alpha=alpha)
         else:
-            self.criterion = nn.CrossEntropyLoss()
+            self.criterion = nn.CrossEntropyLoss(weight=weights)
 
-    def _prepare_data(self, batch_size, image_size, scale_factor=1.0):
+    def _prepare_data(self, batch_size, image_size, scale_factor=1.0, augment=None):
+        flags = _resolve_cls_augment(augment)
         train_ds = ClassificationDataset(
-            str(self.project_dir), split="train", image_size=image_size, scale_factor=scale_factor
+            str(self.project_dir), split="train", image_size=image_size,
+            scale_factor=scale_factor, augment_flags=flags
         )
         val_ds = ClassificationDataset(
-            str(self.project_dir), split="val", image_size=image_size, scale_factor=scale_factor
+            str(self.project_dir), split="val", image_size=image_size,
+            scale_factor=scale_factor, augment_flags=None
         )
         self._target_size = getattr(train_ds, "_target_size", None)
         self._scale_factor = scale_factor
@@ -394,10 +552,12 @@ class ClassificationTrainer:
         if len(val_ds) == 0 and len(train_ds) >= 2:
             auto_split(str(self.project_dir), val_split=0.2)
             train_ds = ClassificationDataset(
-                str(self.project_dir), split="train", image_size=image_size, scale_factor=scale_factor
+                str(self.project_dir), split="train", image_size=image_size,
+                scale_factor=scale_factor, augment_flags=flags
             )
             val_ds = ClassificationDataset(
-                str(self.project_dir), split="val", image_size=image_size, scale_factor=scale_factor
+                str(self.project_dir), split="val", image_size=image_size,
+                scale_factor=scale_factor, augment_flags=None
             )
         if len(val_ds) == 0:
             raise ValueError("Validation set is empty! Not enough samples.")
@@ -448,11 +608,15 @@ class ClassificationTrainer:
                 self.scaler.scale(loss).backward()
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
+                if self._ema is not None:
+                    self._ema.update(self.model)
             else:
                 outputs = self.model(images)
                 loss = self.criterion(outputs, labels)
                 loss.backward()
                 self.optimizer.step()
+                if self._ema is not None:
+                    self._ema.update(self.model)
 
             total_loss += loss.item()
             batches += 1
@@ -495,8 +659,11 @@ class ClassificationTrainer:
 
     def _train_kfold(self, k, epochs, batch_size, image_size,
                      loss_func, optimizer, lr, pretrained,
+                     weight_decay, momentum, label_smoothing, focal_gamma,
+                     dropout, lr_scheduler, warmup_epochs, early_stop_patience,
                      progress_callback, log_callback, stop_check,
-                     plot_callback, batch_callback):
+                     plot_callback, batch_callback,
+                     ema=True, ema_decay=0.999, class_balanced=False):
         """K-fold cross-validation with stratified splits."""
         # Ensure split exists to get all samples
         split_file = self.project_dir / "train_test_split.json"
@@ -517,8 +684,14 @@ class ClassificationTrainer:
         if k < 2:
             if log_callback:
                 log_callback("Need at least 2 samples for K-fold. Falling back to normal training.")
-            return self.train(epochs, batch_size, image_size, loss_func, optimizer, lr,
-                             pretrained, resume=False, k_folds=1,
+            return self.train(epochs=epochs, batch_size=batch_size, image_size=image_size,
+                             loss_func=loss_func, optimizer=optimizer, lr=lr,
+                             pretrained=pretrained, resume=False, k_folds=1,
+                             weight_decay=weight_decay, momentum=momentum,
+                             label_smoothing=label_smoothing, focal_gamma=focal_gamma,
+                             dropout=dropout, lr_scheduler=lr_scheduler,
+                             warmup_epochs=warmup_epochs, early_stop_patience=early_stop_patience,
+                             ema=ema, ema_decay=ema_decay, class_balanced=class_balanced,
                              progress_callback=progress_callback, log_callback=log_callback,
                              stop_check=stop_check, plot_callback=plot_callback,
                              batch_callback=batch_callback)
@@ -557,7 +730,7 @@ class ClassificationTrainer:
             val_subset = torch.utils.data.Subset(all_ds, list(val_indices))
 
             drop = len(train_subset) > batch_size
-            collate = self._pad_collate if (image_size is None and getattr(train_ds, "_target_size", None) is None) else None
+            collate = self._pad_collate if (image_size is None and getattr(all_ds, "_target_size", None) is None) else None
             self.train_loader = DataLoader(
                 train_subset, batch_size=batch_size, shuffle=True,
                 num_workers=4, pin_memory=True, prefetch_factor=2, drop_last=drop,
@@ -573,8 +746,9 @@ class ClassificationTrainer:
             self.model = _create_classification_model(
                 self.model_name, self.num_classes, pretrained=pretrained, dropout=dropout
             ).to(self.device)
-            self._build_optimizer(optimizer, lr)
-            self._build_loss(loss_func, label_smoothing, focal_gamma)
+            self._build_optimizer(optimizer, lr, weight_decay, momentum)
+            self._build_loss(loss_func, label_smoothing, focal_gamma, class_balanced=class_balanced)
+            self._ema = ModelEMA(self.model, decay=ema_decay) if ema else None
             self._stop_flag = False
 
             if log_callback:
@@ -586,7 +760,13 @@ class ClassificationTrainer:
                     self._stop_flag = True
                     break
                 train_loss = self._train_epoch(batch_callback)
-                val_loss, val_acc = self._validate()
+                if self._ema is not None:
+                    self._ema.apply_shadow(self.model)
+                try:
+                    val_loss, val_acc = self._validate()
+                finally:
+                    if self._ema is not None:
+                        self._ema.restore(self.model)
                 self.history["train_loss"].append(train_loss)
                 self.history["val_loss"].append(val_loss)
                 self.history["val_acc"].append(val_acc)
@@ -611,17 +791,40 @@ class ClassificationTrainer:
             std_acc = np.std(fold_records)
             if log_callback:
                 log_callback(f"=== K-Fold Complete: avg Acc={avg_acc:.4f} ±{std_acc:.4f} ===")
-            self._save_model("best_model.pth")
+            self._save_model("best_model.pth", ema=(self._ema is not None))
             self._save_model("last_model.pth")
+            try:
+                vdir = self.save_version(config={
+                    "epochs": epochs, "batch_size": batch_size, "lr": lr,
+                    "optimizer": optimizer, "loss": loss_func,
+                    "image_size": image_size,
+                    "scale_factor": list(scale_factor) if isinstance(scale_factor, (tuple, list)) else scale_factor,
+                    "k_folds": k, "resume": False,
+                    "weight_decay": weight_decay, "momentum": momentum,
+                    "label_smoothing": label_smoothing, "focal_gamma": focal_gamma,
+                    "dropout": dropout, "lr_scheduler": lr_scheduler,
+                    "warmup_epochs": warmup_epochs, "early_stop_patience": early_stop_patience,
+                    "ema": ema, "ema_decay": ema_decay, "class_balanced": class_balanced,
+                    "fold_accuracies": [float(a) for a in fold_records],
+                    "mean_acc": float(avg_acc),
+                })
+                if log_callback:
+                    log_callback(f"模型版本 {vdir.name} 已归档")
+            except Exception:
+                pass
             return {"success": True, "mean_acc": float(avg_acc), "std_acc": float(std_acc), "fold_accuracies": fold_records}
 
     # ── Model persistence ───────────────────────────────────────────
-    def _save_model(self, filename):
+    def _save_model(self, filename, ema=False):
+        """Save model checkpoint (EMA smoothed weights when ema=True)."""
         models_dir = self.project_dir / "models" / "classification"
         models_dir.mkdir(parents=True, exist_ok=True)
         path = models_dir / filename
+        state = self.model.state_dict()
+        if ema and self._ema is not None:
+            state = {k: v.detach().clone() for k, v in self._ema.shadow.items()}
         torch.save({
-            "model_state_dict": self.model.state_dict(),
+            "model_state_dict": state,
             "optimizer_state_dict": self.optimizer.state_dict(),
             "num_classes": self.num_classes,
             "class_names": self.class_names,
@@ -634,7 +837,7 @@ class ClassificationTrainer:
 
     def load_model(self, filename="best_model.pth"):
         """Load a trained model for inference."""
-        path = self.project_dir / "models" / "classification" / filename
+        path = resolve_model_path(self.project_dir, filename)
         if not path.exists():
             raise FileNotFoundError(f"Model not found: {path}")
         ckpt = torch.load(path, map_location=self.device, weights_only=False)
@@ -707,10 +910,13 @@ class ClassificationTrainer:
             pass
         return None
 
-    def _export_for_inference(self):
-        """Export trained model to TorchScript and ONNX."""
+    def _export_for_inference(self, out_dir=None):
+        """Export trained model to TorchScript and ONNX.
+
+        out_dir: 导出目录；默认 models/classification（版本归档时传入版本目录）。
+        """
         self.model.eval()
-        models_dir = self.project_dir / "models" / "classification"
+        models_dir = Path(out_dir) if out_dir else (self.project_dir / "models" / "classification")
         models_dir.mkdir(parents=True, exist_ok=True)
 
         rsz = self._resolve_inference_resize()
@@ -738,15 +944,49 @@ class ClassificationTrainer:
         except Exception:
             pass
 
+    def save_version(self, config=None):
+        """把当前最优权重归档为新版本 versions/V{n}（含 meta/history/onnx）。
+
+        config: dict，训练超参数等附加元数据。
+        """
+        n = next_version_number(self.project_dir)
+        state = self.model.state_dict()
+        if self._ema is not None:
+            state = {k: v.detach().clone() for k, v in self._ema.shadow.items()}
+        opt_state = {}
+        try:
+            if getattr(self, "optimizer", None) is not None:
+                opt_state = self.optimizer.state_dict()
+        except Exception:
+            opt_state = {}
+        meta = {
+            "num_classes": self.num_classes,
+            "class_names": self.class_names,
+            "model_name": self.model_name,
+            "image_size": getattr(self, "_image_size", None),
+            "scale_factor": getattr(self, "_scale_factor", 1.0),
+            "target_size": getattr(self, "_target_size", None),
+            "best_val_acc": max(self.history.get("val_acc", [0])) if self.history.get("val_acc") else 0.0,
+        }
+        if config:
+            meta.update(config)
+        vdir = write_version_archive(str(self.project_dir), n, state, opt_state, meta, self.history)
+        try:
+            self._export_for_inference(out_dir=vdir)
+        except Exception:
+            pass
+        return vdir
+
     # ── Inference ───────────────────────────────────────────────────
-    def predict_single(self, image_path, model_filename, top_k=5):
+    def predict_single(self, image_path, model_filename, top_k=5, tta=False):
         """Convenience method: load model and classify a single image.
 
+        tta=True enables multi-crop + flip voting for a more stable prediction.
         Returns dict: {"predictions": [{"class": ..., "confidence": ...}, ...]}
         or None on failure.
         """
         self.load_model(model_filename)
-        results = self.predict(image_path, top_k=top_k)
+        results = self.predict(image_path, top_k=top_k, tta=tta)
         if not results:
             return None
         return {
@@ -756,9 +996,41 @@ class ClassificationTrainer:
             ]
         }
 
+    def _predict_tta(self, img, transform):
+        """Multi-crop + horizontal-flip TTA: average softmax over 10 views."""
+        from PIL import Image
+        w, h = img.size
+        s = min(w, h)
+        crop = max(int(s * 0.9) // 2 * 2 + 1, 17)
+        crop = min(crop, s)
+        if w - crop < 4 or h - crop < 4:
+            crop = s
+        positions = [
+            (0, 0),
+            (0, h - crop),
+            (w - crop, 0),
+            (w - crop, h - crop),
+            ((w - crop) // 2, (h - crop) // 2),
+        ]
+        views = []
+        for x, y in positions:
+            v = img.crop((x, y, x + crop, y + crop))
+            views.append(v)
+            views.append(v.transpose(Image.FLIP_LEFT_RIGHT))
+        probs = None
+        with torch.amp.autocast("cuda"):
+            for v in views:
+                tv = transform(v).unsqueeze(0).to(self.device)
+                p = self.model(tv).softmax(1)
+                probs = p if probs is None else probs + p
+        return (probs / len(views)).squeeze(0)
+
     @torch.inference_mode()
-    def predict(self, images, top_k=5):
-        """Classify image(s). Returns list of [(class_name, confidence), ...] or list-of-lists."""
+    def predict(self, images, top_k=5, tta=False):
+        """Classify image(s). Returns list of [(class_name, confidence), ...] or list-of-lists.
+
+        tta=True (single image only) averages softmax over multi-crop + flips.
+        """
         from PIL import Image
         import torchvision.transforms as T
 
@@ -782,11 +1054,13 @@ class ClassificationTrainer:
                 img = Image.open(img).convert("RGB")
             elif isinstance(img, np.ndarray):
                 img = Image.fromarray(img)
-            tensor = transform(img).unsqueeze(0).to(self.device)
-
-            with torch.amp.autocast("cuda"):
-                output = self.model(tensor)
-            probs = output.softmax(1).squeeze(0)
+            if tta and is_single:
+                probs = self._predict_tta(img, transform)
+            else:
+                tensor = transform(img).unsqueeze(0).to(self.device)
+                with torch.amp.autocast("cuda"):
+                    output = self.model(tensor)
+                probs = output.softmax(1).squeeze(0)
 
             topk_probs, topk_ids = probs.topk(min(top_k, self.num_classes))
             top_results = [
@@ -836,12 +1110,14 @@ class DualClassificationTrainer:
         self.history = {"train_loss": [], "val_loss": [], "val_acc": []}
         self._stop_requested = False
         self._stop_check_fn = None
+        self._ema = None
 
-    def _prepare_data(self, batch_size=32, image_size=224):
+    def _prepare_data(self, batch_size=32, image_size=224, augment=None):
         from .dual_dataset import MixedClassificationDataset
 
+        flags = _resolve_cls_augment(augment)
         train_ds = MixedClassificationDataset(
-            self.project_dir, split="train", image_size=image_size, augment=True)
+            self.project_dir, split="train", image_size=image_size, augment=flags)
         val_ds = MixedClassificationDataset(
             self.project_dir, split="val", image_size=image_size, augment=False)
 
@@ -849,7 +1125,7 @@ class DualClassificationTrainer:
             from .dual_dataset import auto_split
             auto_split(self.project_dir, val_ratio=0.2)
             train_ds = MixedClassificationDataset(
-                self.project_dir, split="train", image_size=image_size, augment=True)
+                self.project_dir, split="train", image_size=image_size, augment=flags)
             val_ds = MixedClassificationDataset(
                 self.project_dir, split="val", image_size=image_size, augment=False)
 
@@ -865,11 +1141,21 @@ class DualClassificationTrainer:
                                      num_workers=2, pin_memory=True)
         return len(train_ds), len(val_ds)
 
-    def init_model(self):
+    def _make_criterion(self, class_balanced=False):
+        weights = None
+        if class_balanced:
+            try:
+                from .eval import compute_class_weights
+                weights = compute_class_weights(str(self.project_dir)).to(self.device)
+            except Exception:
+                weights = None
+        return nn.CrossEntropyLoss(weight=weights)
+
+    def init_model(self, class_balanced=False):
         from .dual_model import create_dual_model
         self.model = create_dual_model(self.model_name, self.num_classes).to(self.device)
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=1e-4)
-        self.criterion = nn.CrossEntropyLoss()
+        self.criterion = self._make_criterion(class_balanced)
 
     def train_epoch(self):
         self.model.train()
@@ -892,6 +1178,8 @@ class DualClassificationTrainer:
             loss = self.criterion(outputs, labels)
             loss.backward()
             self.optimizer.step()
+            if self._ema is not None:
+                self._ema.update(self.model)
 
             total_loss += loss.item()
             batches += 1
@@ -928,7 +1216,12 @@ class DualClassificationTrainer:
 
     def train(self, epochs=200, batch_size=32, lr=0.001, image_size=224,
               progress_callback=None, log_callback=None, resume=False,
-              stop_check=None, epoch_callback=None):
+              stop_check=None, epoch_callback=None, augment=None,
+              class_balanced=False, ema=True, ema_decay=0.999,
+              optimizer=None, loss_func=None, scale_factor=1.0, use_amp=None,
+              k_folds=1, weight_decay=None, momentum=None, label_smoothing=None,
+              focal_gamma=None, dropout=None, lr_scheduler=None,
+              warmup_epochs=None, early_stop_patience=None, plot_callback=None):
         if resume:
             ckpt_path = self.project_dir / "models" / "classification" / "last_model.pth"
             if ckpt_path.exists():
@@ -937,11 +1230,12 @@ class DualClassificationTrainer:
                 self.model_name = ckpt.get("model_name", self.model_name)
                 self.history = ckpt.get("history", {"train_loss": [], "val_loss": [], "val_acc": []})
                 start_epoch = len(self.history.get("train_loss", []))
-                self._prepare_data(batch_size, image_size, scale_factor)
+                self._prepare_data(batch_size, image_size, scale_factor, augment=augment)
                 from .dual_model import create_dual_model
                 self.model = create_dual_model(self.model_name, self.num_classes).to(self.device)
                 self.model.load_state_dict(ckpt["model_state_dict"], strict=False)
                 self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
+                self.criterion = self._make_criterion(class_balanced)
                 if "optimizer_state_dict" in ckpt:
                     try:
                         self.optimizer.load_state_dict(ckpt["optimizer_state_dict"])
@@ -956,19 +1250,26 @@ class DualClassificationTrainer:
                     log_callback("No checkpoint found, training from scratch")
 
         if not resume:
-            self._prepare_data(batch_size, image_size)
-            self.init_model()
+            self._prepare_data(batch_size, image_size, augment=augment)
+            self.init_model(class_balanced=class_balanced)
             start_epoch = 0
             for pg in self.optimizer.param_groups:
                 pg["lr"] = lr
 
         self._stop_requested = False
         self._stop_check_fn = stop_check
+        self._ema = ModelEMA(self.model, decay=ema_decay) if ema else None
 
         best_acc = self.history.get("val_acc", [0])[-1] if self.history.get("val_acc") else 0
         for epoch in range(start_epoch, epochs):
             train_loss = self.train_epoch()
-            val_loss, val_acc = self.validate()
+            if self._ema is not None:
+                self._ema.apply_shadow(self.model)
+            try:
+                val_loss, val_acc = self.validate()
+            finally:
+                if self._ema is not None:
+                    self._ema.restore(self.model)
 
             self.history["train_loss"].append(train_loss)
             self.history["val_loss"].append(val_loss)
@@ -997,6 +1298,9 @@ class DualClassificationTrainer:
 
             if val_acc > best_acc:
                 best_acc = val_acc
+                if self._ema is not None:
+                    ckpt = dict(ckpt)
+                    ckpt["model_state_dict"] = {k: v.detach().clone() for k, v in self._ema.shadow.items()}
                 torch.save(ckpt, self.project_dir / "models" / "classification" / "best_model.pth")
                 if log_callback:
                     log_callback(f"  Best saved (Acc: {best_acc:.4f})")
@@ -1008,6 +1312,59 @@ class DualClassificationTrainer:
 
         if log_callback:
             log_callback(f"Training complete. Best accuracy: {best_acc:.4f}")
+
+        # 模型版本归档
+        try:
+            vdir = self.save_version(config={
+                "epochs": epochs, "batch_size": batch_size, "lr": lr,
+                "image_size": image_size,
+                "scale_factor": list(scale_factor) if isinstance(scale_factor, (tuple, list)) else scale_factor,
+                "k_folds": k_folds, "resume": resume,
+                "ema": ema, "ema_decay": ema_decay, "class_balanced": class_balanced,
+                "augment": dict(augment) if isinstance(augment, dict) else (augment if augment else None),
+            })
+            if log_callback:
+                log_callback(f"模型版本 {vdir.name} 已归档")
+        except Exception as e:
+            if log_callback:
+                log_callback(f"模型版本归档失败: {e}")
+
+    def load_model(self, filename="best_model.pth"):
+        """加载双输入分类模型（支持版本名 V{n}）。"""
+        from .dual_model import create_dual_model
+        path = resolve_model_path(self.project_dir, filename)
+        if not path.exists():
+            raise FileNotFoundError(f"Model not found: {path}")
+        ckpt = torch.load(path, map_location=self.device, weights_only=False)
+        self.num_classes = ckpt["num_classes"]
+        self.model_name = ckpt.get("model_name", self.model_name)
+        if getattr(self, "_class_names", None):
+            self.class_names = self._class_names
+        else:
+            self.class_names = [f"class_{i}" for i in range(self.num_classes)]
+        self.model = create_dual_model(self.model_name, self.num_classes).to(self.device)
+        self.model.load_state_dict(ckpt["model_state_dict"], strict=False)
+        self.model.eval()
+        return ckpt.get("history", {})
+
+    def save_version(self, config=None):
+        """把双输入模型最优权重归档为新版本 versions/V{n}。"""
+        n = next_version_number(self.project_dir)
+        state = self.model.state_dict()
+        if self._ema is not None:
+            state = {k: v.detach().clone() for k, v in self._ema.shadow.items()}
+        meta = {
+            "num_classes": self.num_classes,
+            "class_names": self.class_names,
+            "model_name": self.model_name,
+            "image_size": getattr(self, "_image_size", None),
+            "best_val_acc": max(self.history.get("val_acc", [0])) if self.history.get("val_acc") else 0.0,
+            "mixed_input": True,
+        }
+        if config:
+            meta.update(config)
+        vdir = write_version_archive(str(self.project_dir), n, state, {}, meta, self.history)
+        return vdir
 
     def predict(self, gray_path, height_path, image_size=224):
         """Inference on a single pair."""

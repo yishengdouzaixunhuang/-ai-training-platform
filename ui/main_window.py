@@ -12,9 +12,8 @@ from PyQt5.QtWidgets import (
     QTextEdit, QFileDialog, QMessageBox, QInputDialog, QVBoxLayout, QHBoxLayout,
     QWidget, QLabel, QPushButton, QComboBox, QSpinBox, QDoubleSpinBox, QProgressBar, QGroupBox,
     QListWidget, QSlider, QDialog, QFormLayout, QDialogButtonBox,
-    QLineEdit, QCheckBox, QTableWidget, QTableWidgetItem, QHeaderView
-,
-    QStackedWidget
+    QLineEdit, QCheckBox, QTableWidget, QTableWidgetItem, QHeaderView, QGridLayout,
+    QStackedWidget, QApplication
 )
 from PyQt5.QtGui import QFont, QColor, QImage, QPixmap, QPainter, QLinearGradient
 from PyQt5.QtCore import Qt, pyqtSignal, QTimer
@@ -125,12 +124,10 @@ class TrainSettingsDialog(QDialog):
         self.loss_combo.setCurrentIndex(max(0, idx3))
         self.loss_combo.setToolTip("Loss function: ce+lovasz recommended for small defects")
         layout.addRow("Loss:", self.loss_combo)
-        self.augment_combo = QComboBox()
-        self.augment_combo.addItems(["none", "light", "medium", "strong"])
-        idx4 = self.augment_combo.findText(saved.get("augment", "none"))
-        self.augment_combo.setCurrentIndex(max(0, idx4))
-        self.augment_combo.setToolTip("Data augmentation intensity")
-        layout.addRow("Augment:", self.augment_combo)
+        self.augment_hint = QLabel("数据增强：请在主界面右侧「增强」面板设置（全局生效）")
+        self.augment_hint.setWordWrap(True)
+        self.augment_hint.setStyleSheet("color: #666;")
+        layout.addRow("Augment:", self.augment_hint)
         self.resume_check = QCheckBox("Resume from last checkpoint")
         self.resume_check.setChecked(saved.get("resume", False))
         layout.addRow(self.resume_check)
@@ -155,7 +152,6 @@ class TrainSettingsDialog(QDialog):
             "image_size": int(self.size_combo.currentText()),
             "k_folds": self.kfold_spin.value(),
             "loss": self.loss_combo.currentText(),
-            "augment": self.augment_combo.currentText(),
             "resume": self.resume_check.isChecked(),
         }
 
@@ -167,7 +163,6 @@ class TrainSettingsDialog(QDialog):
             "image_size": int(self.size_combo.currentText()),
             "k_folds": self.kfold_spin.value(),
             "loss": self.loss_combo.currentText(),
-            "augment": self.augment_combo.currentText(),
             "resume": self.resume_check.isChecked(),
         }
         try:
@@ -231,6 +226,7 @@ class MainWindow(QMainWindow):
         self.batch_signal.connect(self._update_batch_status)
         self.refresh_list_signal.connect(lambda: self._filter_images(self.search_input.text()))
         self._init_ui()
+        self._init_augment_panel()
         self._refresh_projects()
 
         # System monitor in status bar (bottom-right)
@@ -651,7 +647,6 @@ class MainWindow(QMainWindow):
         self.btn_infer_stop.setEnabled(False); hil.addWidget(self.btn_infer_stop)
         self.infer_result_label = QLabel(""); hil.addWidget(self.infer_result_label)
         il.addLayout(hil); il.addStretch()
-        self._right_stack.addWidget(panel_infer)  # 2
 
         # Panel 3: Training
         panel_train = QWidget(); tl = QVBoxLayout(panel_train); tl.setContentsMargins(4, 2, 2, 2)
@@ -680,22 +675,8 @@ class MainWindow(QMainWindow):
         self.resume_check = QCheckBox("Resume from last")
         fl.addRow("", self.resume_check)
         tl.addLayout(fl)
-        self._right_stack.addWidget(panel_train)  # 3
 
-        # Panel 4: Loss Curve
-        panel_loss = QWidget(); cl = QVBoxLayout(panel_loss); cl.setContentsMargins(4, 2, 2, 2)
-        cl.addWidget(QLabel("<b>Loss Curve</b>"))
-        self.loss_fig = Figure(figsize=(3, 2.5), dpi=100)
-        self.loss_ax = self.loss_fig.add_subplot(111)
-        self.loss_ax.set_title("Training Progress", fontsize=9)
-        self.loss_ax.set_xlabel("Epoch", fontsize=7)
-        self.loss_ax.set_ylabel("Loss", fontsize=7)
-        self.loss_canvas = FigureCanvas(self.loss_fig)
-        self.loss_canvas.setToolTip("Loss curve (click/drag to zoom, scroll to pan)")
-        cl.addWidget(self.loss_canvas)
-        self._right_stack.addWidget(panel_loss)  # 4
-
-        # Panel 5: Detection Tools
+        # Panel 4: Detection Tools
         panel_det = QWidget(); dl = QVBoxLayout(panel_det); dl.setContentsMargins(4, 2, 2, 2)
         dl.addWidget(QLabel("<b>Detection Tools</b>"))
         dl.addWidget(QLabel("Class:"))
@@ -712,9 +693,8 @@ class MainWindow(QMainWindow):
         dl.addWidget(QPushButton("Delete Selected Box (Del)", clicked=self._det_delete_box))
         dl.addWidget(QPushButton("Delete All Boxes", clicked=self._det_clear_all))
         dl.addStretch()
-        self._right_stack.addWidget(panel_det)  # 5
 
-        # Panel 6: Detection Training
+        # Panel 5: Detection Training
         panel_det_train = QWidget(); dtl = QVBoxLayout(panel_det_train); dtl.setContentsMargins(4, 2, 2, 2)
         dtl.addWidget(QLabel("<b>Detection Training</b>"))
         self.det_train_progress = QProgressBar(); dtl.addWidget(self.det_train_progress)
@@ -737,7 +717,7 @@ class MainWindow(QMainWindow):
         dtl.addWidget(QPushButton("Start Training", clicked=self._start_det_training))
         dtl.addStretch()
 
-        # Panel 7: Classification Training
+        # Panel 6: Classification Training
         panel_cls_train = QWidget(); ctl = QVBoxLayout(panel_cls_train); ctl.setContentsMargins(4, 2, 2, 2)
         ctl.addWidget(QLabel("<b>Classification Training</b>"))
         self.cls_mixed_check = QCheckBox("Mixed (Gray + Height Map)")
@@ -768,10 +748,10 @@ class MainWindow(QMainWindow):
         self.cls_loss_combo = QComboBox()
         self.cls_loss_combo.addItems(["cross_entropy", "label_smoothing", "focal"])
         cfl.addRow("Loss:", self.cls_loss_combo)
-        self.cls_augment_combo = QComboBox()
-        self.cls_augment_combo.addItems(["none", "light", "medium", "heavy"])
-        self.cls_augment_combo.setCurrentText("medium")
-        cfl.addRow("Augment:", self.cls_augment_combo)
+        cls_aug_hint = QLabel("数据增强：右侧「增强」面板（全局生效）")
+        cls_aug_hint.setWordWrap(True)
+        cls_aug_hint.setStyleSheet("color: #666;")
+        cfl.addRow("Augment:", cls_aug_hint)
         hl_scale = QHBoxLayout()
         self.cls_scale_w_spin = QDoubleSpinBox(); self.cls_scale_w_spin.setRange(0.1, 1.0); self.cls_scale_w_spin.setSingleStep(0.05)
         self.cls_scale_w_spin.setDecimals(2); self.cls_scale_w_spin.setValue(1.0)
@@ -798,6 +778,12 @@ class MainWindow(QMainWindow):
         cfl.addRow("K-Fold:", self.cls_kfold_spin)
         self.cls_resume_check = QCheckBox("Resume from last")
         cfl.addRow("", self.cls_resume_check)
+        self.cls_balanced_check = QCheckBox("类别平衡权重（缓解样本不平衡）")
+        self.cls_balanced_check.setToolTip("按各类训练样本数反比加权损失，类别不平衡时通常能明显提升准确率")
+        cfl.addRow("", self.cls_balanced_check)
+        self.cls_ema_check = QCheckBox("EMA 权重平均（原生基线建议关闭）")
+        self.cls_ema_check.setToolTip("开启后保存 EMA 平滑权重（训练更稳但偏离原始权重）；关闭=直接保存训练出的原始权重")
+        cfl.addRow("", self.cls_ema_check)
 
         # --- Hyperparameters ---
         self.cls_wd_spin = QDoubleSpinBox(); self.cls_wd_spin.setRange(0, 0.1); self.cls_wd_spin.setSingleStep(0.0001)
@@ -844,17 +830,20 @@ class MainWindow(QMainWindow):
             "QPushButton { background:#1565c0; color:white; font-weight:bold; padding:6px; }"
             "QPushButton:hover { background:#1976d2; }")
         ctl.addWidget(self.cls_recommend_btn)
+        self.cls_native_btn = QPushButton("⚡ 原生基线参数（最简，无增强/EMA/类平衡）", clicked=self._apply_cls_native_params)
+        self.cls_native_btn.setStyleSheet(
+            "QPushButton { background:#2e7d32; color:white; font-weight:bold; padding:6px; }"
+            "QPushButton:hover { background:#388e3c; }")
+        ctl.addWidget(self.cls_native_btn)
         self._cls_start_btn = QPushButton("Start Training", clicked=self._start_cls_training)
         ctl.addWidget(self._cls_start_btn)
         # Loss/Acc curve now lives in an independent window
         self._cls_loss_window = LossCurveWindow(self)
-        self._cls_loss_open_btn = QPushButton("?? Open Loss/Acc Curve Window", clicked=self._show_cls_loss_window)
+        self._cls_loss_open_btn = QPushButton("打开 Loss/Acc Curve Window", clicked=self._show_cls_loss_window)
         ctl.addWidget(self._cls_loss_open_btn)
         ctl.addStretch()
-        self._right_stack.addWidget(panel_det_train)  # 6
-        self._right_stack.addWidget(panel_cls_train)  # 7
 
-        # Panel 8: Classification Inference
+        # Panel 7: Classification Inference
         panel_cls_infer = QWidget(); cil = QVBoxLayout(panel_cls_infer); cil.setContentsMargins(4, 2, 2, 2)
         cil.addWidget(QLabel("<b>Classification Inference</b>"))
         self.cls_infer_model_combo = QComboBox()
@@ -879,6 +868,11 @@ class MainWindow(QMainWindow):
         self.cls_auto_heatmap.setChecked(True)
         hl3.addWidget(self.cls_auto_heatmap)
         cil.addLayout(hl3)
+        self.cls_tta_check = QCheckBox("TTA 多裁剪投票（单张推理更稳）")
+        saved_tta = self._load_ui_setting("cls_tta", True)
+        self.cls_tta_check.setChecked(saved_tta)
+        self.cls_tta_check.toggled.connect(lambda v: self._save_ui_setting("cls_tta", v))
+        cil.addWidget(self.cls_tta_check)
 
         # Confusion Matrix section
         cil.addWidget(QLabel("<b>Confusion Matrix</b>"))
@@ -889,11 +883,29 @@ class MainWindow(QMainWindow):
         cil.addLayout(eh)
         self.cls_cm_table = QTableWidget()
         self.cls_cm_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.cls_cm_table.horizontalHeader().setDefaultAlignment(Qt.AlignCenter)
+        self.cls_cm_table.verticalHeader().setDefaultAlignment(Qt.AlignCenter)
         cil.addWidget(self.cls_cm_table)
+        # 模型版本管理
+        vgb = QGroupBox("模型版本")
+        vv = QVBoxLayout(vgb)
+        self.cls_version_table = QTableWidget()
+        self.cls_version_table.setColumnCount(6)
+        self.cls_version_table.setHorizontalHeaderLabels(["版本", "时间", "验证Acc", "批推Acc", "平均耗时", "模型"])
+        self.cls_version_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.cls_version_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.cls_version_table.setMaximumHeight(150)
+        self.cls_version_table.doubleClicked.connect(self._cls_version_activate)
+        vv.addWidget(self.cls_version_table)
+        vhb = QHBoxLayout()
+        vhb.addWidget(QPushButton("刷新版本", clicked=self._refresh_cls_versions))
+        vhb.addWidget(QPushButton("设为当前", clicked=self._cls_version_activate))
+        vhb.addWidget(QPushButton("导出ZIP", clicked=self._cls_version_export))
+        vv.addLayout(vhb)
+        cil.addWidget(vgb)
         cil.addStretch()
-        self._right_stack.addWidget(panel_cls_infer)  # 8
 
-        # Panel 9: OCR Inference
+        # Panel 8: OCR Inference
         panel_ocr = QWidget(); oil = QVBoxLayout(panel_ocr); oil.setContentsMargins(4, 2, 2, 2)
         oil.addWidget(QLabel("<b>OCR Inference</b>"))
         self.ocr_status = QLabel("Ready"); oil.addWidget(self.ocr_status)
@@ -909,13 +921,15 @@ class MainWindow(QMainWindow):
         self.ocr_result_table = QTableWidget()
         self.ocr_result_table.setColumnCount(5)
         self.ocr_result_table.setHorizontalHeaderLabels(["#", "Text", "Conf", "Pos", "Size"])
-        self.ocr_result_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        # 允许双击/再次单击选中文本（仅 Text 列可编辑，其他列仍只读），配合右键复制
+        self.ocr_result_table.setEditTriggers(QTableWidget.DoubleClicked | QTableWidget.SelectedClicked)
+        self.ocr_result_table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.ocr_result_table.customContextMenuRequested.connect(self._on_ocr_result_menu)
         oil.addWidget(self.ocr_result_table)
         oil.addWidget(QPushButton("Export CSV", clicked=self._export_ocr_csv))
         oil.addStretch()
-        self._right_stack.addWidget(panel_ocr)  # 9
 
-        # Panel 10: OCV Inspection
+        # Panel 9: OCV Inspection
         panel_ocv = QWidget(); ovl = QVBoxLayout(panel_ocv); ovl.setContentsMargins(4, 2, 2, 2)
         ovl.addWidget(QLabel("<b>OCV Quality Inspection</b>"))
         self.ocv_status = QLabel("Ready"); ovl.addWidget(self.ocv_status)
@@ -934,9 +948,8 @@ class MainWindow(QMainWindow):
         self.ocv_result_label = QLabel(""); self.ocv_result_label.setWordWrap(True)
         ovl.addWidget(self.ocv_result_label)
         ovl.addStretch()
-        self._right_stack.addWidget(panel_ocv)  # 10
 
-        # Panel 11: Height Map Controls
+        # Panel 10: Height Map Controls
         panel_hm = QWidget(); hml = QVBoxLayout(panel_hm); hml.setContentsMargins(4, 2, 2, 2)
         hml.addWidget(QLabel("<b>Height Map Colormap</b>"))
         self.hm_status = QLabel("No height map loaded")
@@ -978,34 +991,94 @@ class MainWindow(QMainWindow):
         bth.addWidget(apply_btn)
         hml.addLayout(bth)
         hml.addStretch()
-        self._right_stack.addWidget(panel_hm)  # 11
 
+        # Panel 11: 数据增强（全局，所有训练任务共用）
+        panel_aug = QWidget(); augl = QVBoxLayout(panel_aug); augl.setContentsMargins(4, 2, 2, 2)
+        augl.addWidget(QLabel("<b>数据增强（全局）</b>"))
+        aug_tip = QLabel("对所有训练任务生效：分割 / 分类 / 检测\n（随机应用已勾选的增强方式）")
+        aug_tip.setStyleSheet("color: #666; font-size: 11px;")
+        aug_tip.setWordWrap(True)
+        augl.addWidget(aug_tip)
+        self.aug_enabled_check = QCheckBox("启用数据增强")
+        self.aug_enabled_check.toggled.connect(self._save_augment_ui)
+        augl.addWidget(self.aug_enabled_check)
+        augl.addWidget(QLabel("<b>增强方式：</b>"))
+        aug_grid = QGridLayout(); aug_grid.setHorizontalSpacing(10); aug_grid.setVerticalSpacing(2)
+        self._aug_checks = {}
+        from training.augment_config import AUGMENT_FLAG_LABELS
+        for i, (key, label) in enumerate(AUGMENT_FLAG_LABELS):
+            cb = QCheckBox(label)
+            cb.toggled.connect(self._save_augment_ui)
+            self._aug_checks[key] = cb
+            aug_grid.addWidget(cb, i // 2, i % 2)
+        augl.addLayout(aug_grid)
+        abtns = QHBoxLayout()
+        b_all = QPushButton("全选"); b_all.clicked.connect(lambda: self._set_aug_all(True))
+        b_none = QPushButton("全不选"); b_none.clicked.connect(lambda: self._set_aug_all(False))
+        b_def = QPushButton("恢复默认"); b_def.clicked.connect(self._set_aug_default)
+        abtns.addWidget(b_all); abtns.addWidget(b_none); abtns.addWidget(b_def)
+        augl.addLayout(abtns)
+        self.aug_status = QLabel(""); self.aug_status.setWordWrap(True)
+        self.aug_status.setStyleSheet("color: #888; font-size: 11px;")
+        augl.addWidget(self.aug_status)
+        augl.addStretch()
+
+        # ===== Inference group (auto-switch by project type) =====
+        panel_infer_group = QWidget(); igl = QVBoxLayout(panel_infer_group); igl.setContentsMargins(4, 2, 2, 2)
+        self._infer_title = QLabel("推理 · 语义分割")
+        self._infer_title.setStyleSheet("font-weight: bold; color: #2C5F8A;")
+        igl.addWidget(self._infer_title)
+        self._infer_stack = QStackedWidget()
+        self._infer_stack.addWidget(panel_infer)      # 0: seg / det (shared)
+        self._infer_stack.addWidget(panel_cls_infer)  # 1: classification
+        self._infer_stack.addWidget(panel_ocr)        # 2: OCR
+        self._infer_stack.addWidget(panel_ocv)        # 3: OCV
+        igl.addWidget(self._infer_stack)
+
+        # ===== Training group (auto-switch by project type) =====
+        panel_train_group = QWidget(); tgl = QVBoxLayout(panel_train_group); tgl.setContentsMargins(4, 2, 2, 2)
+        self._train_title = QLabel("训练 · 语义分割")
+        self._train_title.setStyleSheet("font-weight: bold; color: #2C5F8A;")
+        tgl.addWidget(self._train_title)
+        self._train_stack = QStackedWidget()
+        self._train_stack.addWidget(panel_train)      # 0: segmentation
+        self._train_stack.addWidget(panel_det_train)  # 1: detection
+        self._train_stack.addWidget(panel_cls_train)  # 2: classification
+        panel_train_na = QWidget(); nal = QVBoxLayout(panel_train_na)
+        na_label = QLabel("该任务类型无独立训练流程\n请在「推理」面板中直接操作")
+        na_label.setWordWrap(True); na_label.setStyleSheet("color: #888;")
+        nal.addWidget(na_label); nal.addStretch()
+        self._train_stack.addWidget(panel_train_na)   # 3: no training flow (OCR/OCV)
+        tgl.addWidget(self._train_stack)
+
+        self._right_stack.addWidget(panel_annot)        # 0: annotation
+        self._right_stack.addWidget(panel_ver)          # 1: version
+        self._right_stack.addWidget(panel_infer_group)  # 2: inference
+        self._right_stack.addWidget(panel_train_group)  # 3: training
+        self._right_stack.addWidget(panel_det)          # 4: detection tools
+        self._right_stack.addWidget(panel_hm)           # 5: height map
+        self._right_stack.addWidget(panel_aug)          # 6: augmentation
         content_layout.addWidget(self._right_stack)
 
         # ===== Vertical tab bar =====
-        tab_bar = QWidget(); tab_bar.setFixedWidth(36)
+        tab_bar = QWidget(); tab_bar.setFixedWidth(52)
         tab_layout = QVBoxLayout(tab_bar); tab_layout.setContentsMargins(1, 2, 1, 2); tab_layout.setSpacing(2)
 
         self._right_tabs = QButtonGroup(self); self._right_tabs.setExclusive(True)
         tab_defs = [
-            ("An", "Annotation Tools", 0),
-            ("Ve", "Version History", 1),
-            ("In", "Inference", 2),
-            ("Tr", "Training", 3),
-            ("Lo", "Loss Curve", 4),
-            ("De", "Detection Tools", 5),
-            ("DT", "Det Training", 6),
-            ("CL", "Cls Training", 7),
-            ("CI", "Cls Inference", 8),
-            ("OI", "OCR Inference", 9),
-            ("OV", "OCV Inspect", 10),
-            ("HM", "Height Map", 11),
+            ("标注", "标注工具", 0),
+            ("版本", "版本历史", 1),
+            ("推理", "推理（按项目类型自动切换）", 2),
+            ("训练", "训练（按项目类型自动切换）", 3),
+            ("检测", "检测工具", 4),
+            ("高度", "高度图", 5),
+            ("增强", "数据增强（全局）", 6),
         ]
         for icon_text, tooltip, idx in tab_defs:
             btn = QPushButton(icon_text)
-            btn.setCheckable(True); btn.setFixedSize(32, 32)
+            btn.setCheckable(True); btn.setFixedSize(46, 32)
             btn.setToolTip(tooltip)
-            btn.setStyleSheet("QPushButton { font-size: 12px; font-weight: bold; padding: 2px; } QPushButton:checked { background-color: #2C5F8A; color: white; border-radius: 3px; }")
+            btn.setStyleSheet("QPushButton { font-size: 11px; font-weight: bold; padding: 1px; } QPushButton:checked { background-color: #2C5F8A; color: white; border-radius: 3px; }")
             btn.clicked.connect(lambda checked, i=idx: self._right_stack.setCurrentIndex(i))
             self._right_tabs.addButton(btn, idx)
             tab_layout.addWidget(btn)
@@ -1019,6 +1092,93 @@ class MainWindow(QMainWindow):
         self._right_tabs.button(0).setChecked(True)
 
         return p
+
+    # ============ 全局数据增强（增强参数面板，所有训练任务共用） ============
+    def _init_augment_panel(self):
+        """启动时把全局增强配置加载到右侧「增强」面板。"""
+        if not hasattr(self, "aug_enabled_check"):
+            return
+        from training.augment_config import load_augment_flags, FLAG_KEYS
+        flags = load_augment_flags()
+        self.aug_enabled_check.setChecked(bool(flags.get("enabled", True)))
+        for key in FLAG_KEYS:
+            cb = self._aug_checks.get(key)
+            if cb is not None:
+                cb.setChecked(bool(flags.get(key, False)))
+        self._update_aug_status()
+
+    def _collect_augment_flags(self):
+        """读取面板控件 -> 增强开关 dict。"""
+        from training.augment_config import FLAG_KEYS
+        flags = {"enabled": bool(self.aug_enabled_check.isChecked())}
+        for key in FLAG_KEYS:
+            cb = self._aug_checks.get(key)
+            flags[key] = bool(cb.isChecked()) if cb is not None else False
+        return flags
+
+    def _save_augment_ui(self):
+        """面板任一开关变化时持久化到 .train_settings.json。"""
+        if not hasattr(self, "aug_enabled_check"):
+            return
+        from training.augment_config import save_augment_flags
+        save_augment_flags(self._collect_augment_flags())
+        self._update_aug_status()
+
+    def _update_aug_status(self):
+        """刷新增强面板状态摘要。"""
+        if not hasattr(self, "aug_enabled_check"):
+            return
+        from training.augment_config import flags_to_level, AUGMENT_FLAG_LABELS
+        flags = self._collect_augment_flags()
+        if not flags["enabled"]:
+            self.aug_status.setText("当前：关闭（训练不使用数据增强）")
+            return
+        on = [label for key, label in AUGMENT_FLAG_LABELS if flags.get(key)]
+        text = f"级别：{flags_to_level(flags)}"
+        if on:
+            text += "　已启用：" + "、".join(on)
+        else:
+            text += "　已启用：无"
+        self.aug_status.setText(text)
+
+    def _set_aug_all(self, checked):
+        for cb in self._aug_checks.values():
+            cb.setChecked(checked)
+        self._save_augment_ui()
+
+    def _set_aug_default(self):
+        from training.augment_config import DEFAULT_AUGMENT_FLAGS
+        flags = DEFAULT_AUGMENT_FLAGS
+        self.aug_enabled_check.setChecked(bool(flags["enabled"]))
+        for key, cb in self._aug_checks.items():
+            cb.setChecked(bool(flags.get(key, False)))
+        self._save_augment_ui()
+
+    def _set_augment_level(self, level):
+        """智能推荐等外部入口按预设级别（light/medium/strong/heavy/none）设置开关。"""
+        from training.augment_config import preset_to_flags
+        flags = preset_to_flags(level)
+        self.aug_enabled_check.setChecked(bool(flags["enabled"]))
+        for key, cb in self._aug_checks.items():
+            cb.setChecked(bool(flags.get(key, False)))
+        self._save_augment_ui()
+
+    def _get_augment_flags(self):
+        """返回当前增强开关 dict；未启用时返回 None（等效关闭）。"""
+        if not hasattr(self, "aug_enabled_check"):
+            return None
+        flags = self._collect_augment_flags()
+        if not flags.get("enabled"):
+            return None
+        return flags
+
+    def _augment_level_text(self, flags):
+        """把开关 dict 转成可读文本（日志用）。"""
+        if not flags:
+            return "off"
+        from training.augment_config import flags_to_level
+        return flags_to_level(flags)
+
     # ============ Height Map Controls ============
     def _update_height_controls(self):
         canvas = self.canvas
@@ -1030,8 +1190,8 @@ class MainWindow(QMainWindow):
         # Auto-switch to HM tab on first height map detection
         if not getattr(self, "_hm_tab_auto_shown", False):
             self._hm_tab_auto_shown = True
-            self._right_stack.setCurrentIndex(11)
-            self._right_tabs.button(11).setChecked(True)
+            self._right_stack.setCurrentIndex(5)
+            self._right_tabs.button(5).setChecked(True)
         vmin, vmax = canvas._get_height_auto_range()
         self.hm_status.setText(f"Height map: {canvas._height_image.size[0]}x{canvas._height_image.size[1]}")
         self.hm_data_range.setText(f"Data range: [{vmin:.4f}, {vmax:.4f}] mm")
@@ -1093,26 +1253,18 @@ class MainWindow(QMainWindow):
         ts = datetime.now().strftime("%H:%M:%S")
         self.log_widget.append(f"[{ts}] {msg}")
 
+    def _ensure_loss_window(self):
+        """获取/创建独立 Loss/Acc 曲线窗口（分割/分类共用，懒创建）。"""
+        if not hasattr(self, "_cls_loss_window") or self._cls_loss_window is None:
+            self._cls_loss_window = LossCurveWindow(self)
+        return self._cls_loss_window
+
     def _update_loss_chart(self, history):
-        """Update loss curve from training thread (seg or cls)."""
+        """训练曲线统一在独立 Loss/Acc 弹窗中显示（分割/分类共用）。"""
         try:
-            if self._cls_mode and hasattr(self, "_cls_loss_window"):
-                # Classification mode: draw in the independent Loss/Acc window
-                self._cls_loss_window.update_curve(history)
-            else:
-                # Segmentation mode: show on Loss Curve panel
-                self.loss_ax.clear()
-                train_loss = history.get("train_loss", [])
-                val_loss = history.get("val_loss", [])
-                epochs = range(1, len(train_loss) + 1)
-                if len(epochs) > 0:
-                    self.loss_ax.plot(epochs, train_loss, "b-", label="Train", linewidth=0.8, alpha=0.7)
-                    self.loss_ax.plot(epochs, val_loss, "r-", label="Val", linewidth=0.8, alpha=0.7)
-                    self.loss_ax.legend(fontsize=7)
-                    self.loss_ax.set_xlabel("Epoch", fontsize=7)
-                    self.loss_ax.set_ylabel("Loss", fontsize=7)
-                    self.loss_ax.tick_params(labelsize=6)
-                self.loss_canvas.draw()
+            if not history or not history.get("train_loss"):
+                return
+            self._ensure_loss_window().update_curve(history)
         except Exception:
             pass
 
@@ -1322,10 +1474,40 @@ class MainWindow(QMainWindow):
         self.log("Project closed")
         self.setWindowTitle(f"{APP_NAME} v{APP_VERSION}")
 
+    def _show_task_panel(self, outer_idx, infer_idx=None, train_idx=None):
+        """Switch the right-panel tab and sync infer/train sub-stack."""
+        self._right_stack.setCurrentIndex(outer_idx)
+        btn = self._right_tabs.button(outer_idx)
+        if btn is not None:
+            btn.setChecked(True)
+        if infer_idx is not None and hasattr(self, "_infer_stack"):
+            self._infer_stack.setCurrentIndex(infer_idx)
+        if train_idx is not None and hasattr(self, "_train_stack"):
+            self._train_stack.setCurrentIndex(train_idx)
+
+    def _task_model_exists(self, task):
+        """Whether the current project already has trained weights for the task."""
+        project_dir = getattr(self, "_project_dir", None)
+        if not project_dir:
+            return False
+        if task == "detection":
+            return os.path.exists(os.path.join(project_dir, "models", "detection", "best.pt"))
+        if task in ("classification", "mixed_classification"):
+            d = os.path.join(project_dir, "models", "classification")
+            return os.path.isdir(d) and any(f.endswith(".pth") for f in os.listdir(d))
+        if task == "segmentation":
+            return (os.path.exists(os.path.join(project_dir, "models", "best_model.pth"))
+                    or os.path.exists(os.path.join(project_dir, "models", "last_model.pth")))
+        return False
+
     def _set_task(self, task):
         """Switch between segmentation and detection task modes."""
         if task == "detection":
             self._detection_mode = True
+            self._cls_mode = False
+            self._ocr_mode = False
+            self._ocv_mode = False
+            self._mixed_cls_mode = False
             self.log("Task: Object Detection")
             from detection.box_manager import BoxManager
             from detection.box_overlay import DetectionOverlay
@@ -1337,11 +1519,17 @@ class MainWindow(QMainWindow):
                 self.canvas._mode = self.canvas.MODE_PAN
             self._load_det_annotations()
             self._populate_det_class_list()
-            self._right_stack.setCurrentIndex(5)
-            self._right_tabs.button(5).setChecked(True) if self._right_tabs.button(5) else None
+            self._infer_title.setText("推理 · 目标检测")
+            self._train_title.setText("训练 · 目标检测")
+            if self._task_model_exists("detection"):
+                self._show_task_panel(2, infer_idx=0, train_idx=1)
+            else:
+                self._show_task_panel(3, infer_idx=0, train_idx=1)
         elif task == "classification":
             self._detection_mode = False
             self._cls_mode = True
+            self._ocr_mode = False
+            self._ocv_mode = False
             self._mixed_cls_mode = False
             self.canvas._mixed_cls_mode = False
             self._viewer_stack.setCurrentIndex(0)  # Show AnnotationCanvas
@@ -1353,10 +1541,17 @@ class MainWindow(QMainWindow):
             self._refresh_cls_model_list()
             self._filter_images(self.search_input.text())
             self._restore_confusion_matrix()
-            self._right_stack.setCurrentIndex(7)
+            self._infer_title.setText("推理 · 图像分类")
+            self._train_title.setText("训练 · 图像分类")
+            if self._task_model_exists("classification"):
+                self._show_task_panel(2, infer_idx=1, train_idx=2)
+            else:
+                self._show_task_panel(3, infer_idx=1, train_idx=2)
         elif task == "mixed_classification":
             self._detection_mode = False
             self._cls_mode = True
+            self._ocr_mode = False
+            self._ocv_mode = False
             self._mixed_cls_mode = True
             self.canvas._mixed_cls_mode = True
             self.canvas._view_mode = 2
@@ -1369,7 +1564,12 @@ class MainWindow(QMainWindow):
             self._refresh_cls_model_list()
             self._filter_images(self.search_input.text())
             self._restore_confusion_matrix()
-            self._right_stack.setCurrentIndex(7)
+            self._infer_title.setText("推理 · 混合分类")
+            self._train_title.setText("训练 · 混合分类")
+            if self._task_model_exists("mixed_classification"):
+                self._show_task_panel(2, infer_idx=1, train_idx=2)
+            else:
+                self._show_task_panel(3, infer_idx=1, train_idx=2)
         elif task == "ocr":
             self._detection_mode = False
             self._cls_mode = False
@@ -1380,8 +1580,9 @@ class MainWindow(QMainWindow):
             self.canvas._cls_mode = False
             self.canvas._ocr_overlay = None
             self.canvas.update()
-            self._right_stack.setCurrentIndex(9)
-            self._right_tabs.button(9).setChecked(True) if self._right_tabs.button(9) else None
+            self._infer_title.setText("推理 · OCR 文字识别")
+            self._train_title.setText("训练 · OCR（无训练流程）")
+            self._show_task_panel(2, infer_idx=2, train_idx=3)
         elif task == "ocv":
             self._detection_mode = False
             self._cls_mode = False
@@ -1391,8 +1592,9 @@ class MainWindow(QMainWindow):
             self.canvas._det_overlay = None
             self.canvas._cls_mode = False
             self.canvas.update()
-            self._right_stack.setCurrentIndex(10)
-            self._right_tabs.button(10).setChecked(True) if self._right_tabs.button(10) else None
+            self._infer_title.setText("推理 · OCV 字符质检")
+            self._train_title.setText("训练 · OCV（无训练流程）")
+            self._show_task_panel(2, infer_idx=3, train_idx=3)
         else:
             self._detection_mode = False
             self._cls_mode = False
@@ -1404,7 +1606,12 @@ class MainWindow(QMainWindow):
             self.canvas.clear_heatmap()
             self.canvas._ocr_overlay = None
             self.canvas.update()
-            self._right_stack.setCurrentIndex(0)
+            self._infer_title.setText("推理 · 语义分割")
+            self._train_title.setText("训练 · 语义分割")
+            if self._task_model_exists("segmentation"):
+                self._show_task_panel(2, infer_idx=0, train_idx=0)
+            else:
+                self._show_task_panel(3, infer_idx=0, train_idx=0)
 
     def _load_classification_labels(self):
         """Load classification labels from class_labels.json."""
@@ -2604,6 +2811,7 @@ class MainWindow(QMainWindow):
                 pass
         settings["scale_w"] = self.cls_scale_w_spin.value()
         settings["scale_h"] = self.cls_scale_h_spin.value()
+        settings["class_balanced"] = self.cls_balanced_check.isChecked()
         try:
             with open(settings_path, "w", encoding="utf-8") as _f:
                 _json.dump(settings, _f, indent=2)
@@ -2629,6 +2837,10 @@ class MainWindow(QMainWindow):
                 self.cls_scale_h_spin.blockSignals(True)
                 self.cls_scale_h_spin.setValue(float(settings["scale_h"]))
                 self.cls_scale_h_spin.blockSignals(False)
+            if "class_balanced" in settings:
+                self.cls_balanced_check.blockSignals(True)
+                self.cls_balanced_check.setChecked(bool(settings["class_balanced"]))
+                self.cls_balanced_check.blockSignals(False)
         except Exception:
             pass
 
@@ -2691,7 +2903,7 @@ class MainWindow(QMainWindow):
             self.cls_lr_spin.setValue(params["lr"])
             self.cls_optim_combo.setCurrentText(params["optimizer"])
             self.cls_loss_combo.setCurrentText(params["loss"])
-            self.cls_augment_combo.setCurrentText(params["augment"])
+            self._set_augment_level(params["augment"])
             self.cls_amp_check.setChecked(params["use_amp"])
             self.cls_kfold_spin.setValue(params["k_folds"])
             self.cls_wd_spin.setValue(params["weight_decay"])
@@ -2703,10 +2915,14 @@ class MainWindow(QMainWindow):
             self.cls_warmup_spin.setValue(params["warmup_epochs"])
             self.cls_early_stop_spin.setValue(params["early_stop_patience"])
             self.cls_resume_check.setChecked(params["resume"])
+            self.cls_balanced_check.setChecked(bool(params.get("class_balanced", False)))
+            self.cls_ema_check.setChecked(bool(params.get("ema", True)))
+            self.cls_tta_check.setChecked(bool(params.get("tta", True)))
             self.log_signal.emit(
                 f"[智能推荐] 已套用: {params['model']}, {params['epochs']}ep, "
                 f"batch={params['batch_size']}, lr={params['lr']}, loss={params['loss']}, "
-                f"scale={params['scale_w']}x{params['scale_h']}")
+                f"scale={params['scale_w']}x{params['scale_h']}, "
+                f"类平衡={params.get('class_balanced', False)}")
         except Exception as e:
             import traceback
             self.log_signal.emit(f"[智能推荐] 套用失败: {e}")
@@ -2714,6 +2930,41 @@ class MainWindow(QMainWindow):
             return
         if start:
             self._start_cls_training()
+
+    def _apply_cls_native_params(self):
+        """一键复位为最原生基线参数（无增强/EMA/类平衡/调度，早停20）。"""
+        try:
+            self.cls_model_combo.setCurrentText("resnet18")
+            self.cls_epochs_spin.setValue(120)
+            self.cls_batch_spin.setValue(32)
+            self.cls_optim_combo.setCurrentText("AdamW")
+            self.cls_lr_spin.setValue(0.001)
+            self.cls_loss_combo.setCurrentText("cross_entropy")
+            self.cls_scale_w_spin.setValue(1.0)
+            self.cls_scale_h_spin.setValue(1.0)
+            self.cls_scale_link_btn.setChecked(True)
+            self.cls_amp_check.setChecked(False)
+            self.cls_kfold_spin.setValue(1)
+            self.cls_resume_check.setChecked(False)
+            self.cls_balanced_check.setChecked(False)
+            self.cls_ema_check.setChecked(False)
+            self.cls_wd_spin.setValue(0.0001)
+            self.cls_momentum_spin.setValue(0.9)
+            self.cls_ls_spin.setValue(0.0)
+            self.cls_focal_gamma_spin.setValue(2.0)
+            self.cls_dropout_spin.setValue(0.0)
+            self.cls_scheduler_combo.setCurrentText("none")
+            self.cls_warmup_spin.setValue(0)
+            self.cls_early_stop_spin.setValue(20)
+            self._set_augment_level("none")
+            self.cls_tta_check.setChecked(False)
+            self.log_signal.emit(
+                "[原生基线] 已套用: resnet18, 120ep, batch=32, lr=0.001, CE, "
+                "scale=1.0, 无增强/EMA/类平衡/调度, 早停20")
+        except Exception as e:
+            import traceback
+            self.log_signal.emit(f"[原生基线] 套用失败: {e}")
+            self.log_signal.emit(traceback.format_exc())
 
     def _start_cls_training(self):
         """Start classification model training."""
@@ -2731,7 +2982,7 @@ class MainWindow(QMainWindow):
         lr = self.cls_lr_spin.value()
         optim_name = self.cls_optim_combo.currentText()
         loss_name = self.cls_loss_combo.currentText()
-        augment = self.cls_augment_combo.currentText()
+        augment = self._get_augment_flags()
         use_amp = self.cls_amp_check.isChecked()
         k_folds = self.cls_kfold_spin.value()
         resume = self.cls_resume_check.isChecked()
@@ -2785,11 +3036,14 @@ class MainWindow(QMainWindow):
                     dropout=dropout,
                     lr_scheduler=lr_scheduler, warmup_epochs=warmup_epochs,
                     early_stop_patience=early_stop_patience,
+                    class_balanced=self.cls_balanced_check.isChecked(),
+                    ema=self.cls_ema_check.isChecked(),
                     progress_callback=epoch_cb, stop_check=stop_check,
                     log_callback=lambda msg: self.log_signal.emit(msg),
                     plot_callback=lambda h: self.chart_signal.emit(h),
                 )
                 self._refresh_cls_model_list()
+                self._refresh_cls_versions()
                 self._update_cls_loss_curve()
                 self.log_signal.emit(f"{mode_label} training complete!")
             except Exception as e:
@@ -2832,28 +3086,41 @@ class MainWindow(QMainWindow):
         history = getattr(self._cls_trainer, "history", None)
         if history is None:
             return
-        self._cls_loss_window.update_curve(history)
+        self._ensure_loss_window().update_curve(history)
 
     def _show_cls_loss_window(self):
         """Reopen the Loss/Acc curve window (after user closed it)."""
-        if hasattr(self, "_cls_loss_window"):
-            self._cls_loss_window.show()
-            self._cls_loss_window.raise_()
-            self._cls_loss_window.activateWindow()
+        win = self._ensure_loss_window()
+        win.show()
+        win.raise_()
+        win.activateWindow()
 
     def _refresh_cls_model_list(self):
-        """Refresh classification model list for inference."""
+        """Refresh classification model list for inference (legacy .pth + versions/V{n})."""
         if not self.current_project:
             return
         project_dir = str(self.pm.get_project_dir(self.current_project["name"]))
         models_dir = os.path.join(project_dir, "models", "classification")
+        prev = self.cls_infer_model_combo.currentText()
         self.cls_infer_model_combo.clear()
         if os.path.exists(models_dir):
             for f in sorted(os.listdir(models_dir)):
                 if f.endswith(".pth"):
                     self.cls_infer_model_combo.addItem(f)
+            versions_dir = os.path.join(models_dir, "versions")
+            if os.path.isdir(versions_dir):
+                vers = []
+                for v in os.listdir(versions_dir):
+                    if v.startswith("V") and os.path.isfile(os.path.join(versions_dir, v, "model.pth")):
+                        vers.append(v)
+                for v in sorted(vers, key=lambda s: (len(s), s)):
+                    self.cls_infer_model_combo.addItem(v)
         if self.cls_infer_model_combo.count() == 0:
             self.cls_infer_model_combo.addItem("(no models found)")
+        else:
+            idx = self.cls_infer_model_combo.findText(prev)
+            if idx >= 0:
+                self.cls_infer_model_combo.setCurrentIndex(idx)
 
     def _start_cls_inference(self):
         """Run classification inference on current image."""
@@ -2904,7 +3171,8 @@ class MainWindow(QMainWindow):
                     from classification.trainer import ClassificationTrainer
                     ct = ClassificationTrainer(project_dir)
                     t0 = time.time()
-                    result = ct.predict_single(current_path, model_file, top_k=top_k)
+                    result = ct.predict_single(current_path, model_file, top_k=top_k,
+                                              tta=self.cls_tta_check.isChecked())
                     elapsed = time.time() - t0
                     if result and result.get("predictions"):
                         if not hasattr(self, "_cls_predictions"):
@@ -2966,6 +3234,7 @@ class MainWindow(QMainWindow):
         def run():
             import time, json as _json
             results = {}
+            infer_times = []
             try:
                 if mixed_mode:
                     from classification.trainer import DualClassificationTrainer
@@ -2981,6 +3250,7 @@ class MainWindow(QMainWindow):
                         try:
                             r = ct.predict(gray_path, height_path)
                             elapsed = time.time() - t0
+                            infer_times.append(elapsed)
                             if r:
                                 results[base] = {"class": r["class"], "confidence": r["confidence"]}
                                 self.log_signal.emit(
@@ -3001,8 +3271,9 @@ class MainWindow(QMainWindow):
                         base = os.path.splitext(os.path.basename(img_path))[0]
                         t0 = time.time()
                         try:
-                            result = ct.predict_single(img_path, model_file, top_k=top_k)
+                            result = ct.predict_single(img_path, model_file, top_k=top_k, tta=self.cls_tta_check.isChecked())
                             elapsed = time.time() - t0
+                            infer_times.append(elapsed)
                             if result and result.get("predictions"):
                                 pred = result["predictions"][0]
                                 results[base] = {"class": pred["class"], "confidence": pred["confidence"]}
@@ -3091,6 +3362,8 @@ class MainWindow(QMainWindow):
                     class_names = label_data.get("labels", [])
                     if len(class_names) < 2:
                         class_names = ["NG", "OK"]
+                    self.log_signal.emit(
+                        f"[批推] 模型类别顺序={getattr(ct, 'class_names', '?')}  标签表类别顺序={class_names}")
                     n = len(class_names)
                     cm = [[0]*n for _ in range(n)]
                     matched = 0
@@ -3152,7 +3425,7 @@ class MainWindow(QMainWindow):
                     item = QTableWidgetItem(str(cm_total))
                     item.setTextAlignment(Qt.AlignCenter)
                     self.cls_cm_table.setItem(n, n, item)
-                    self.cls_cm_table.resizeColumnsToContents()
+                    self._size_cm_table()
                     self.cls_eval_status.setText("Acc: {:.2%}  ({}/{} matched)".format(acc, matched, total_matched))
                     # Store per-image mapping for click-to-filter
                     self._cls_cm_data = {"cm": cm_display, "names": display_names, "gt_map": gt_map, "pred_map": pred_map}
@@ -3163,6 +3436,14 @@ class MainWindow(QMainWindow):
                             json.dump(self._cls_cm_data, cmf, indent=2, ensure_ascii=False)
                     except Exception:
                         pass
+                    # 评估结果随版本入包
+                    try:
+                        self._write_cls_version_result(
+                            model_file, cm_display, display_names, gt_map, pred_map,
+                            acc, matched, total_matched, infer_times)
+                    except Exception:
+                        pass
+                    self._refresh_cls_versions()
                     self.cls_cm_table.cellClicked.disconnect() if self.cls_cm_table.receivers(self.cls_cm_table.cellClicked) > 0 else None
                     self.cls_cm_table.cellClicked.connect(self._on_cm_cell_clicked)
                 except Exception as ex:
@@ -3319,7 +3600,7 @@ class MainWindow(QMainWindow):
                     self.ocr_progress.setValue(i)
                 br = BatchRunner(flow, project_dir=pd, stop_check=lambda: self._stop_flag)
                 br.run(images, on_progress=on_progress)
-                # ?????????? ocr_results.json ?????
+                # 保存批量推理结果到 ocr_results.json 文件
                 import json as _json
                 json_path = os.path.join(out_dir, "ocr_results.json")
                 with open(json_path, "w", encoding="utf-8") as f:
@@ -3362,13 +3643,38 @@ class MainWindow(QMainWindow):
     def _update_ocr_table(self, results):
         """Update OCR result table."""
         self.ocr_result_table.setRowCount(len(results))
+        def _ro(txt):
+            it = QTableWidgetItem(txt)
+            it.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)  # 只读
+            return it
         for i, r in enumerate(results):
-            self.ocr_result_table.setItem(i, 0, QTableWidgetItem(str(i+1)))
-            self.ocr_result_table.setItem(i, 1, QTableWidgetItem(r.get("text", "")))
-            self.ocr_result_table.setItem(i, 2, QTableWidgetItem(f"{r.get('score', 0):.3f}"))
-            self.ocr_result_table.setItem(i, 3, QTableWidgetItem(f"({r.get('x',0)},{r.get('y',0)})"))
-            self.ocr_result_table.setItem(i, 4, QTableWidgetItem(f"{r.get('w',0)}x{r.get('h',0)}"))
+            self.ocr_result_table.setItem(i, 0, _ro(str(i+1)))
+            text_item = QTableWidgetItem(r.get("text", ""))
+            # Text 列允许选中/编辑，便于鼠标选中文本后 Ctrl+C 或右键复制
+            text_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsEditable)
+            self.ocr_result_table.setItem(i, 1, text_item)
+            self.ocr_result_table.setItem(i, 2, _ro(f"{r.get('score', 0):.3f}"))
+            self.ocr_result_table.setItem(i, 3, _ro(f"({r.get('x',0)},{r.get('y',0)})"))
+            self.ocr_result_table.setItem(i, 4, _ro(f"{r.get('w',0)}x{r.get('h',0)}"))
         self.ocr_result_table.resizeColumnsToContents()
+
+    def _on_ocr_result_menu(self, pos):
+        """OCR 结果表格右键菜单：复制当前行 Text 列文本到剪贴板。"""
+        table = self.ocr_result_table
+        item = table.itemAt(pos)
+        if item is None:
+            return
+        row = item.row()
+        text_item = table.item(row, 1)
+        text = text_item.text() if text_item else ""
+        menu = QMenu(self)
+        act_copy = menu.addAction("复制 Text")
+        act_copy.setEnabled(bool(text))
+        chosen = menu.exec_(table.viewport().mapToGlobal(pos))
+        if chosen is act_copy and text:
+            QApplication.clipboard().setText(text)
+            brief = text if len(text) <= 40 else text[:40] + "..."
+            self.log_signal.emit(f"已复制 OCR 文本: {brief}")
 
     def _update_ocr_overlay(self):
         """Draw OCR results on the canvas."""
@@ -3511,6 +3817,221 @@ class MainWindow(QMainWindow):
             self.ocv_status.setText("Ready")
         import threading
         threading.Thread(target=run, daemon=True).start()
+    def _size_cm_table(self):
+        """Compact confusion-matrix layout: clamp column widths (cell + header),
+        wrap long class names, fit row heights, and highlight Total row/col."""
+        table = self.cls_cm_table
+        fm = table.fontMetrics()
+        pad = 14
+        min_w, max_w = 34, 170
+        for col in range(table.columnCount()):
+            hdr = table.horizontalHeaderItem(col)
+            if hdr is not None:
+                hdr.setToolTip(hdr.text())
+            w = fm.horizontalAdvance(hdr.text()) if hdr is not None else 0
+            for row in range(table.rowCount()):
+                item = table.item(row, col)
+                if item is not None:
+                    w = max(w, fm.horizontalAdvance(item.text()))
+            table.setColumnWidth(col, max(min_w, min(w + pad, max_w)))
+        table.resizeRowsToContents()
+        # Highlight the Total row/column
+        n = table.rowCount() - 1
+        if n >= 1 and table.rowCount() == table.columnCount():
+            bold = QFont(table.font()); bold.setBold(True)
+            gray = QColor(233, 233, 233)
+            for j in range(table.columnCount()):
+                item = table.item(n, j)
+                if item is not None:
+                    item.setFont(bold); item.setBackground(gray)
+            for i in range(table.rowCount()):
+                item = table.item(i, n)
+                if item is not None:
+                    item.setFont(bold); item.setBackground(gray)
+
+    def _selected_cls_version(self):
+        """返回版本表当前选中行的版本名，无则 None。"""
+        if not hasattr(self, "cls_version_table"):
+            return None
+        row = self.cls_version_table.currentRow()
+        if row < 0:
+            return None
+        item = self.cls_version_table.item(row, 0)
+        return item.text() if item else None
+
+    def _refresh_cls_versions(self):
+        """刷新模型版本表：版本 / 时间 / 验证Acc / 批推Acc / 平均耗时 / 模型。"""
+        if not hasattr(self, "cls_version_table"):
+            return
+        self.cls_version_table.setRowCount(0)
+        if not self.current_project:
+            return
+        project_dir = str(self.pm.get_project_dir(self.current_project["name"]))
+        versions_dir = os.path.join(project_dir, "models", "classification", "versions")
+        if not os.path.isdir(versions_dir):
+            return
+        rows = []
+        for v in os.listdir(versions_dir):
+            vdir = os.path.join(versions_dir, v)
+            if not os.path.isdir(vdir) or not os.path.isfile(os.path.join(vdir, "model.pth")):
+                continue
+            meta, result = {}, {}
+            mp = os.path.join(vdir, "meta.json")
+            if os.path.exists(mp):
+                try:
+                    with open(mp, "r", encoding="utf-8") as f:
+                        meta = json.load(f)
+                except Exception:
+                    pass
+            rp = os.path.join(vdir, "result.json")
+            if os.path.exists(rp):
+                try:
+                    with open(rp, "r", encoding="utf-8") as f:
+                        result = json.load(f)
+                except Exception:
+                    pass
+            rows.append((v, meta, result))
+        rows.sort(key=lambda r: (len(r[0]), r[0]))
+        self.cls_version_table.setRowCount(len(rows))
+        for i, (v, meta, result) in enumerate(rows):
+            created = str(meta.get("created", ""))[:16]
+            val_acc = meta.get("best_val_acc")
+            val_s = f"{val_acc:.2%}" if isinstance(val_acc, (int, float)) else "-"
+            acc = result.get("accuracy")
+            acc_s = f"{acc:.2%}" if isinstance(acc, (int, float)) else "-"
+            avg_t = result.get("avg_infer_time_ms")
+            t_s = f"{avg_t:.1f}ms" if isinstance(avg_t, (int, float)) else "-"
+            model = str(meta.get("model_name", ""))
+            for c, txt in enumerate([v, created, val_s, acc_s, t_s, model]):
+                item = QTableWidgetItem(txt)
+                item.setTextAlignment(Qt.AlignCenter)
+                self.cls_version_table.setItem(i, c, item)
+        self.cls_version_table.resizeColumnsToContents()
+
+    def _cls_version_activate(self):
+        """把选中版本复制为 best_model.pth 并设为推理下拉的当前项（回滚）。"""
+        v = self._selected_cls_version()
+        if not v:
+            return QMessageBox.warning(self, "提示", "请先在版本表选择一行")
+        project_dir = str(self.pm.get_project_dir(self.current_project["name"]))
+        src = os.path.join(project_dir, "models", "classification", "versions", v, "model.pth")
+        dst = os.path.join(project_dir, "models", "classification", "best_model.pth")
+        try:
+            shutil.copy2(src, dst)
+        except Exception as e:
+            return QMessageBox.warning(self, "错误", f"设为当前失败: {e}")
+        idx = self.cls_infer_model_combo.findText(v)
+        if idx >= 0:
+            self.cls_infer_model_combo.setCurrentIndex(idx)
+        self.log_signal.emit(f"[模型版本] {v} 已复制为 best_model.pth")
+        QMessageBox.information(self, "完成", f"{v} 已设为当前最佳模型（best_model.pth）。")
+
+    def _cls_version_export(self):
+        """把选中版本打包为部署 zip（模型 + meta + history + 评估结果）。"""
+        v = self._selected_cls_version()
+        if not v:
+            return QMessageBox.warning(self, "提示", "请先在版本表选择一行")
+        project_dir = str(self.pm.get_project_dir(self.current_project["name"]))
+        vdir = os.path.join(project_dir, "models", "classification", "versions", v)
+        if not os.path.isdir(vdir):
+            return QMessageBox.warning(self, "错误", f"版本目录不存在: {vdir}")
+        default_name = os.path.join(project_dir, f"{os.path.basename(project_dir)}_{v}.zip")
+        path, _ = QFileDialog.getSaveFileName(self, "导出部署包", default_name, "ZIP 文件 (*.zip)")
+        if not path:
+            return
+        try:
+            import zipfile
+            meta, result = {}, {}
+            mp = os.path.join(vdir, "meta.json")
+            if os.path.exists(mp):
+                with open(mp, "r", encoding="utf-8") as f:
+                    meta = json.load(f)
+            rp = os.path.join(vdir, "result.json")
+            if os.path.exists(rp):
+                with open(rp, "r", encoding="utf-8") as f:
+                    result = json.load(f)
+            with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
+                for fn in sorted(os.listdir(vdir)):
+                    fp = os.path.join(vdir, fn)
+                    if os.path.isfile(fp):
+                        zf.write(fp, f"{v}/{fn}")
+                readme = self._build_version_readme(v, meta, result)
+                zf.writestr(f"{v}/部署说明.txt", readme.encode("utf-8"))
+        except Exception as e:
+            import traceback
+            self.log_signal.emit(traceback.format_exc())
+            return QMessageBox.warning(self, "错误", f"导出失败: {e}")
+        self.log_signal.emit(f"[模型版本] 部署包已导出: {path}")
+        QMessageBox.information(self, "完成", f"部署包已导出:\n{path}")
+
+    def _build_version_readme(self, v, meta, result):
+        """生成部署包内的说明文本。"""
+        lines = [
+            f"模型版本: {v}",
+            f"创建时间: {meta.get('created', '-')}",
+            f"模型: {meta.get('model_name', '-')}  类别: {meta.get('class_names', '-')}",
+            f"输入尺寸: {meta.get('image_size', '-')}  缩放: {meta.get('scale_factor', '-')}",
+            f"验证准确率: {meta.get('best_val_acc', '-')}",
+        ]
+        for k in ["epochs", "batch_size", "lr", "optimizer", "loss", "class_balanced", "ema", "augment"]:
+            if k in meta:
+                lines.append(f"{k}: {meta[k]}")
+        if result:
+            lines.append("")
+            lines.append(f"批量推理准确率: {result.get('accuracy', '-')}  ({result.get('matched', 0)}/{result.get('total', 0)})")
+            if "avg_infer_time_ms" in result:
+                lines.append(f"平均推理耗时: {result['avg_infer_time_ms']} ms")
+            for name, m in (result.get("per_class") or {}).items():
+                lines.append(f"  {name}: precision={m.get('precision')} recall={m.get('recall')} f1={m.get('f1')} samples={m.get('samples')}")
+        return "\n".join(lines)
+
+    def _write_cls_version_result(self, model_ref, cm_display, display_names, gt_map, pred_map,
+                                  acc, matched, total, infer_times=None):
+        """把批量推理/评估结果写入对应模型版本的 result.json（P/R/F1/耗时/CM）。"""
+        if not self.current_project:
+            return
+        ref = str(model_ref or "")
+        if not re.fullmatch(r"V\d+", ref, re.IGNORECASE):
+            return  # 只归档到版本目录
+        project_dir = str(self.pm.get_project_dir(self.current_project["name"]))
+        vdir = os.path.join(project_dir, "models", "classification", "versions", ref)
+        if not os.path.isdir(vdir):
+            return
+        n = len(display_names)
+        per_class = {}
+        for i, name in enumerate(display_names):
+            tp = cm_display[i][i]
+            fp = sum(cm_display[r][i] for r in range(n)) - tp
+            fn = sum(cm_display[i][c] for c in range(n)) - tp
+            prec = tp / (tp + fp) if (tp + fp) else 0.0
+            rec = tp / (tp + fn) if (tp + fn) else 0.0
+            f1 = 2 * prec * rec / (prec + rec) if (prec + rec) else 0.0
+            per_class[name] = {
+                "precision": round(prec, 4), "recall": round(rec, 4),
+                "f1": round(f1, 4), "samples": int(sum(cm_display[r][i] for r in range(n))),
+            }
+        result = {
+            "version": ref,
+            "updated": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "accuracy": round(float(acc), 4),
+            "matched": int(matched), "total": int(total),
+            "cm": cm_display, "names": display_names,
+            "per_class": per_class,
+        }
+        if gt_map:
+            result["gt_map"] = gt_map
+        if pred_map:
+            result["pred_map"] = pred_map
+        if infer_times:
+            times = sorted(infer_times)
+            result["avg_infer_time_ms"] = round(sum(times) / len(times) * 1000.0, 2)
+            result["median_infer_time_ms"] = round(times[len(times) // 2] * 1000.0, 2)
+            result["num_infer"] = len(times)
+        rp = os.path.join(vdir, "result.json")
+        with open(rp, "w", encoding="utf-8") as f:
+            json.dump(result, f, ensure_ascii=False, indent=2)
+        self.log_signal.emit(f"[模型版本] 评估结果已写入 {rp}")
+
     def _eval_cls_model(self):
         """Evaluate classification model and show confusion matrix."""
         if not self.current_project:
@@ -3580,7 +4101,13 @@ class MainWindow(QMainWindow):
                     item = QTableWidgetItem(str(cm_total))
                     item.setTextAlignment(Qt.AlignCenter)
                     self.cls_cm_table.setItem(n, n, item)
-                    self.cls_cm_table.resizeColumnsToContents()
+                    self._size_cm_table()
+                    try:
+                        self._write_cls_version_result(
+                            model_file, cm_display, display_names, {}, {}, top1, 0, 0, None)
+                    except Exception:
+                        pass
+                    self._refresh_cls_versions()
                 self.cls_eval_status.setText("Top-1: {:.2%}  Top-5: {:.2%}".format(top1, top5))
             except Exception as e:
                 import traceback
@@ -3663,7 +4190,7 @@ class MainWindow(QMainWindow):
         item = QTableWidgetItem(str(cm_total))
         item.setTextAlignment(Qt.AlignCenter)
         self.cls_cm_table.setItem(n, n, item)
-        self.cls_cm_table.resizeColumnsToContents()
+        self._size_cm_table()
         self.cls_eval_status.setText(f"Top-1: {acc:.2%}")
 
     def _restore_confusion_matrix(self):
@@ -3709,7 +4236,7 @@ class MainWindow(QMainWindow):
             item = QTableWidgetItem(str(cm_total))
             item.setTextAlignment(Qt.AlignCenter)
             self.cls_cm_table.setItem(n, n, item)
-            self.cls_cm_table.resizeColumnsToContents()
+            self._size_cm_table()
             self._cls_cm_data = data
             self.cls_cm_table.cellClicked.disconnect() if self.cls_cm_table.receivers(self.cls_cm_table.cellClicked) > 0 else None
             self.cls_cm_table.cellClicked.connect(self._on_cm_cell_clicked)
@@ -3836,7 +4363,7 @@ class MainWindow(QMainWindow):
         model_name = settings.get("model", "deeplabv3")
         image_size = settings.get("image_size", 512)
         loss_name = settings.get("loss", "cross_entropy")
-        augment = settings.get("augment", "none")
+        augment = self._get_augment_flags()
         cv_folds = settings.get("k_folds", 1)
 
         self._stop_flag = False
@@ -3851,8 +4378,16 @@ class MainWindow(QMainWindow):
         resume = settings.get("resume", False)
         self.log(f"Starting training: {model_name}, {epochs} epochs, batch={batch_size}"
                  + (f", {cv_folds}-fold CV" if cv_folds > 1 else "")
-                 + f", loss={loss_name}, aug={augment}"
+                 + f", loss={loss_name}, aug={self._augment_level_text(augment)}"
                  + (f", resume" if resume else ""))
+        # 独立 Loss/Acc 窗口随训练启动自动弹出（与分类训练一致）
+        try:
+            win = self._ensure_loss_window()
+            win.show()
+            win.raise_()
+            win.activateWindow()
+        except Exception:
+            pass
         def run():
             try:
                 self.trainer.train(
@@ -3921,6 +4456,7 @@ class MainWindow(QMainWindow):
                     epochs=epochs,
                     batch_size=batch_size,
                     image_size=image_size,
+                    augment=self._get_augment_flags(),
                     epoch_callback=epoch_cb,
                 )
                 if "error" not in result:

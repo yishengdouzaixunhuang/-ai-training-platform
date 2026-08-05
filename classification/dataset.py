@@ -100,6 +100,17 @@ def _save_split_map(project_dir, split_map):
         json.dump(split_map, f, indent=2, ensure_ascii=False)
 
 
+class _GlobalAugment:
+    """全局增强包装：封装增强开关 dict，可被 DataLoader 多进程 pickle。"""
+
+    def __init__(self, flags):
+        self.flags = dict(flags or {})
+
+    def __call__(self, image):
+        from training.augment_config import apply_image_augment
+        return apply_image_augment(image, self.flags)
+
+
 class ClassificationDataset(Dataset):
     """Image classification PyTorch Dataset.
 
@@ -109,7 +120,8 @@ class ClassificationDataset(Dataset):
     - train/val split via train_test_split.json (same format as segmentation module)
     """
 
-    def __init__(self, project_dir, split="train", transform=None, image_size=224, scale_factor=1.0):
+    def __init__(self, project_dir, split="train", transform=None, image_size=224, scale_factor=1.0,
+                 augment_flags=None):
         self.project_dir = Path(project_dir)
         self.split = split
         self.image_size = image_size if (image_size is None or isinstance(image_size, (tuple, list))) else (image_size, image_size)
@@ -175,6 +187,16 @@ class ClassificationDataset(Dataset):
                 ])
         else:
             self.transform = transform
+
+        # 全局增强参数面板：启用时替换内置 Random* 增强，改为可配置增强
+        if (transform is None and split == "train" and augment_flags
+                and augment_flags.get("enabled")):
+            keep = []
+            for s in self.transform.transforms:
+                if isinstance(s, (T.RandomHorizontalFlip, T.RandomRotation, T.ColorJitter)):
+                    continue
+                keep.append(s)
+            self.transform = T.Compose([_GlobalAugment(augment_flags)] + keep)
 
     def _compute_target_size(self):
         """Compute target size from scale_factor.
