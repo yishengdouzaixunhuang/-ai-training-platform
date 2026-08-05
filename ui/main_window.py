@@ -736,7 +736,10 @@ class MainWindow(QMainWindow):
         self.cls_model_combo = QComboBox()
         self.cls_model_combo.addItems(["resnet18", "resnet34", "resnet50", "resnet101", "efficientnet_b0",
                                         "efficientnet_b3", "mobilenet_v2", "mobilenet_v3_small", "mobilenet_v3_large",
-                                        "vit_b_16", "vit_b_32"])
+                                        "vit_b_16", "vit_b_32",
+                                        "convnext_tiny", "convnext_base", "efficientnet_v2_s", "efficientnet_v2_m",
+                                        "efficientnet_v2_l", "swin_t", "swin_s", "swin_b",
+                                        "densenet121", "densenet161", "densenet201"])
         cfl.addRow("Model:", self.cls_model_combo)
         self.cls_epochs_spin = QSpinBox(); self.cls_epochs_spin.setRange(1, 2000); self.cls_epochs_spin.setValue(200)
         cfl.addRow("Epochs:", self.cls_epochs_spin)

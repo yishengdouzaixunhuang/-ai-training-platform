@@ -47,6 +47,17 @@ CLS_MODELS = {
     "mobilenet_v3_large": {"name": "MobileNet V3 Large", "family": "mobilenet3", "params": "5.5M"},
     "vit_b_16":         {"name": "ViT-B/16",     "family": "vit",      "params": "86.6M"},
     "vit_b_32":         {"name": "ViT-B/32",     "family": "vit",      "params": "88.2M"},
+    "convnext_tiny":    {"name": "ConvNeXt-Tiny",     "family": "convnext",       "params": "28.6M"},
+    "convnext_base":    {"name": "ConvNeXt-Base",     "family": "convnext",       "params": "88.6M"},
+    "efficientnet_v2_s": {"name": "EfficientNet-V2-S", "family": "efficientnet_v2", "params": "21.5M"},
+    "efficientnet_v2_m": {"name": "EfficientNet-V2-M", "family": "efficientnet_v2", "params": "54.1M"},
+    "efficientnet_v2_l": {"name": "EfficientNet-V2-L", "family": "efficientnet_v2", "params": "119.5M"},
+    "swin_t":           {"name": "Swin-T",            "family": "swin",           "params": "28.3M"},
+    "swin_s":           {"name": "Swin-S",            "family": "swin",           "params": "49.6M"},
+    "swin_b":           {"name": "Swin-B",            "family": "swin",           "params": "87.8M"},
+    "densenet121":      {"name": "DenseNet-121",      "family": "densenet",       "params": "8.0M"},
+    "densenet161":      {"name": "DenseNet-161",      "family": "densenet",       "params": "28.7M"},
+    "densenet201":      {"name": "DenseNet-201",      "family": "densenet",       "params": "20.0M"},
 }
 
 
@@ -111,6 +122,33 @@ class ModelEMA:
 
 
 # ── Model factory ───────────────────────────────────────────────────────
+def _replace_last_linear(model, num_classes, dropout=0.0):
+    """递归找到并替换最后一个 nn.Linear 为分类头（兼容 ConvNeXt/Swin/DenseNet 等）。"""
+    path = [None]
+
+    def find(m, prefix=""):
+        for name, child in m.named_children():
+            p = f"{prefix}.{name}" if prefix else name
+            if isinstance(child, nn.Linear):
+                path[0] = p
+            find(child, p)
+
+    find(model)
+    if path[0] is None:
+        raise ValueError(f"模型中没有找到 Linear 分类头: {type(model).__name__}")
+    parts = path[0].split(".")
+    parent = model
+    for part in parts[:-1]:
+        parent = getattr(parent, part)
+    in_features = getattr(parent, parts[-1]).in_features
+    if dropout > 0:
+        new_head = nn.Sequential(nn.Dropout(dropout), nn.Linear(in_features, num_classes))
+    else:
+        new_head = nn.Linear(in_features, num_classes)
+    setattr(parent, parts[-1], new_head)
+    return in_features
+
+
 def _create_classification_model(model_name, num_classes, pretrained=True, dropout=0.0):
     """Create a classification model by name."""
     cfg = CLS_MODELS.get(model_name, CLS_MODELS["resnet18"])
@@ -196,6 +234,45 @@ def _create_classification_model(model_name, num_classes, pretrained=True, dropo
             )
         else:
             model.heads.head = nn.Linear(in_features, num_classes)
+
+    elif family == "convnext":
+        import torchvision.models as models
+        model_fn = getattr(models, model_name, None)
+        if model_fn is None:
+            model_fn = models.convnext_tiny
+        model = model_fn(weights="DEFAULT" if pretrained else None)
+        _replace_last_linear(model, num_classes, dropout)
+
+    elif family == "efficientnet_v2":
+        import torchvision.models as models
+        model_fn = getattr(models, model_name, None)
+        if model_fn is None:
+            model_fn = models.efficientnet_v2_s
+        model = model_fn(weights="DEFAULT" if pretrained else None)
+        in_features = model.classifier[1].in_features
+        if dropout > 0:
+            model.classifier[1] = nn.Sequential(
+                nn.Dropout(dropout),
+                nn.Linear(in_features, num_classes)
+            )
+        else:
+            model.classifier[1] = nn.Linear(in_features, num_classes)
+
+    elif family == "swin":
+        import torchvision.models as models
+        model_fn = getattr(models, model_name, None)
+        if model_fn is None:
+            model_fn = models.swin_t
+        model = model_fn(weights="DEFAULT" if pretrained else None)
+        _replace_last_linear(model, num_classes, dropout)
+
+    elif family == "densenet":
+        import torchvision.models as models
+        model_fn = getattr(models, model_name, None)
+        if model_fn is None:
+            model_fn = models.densenet121
+        model = model_fn(weights="DEFAULT" if pretrained else None)
+        _replace_last_linear(model, num_classes, dropout)
 
     else:
         raise ValueError(f"Unknown model family: {family}")

@@ -20,7 +20,10 @@ import numpy as np
 # 与训练面板一致的模型池（按复杂度升序）
 MODEL_POOL = ["mobilenet_v3_small", "mobilenet_v2", "mobilenet_v3_large",
               "resnet18", "resnet34", "efficientnet_b0",
-              "resnet50", "efficientnet_b3", "resnet101", "vit_b_16", "vit_b_32"]
+              "resnet50", "efficientnet_b3", "resnet101",
+              "efficientnet_v2_s", "swin_t", "convnext_tiny", "densenet161",
+              "swin_s", "efficientnet_v2_m", "convnext_base", "swin_b",
+              "efficientnet_v2_l", "vit_b_16", "vit_b_32"]
 
 SIZE_TIERS = [128, 192, 256, 384, 512, 640, 768]
 
