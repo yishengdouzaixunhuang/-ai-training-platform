@@ -37,6 +37,7 @@ from training.trainer import Trainer
 from training.dataset import get_train_test_split, save_train_test_split
 from inference.predictor import Predictor
 from ui.system_monitor import SystemMonitor
+from ui.screen_ocr import screen_ocr_and_show
 print("main_window imports OK")
 class LossCurveWindow(QWidget):
     """Independent Loss/Accuracy curve window for classification training.
@@ -287,6 +288,7 @@ class MainWindow(QMainWindow):
         tm.addAction("Mixed Classification", lambda: self._set_task("mixed_classification"))
         tm.addSeparator()
         tm.addAction("OCR Text Recognition", lambda: self._set_task("ocr"))
+        tm.addAction("Screen OCR (截图识别)...", self._open_screen_ocr)
         tm.addAction("OCV Quality Inspection", lambda: self._set_task("ocv"))
         tm.addSeparator()
         tm.addAction("Image Crop Tool...", self._open_crop_tool)
@@ -4940,6 +4942,15 @@ class MainWindow(QMainWindow):
             self.det_class_list.addItem(c)
 
 
+
+    def _open_screen_ocr(self):
+        """Tools 菜单：屏幕截图 -> 平台 OCR 识别。"""
+        try:
+            screen_ocr_and_show(self)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            QMessageBox.warning(self, "截图 OCR", f"启动失败: {e}")
 
     def _open_resize_tool(self):
         """Open the image resize tool dialog."""
