@@ -38,6 +38,9 @@ from training.dataset import get_train_test_split, save_train_test_split
 from inference.predictor import Predictor
 from ui.system_monitor import SystemMonitor
 from ui.screen_ocr import screen_ocr_and_show
+from ui.global_hotkey import register_global_hotkey, unregister_global_hotkey, WM_HOTKEY
+import ctypes
+from ctypes import wintypes
 print("main_window imports OK")
 class LossCurveWindow(QWidget):
     """Independent Loss/Accuracy curve window for classification training.
@@ -234,6 +237,10 @@ class MainWindow(QMainWindow):
         self._sys_monitor = SystemMonitor()
         self.statusBar().addPermanentWidget(self._sys_monitor)
 
+        # 全局热键：Shift+X 截图 OCR（窗口未聚焦也能触发）
+        self._screen_ocr_busy = False
+        self._register_screen_ocr_hotkey()
+
 
     def closeEvent(self, event):
         """Clean up system monitor on close."""
@@ -243,6 +250,11 @@ class MainWindow(QMainWindow):
         if getattr(self, "_project_dir", None):
             try:
                 self._save_cls_train_settings()
+            except Exception:
+                pass
+        if getattr(self, "_screen_ocr_global", False):
+            try:
+                unregister_global_hotkey(int(self.winId()), self._screen_ocr_hotkey_id)
             except Exception:
                 pass
         super().closeEvent(event)
@@ -294,8 +306,9 @@ class MainWindow(QMainWindow):
         tm.addAction("Mixed Classification", lambda: self._set_task("mixed_classification"))
         tm.addSeparator()
         tm.addAction("OCR Text Recognition", lambda: self._set_task("ocr"))
-        act_screen_ocr = tm.addAction("Screen OCR (截图识别)...", self._open_screen_ocr)
-        act_screen_ocr.setShortcut(QKeySequence("Shift+X"))
+        self._act_screen_ocr = tm.addAction("Screen OCR (截图识别)...", self._open_screen_ocr)
+        # 快捷键统一在 _register_screen_ocr_hotkey() 里设置：
+        # 优先注册系统级全局热键（窗口未聚焦也能触发），失败则回退为窗口内快捷键
         tm.addAction("OCV Quality Inspection", lambda: self._set_task("ocv"))
         tm.addSeparator()
         tm.addAction("Image Crop Tool...", self._open_crop_tool)
@@ -5001,12 +5014,55 @@ class MainWindow(QMainWindow):
 
     def _open_screen_ocr(self):
         """Tools 菜单：屏幕截图 -> 平台 OCR 识别。"""
+        # 从其他应用触发全局热键时，先把窗口带到前台，确保询问对话框可见
+        try:
+            if self.isMinimized():
+                self.showNormal()
+            self.raise_()
+            self.activateWindow()
+        except Exception:
+            pass
         try:
             screen_ocr_and_show(self)
         except Exception as e:
             import traceback
             traceback.print_exc()
             QMessageBox.warning(self, "截图 OCR", f"启动失败: {e}")
+
+    def _register_screen_ocr_hotkey(self):
+        """注册系统级全局热键 Shift+X。
+
+        注册成功则移除窗口内快捷键（避免重复触发）；
+        失败（被其他软件占用）则回退为仅窗口聚焦时生效的快捷键。
+        """
+        self._screen_ocr_global = False
+        self._screen_ocr_hotkey_id = 0x5358  # "SX"
+        try:
+            hwnd = int(self.winId())
+            ok = register_global_hotkey(hwnd, self._screen_ocr_hotkey_id)
+        except Exception as e:  # noqa: BLE001
+            ok = False
+            self.log(f"[热键] 全局热键注册异常: {e}")
+        if ok:
+            self._screen_ocr_global = True
+            self._act_screen_ocr.setShortcut(QKeySequence())
+            self.log("[热键] Shift+X 全局截图 OCR 已启用（窗口未聚焦也可触发）")
+        else:
+            self._act_screen_ocr.setShortcut(QKeySequence("Shift+X"))
+            self.log("[热键] Shift+X 全局注册失败（可能被其他软件占用），"
+                     "已回退为窗口内快捷键（需聚焦平台窗口）")
+
+    def nativeEvent(self, eventType, message):
+        """接收 Windows 全局热键消息 WM_HOTKEY。"""
+        if getattr(self, "_screen_ocr_global", False) and eventType == b"windows_generic_MSG":
+            try:
+                msg = wintypes.MSG.from_address(int(message))
+                if int(msg.message) == WM_HOTKEY and int(msg.wParam) == self._screen_ocr_hotkey_id:
+                    QTimer.singleShot(0, self._open_screen_ocr)
+                    return True, 0
+            except Exception:  # noqa: BLE001
+                pass
+        return super().nativeEvent(eventType, message)
 
     def _open_resize_tool(self):
         """Open the image resize tool dialog."""
