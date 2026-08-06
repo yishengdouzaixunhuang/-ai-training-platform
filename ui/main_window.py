@@ -467,6 +467,9 @@ class MainWindow(QMainWindow):
         self.image_list_widget.horizontalHeader().setStretchLastSection(True)
         self.image_list_widget.setSelectionBehavior(QTableWidget.SelectRows)
         self.image_list_widget.setSelectionMode(QTableWidget.ExtendedSelection)
+        self.image_list_widget.setStyleSheet(
+            "QTableWidget::item:selected { background-color: #2D6A4F; color: #FFFFFF; }\n"
+            "QTableWidget::item:selected:!active { background-color: #2D6A4F; color: #FFFFFF; }")
         self.image_list_widget.setEditTriggers(QTableWidget.NoEditTriggers)
         self.image_list_widget.setAlternatingRowColors(True)
         self.image_list_widget.verticalHeader().setVisible(False)
@@ -1733,6 +1736,7 @@ class MainWindow(QMainWindow):
             self.image_list_widget.selectRow(0)
             self._suppress_cell_change = False
             self._load_image_by_index(0)
+        self._refresh_class_ui()
 
     def _load_output_stats_async(self, project_dir):
         """Load prediction counts and IoU scores from outputs dir in background thread."""
@@ -2132,6 +2136,18 @@ class MainWindow(QMainWindow):
         self.page_info_label.setText(f"Page {self._current_page + 1}/{total_pages}")
         self.page_prev_btn.setEnabled(self._current_page > 0)
         self.page_next_btn.setEnabled(self._current_page < total_pages - 1)
+
+        # Re-select the image currently being annotated so the user always
+        # knows which row they are working on (even after list refresh).
+        cur = getattr(self.canvas, "current_image_path", None)
+        if cur:
+            for r in range(self.image_list_widget.rowCount()):
+                it = self.image_list_widget.item(r, 0)
+                if it and it.data(Qt.UserRole) == cur:
+                    self.image_list_widget.selectRow(r)
+                    self.image_list_widget.scrollToItem(
+                        it, self.image_list_widget.PositionAtCenter)
+                    break
 
         self._suppress_cell_change = False
 
@@ -2557,6 +2573,7 @@ class MainWindow(QMainWindow):
             split_map[base] = split_key
         save_train_test_split(project_dir, split_map)
         self._filter_images(self.search_input.text())
+        self._refresh_class_ui()
         self.log(f"Set {len(selected_rows)} image(s) to {split_key}")
 
     def _open_json_location(self, selected_rows, project_dir):
@@ -2762,8 +2779,7 @@ class MainWindow(QMainWindow):
         self.log(f"[Class] Moved '{classes[new_row]}' {'up' if delta < 0 else 'down'}")
 
     def _refresh_class_stats(self):
-        """Re-read classification labels and refresh the class table."""
-        self._load_classification_labels()
+        """Recompute class table counts from project files."""
         self._refresh_class_ui()
         self.log("[Class] Stats refreshed")
 
@@ -4922,6 +4938,7 @@ class MainWindow(QMainWindow):
         dlg = SplitDialog(pd, self)
         if dlg.exec_():
             self._filter_images(self.search_input.text())
+            self._refresh_class_ui()
 
     def _manage_classes(self):
         if not self.current_project:
@@ -5097,6 +5114,7 @@ class MainWindow(QMainWindow):
         try:
             from annotation.labelme_io import save_mask_to_json
             save_mask_to_json(path, self.canvas.mask, self.canvas.label_manager.classes, self.current_project)
+            self._refresh_class_ui()
             self.log("Annotation saved")
         except Exception as e:
             self.log(f"Save failed: {e}")
@@ -5119,6 +5137,7 @@ class MainWindow(QMainWindow):
             self.canvas._sam_score = 0.0
             self.canvas.update()
             self.canvas.mask_changed.emit()
+            self._refresh_class_ui()
             self.log("Annotation cleared")
 
     def _next_image(self):

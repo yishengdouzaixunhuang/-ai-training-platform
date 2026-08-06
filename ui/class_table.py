@@ -266,18 +266,24 @@ class ClassTableView(QWidget):
     # ---------- counts ----------
 
     def _compute_counts(self):
-        """Return {class_idx: (train, test, val, empty)} from project files."""
+        """Return {class_idx: (train, test, val, empty)} from project files.
+
+        Classification projects: counts come from class_labels.json (image ->
+        class mapping) + train_test_split.json.
+        Segmentation projects (no class_labels.json): each image's classes are
+        read from its labelme JSON shapes (fallback: mask PNG pixel values).
+        """
         if not self._project_dir:
             return {}
         pd = Path(self._project_dir)
-        labels = []
+        labels = list(self._classes)
         mapping = {}
         label_path = pd / "annotations" / "class_labels.json"
         if label_path.exists():
             try:
                 with open(label_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                labels = data.get("labels", [])
+                labels = data.get("labels", []) or labels
                 mapping = data.get("mapping", {})
             except Exception:
                 pass
@@ -326,6 +332,11 @@ class ClassTableView(QWidget):
             else:
                 trains[cls_id] += 1
 
+        # Segmentation projects: no class_labels.json mapping, so classify
+        # every image under images/ from its labelme JSON / mask PNG instead.
+        if not mapping:
+            self._count_segmentation(pd, labels, trains, tests, vals, split_map)
+
         # 空集: images inside the class folder that are not in the mapping.
         img_dir = pd / "images"
         if img_dir.exists():
@@ -339,6 +350,62 @@ class ClassTableView(QWidget):
                             if rel not in mapped:
                                 empties[cls_id] += 1
         return {i: (trains[i], tests[i], vals[i], empties[i]) for i in range(len(labels))}
+
+    def _count_segmentation(self, pd, labels, trains, tests, vals, split_map):
+        """Count per-class image counts by split for segmentation projects."""
+        img_dir = pd / "images"
+        ann_dir = pd / "annotations"
+        if not img_dir.is_dir():
+            return
+        for f in sorted(img_dir.iterdir()):
+            if not f.is_file() or f.suffix.lower() not in (".bmp", ".png", ".jpg", ".jpeg", ".tif", ".tiff"):
+                continue
+            cids = self._seg_class_ids(f, ann_dir, labels)
+            if not cids:
+                continue
+            base = f.stem
+            split = split_map.get(base, split_map.get("images/" + base, "train"))
+            for cid in cids:
+                if not (0 <= cid < len(labels)):
+                    continue
+                if split == "test":
+                    tests[cid] += 1
+                elif split == "val":
+                    vals[cid] += 1
+                else:
+                    trains[cid] += 1
+
+    def _seg_class_ids(self, img_path, ann_dir, labels):
+        """Class ids present in one segmentation image.
+
+        Preferred source is the labelme JSON (fast); mask PNG pixel values are
+        used as a fallback when no JSON exists.
+        """
+        json_path = img_path.with_suffix(".json")
+        if json_path.exists():
+            try:
+                with open(json_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                cids = set()
+                for s in data.get("shapes", []):
+                    lab = s.get("label")
+                    if lab in labels:
+                        cids.add(labels.index(lab))
+                if cids:
+                    return cids
+            except Exception:
+                pass
+        mask_path = ann_dir / (img_path.stem + "_mask.png")
+        if mask_path.exists():
+            try:
+                import numpy as _np
+                from PIL import Image as _Image
+                arr = _np.array(_Image.open(str(mask_path)))
+                return set(int(v) for v in _np.unique(arr)
+                           if 0 < int(v) < len(labels) and int(v) != 255)
+            except Exception:
+                return set()
+        return set()
 
     # ---------- slots ----------
 
