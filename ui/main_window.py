@@ -21,12 +21,11 @@ import matplotlib
 matplotlib.use("Qt5Agg")
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
-from core.config import APP_NAME, APP_VERSION, CLASS_COLORS, load_config, save_config
+from core.config import APP_NAME, APP_VERSION, load_config, save_config
 from core.project_manager import ProjectManager
 from annotation.label_manager import LabelManager
 from annotation.mask_editor import AnnotationCanvas
 from ui.mixed_viewer import MixedViewer
-from ui.color_palette import ColorPalette
 from ui.class_table import ClassTableView
 from ui.crop_tool import CropToolDialog
 from ui.resize_tool import ResizeToolDialog
@@ -608,16 +607,6 @@ class MainWindow(QMainWindow):
         self.class_list.move_down_requested.connect(lambda: self._move_class(1))
         self.class_list.rename_requested.connect(self._rename_class)
         al.addWidget(self.class_list)
-        al.addWidget(QLabel("<b>Palette:</b>"))
-        self.color_palette = ColorPalette()
-        self.color_palette.class_selected.connect(self._on_palette_class_clicked)
-        al.addWidget(self.color_palette)
-        # Detection mode toggle button
-        self.det_btn = QPushButton("Detection Mode (Ctrl+D)")
-        self.det_btn.setCheckable(True)
-        self.det_btn.clicked.connect(self._toggle_detection_mode)
-        self.det_btn.setStyleSheet("QPushButton { padding: 6px; } QPushButton:checked { background-color: #2d6a4f; color: white; }")
-        al.addWidget(self.det_btn)
         al.addStretch()
         self._right_stack.addWidget(panel_annot)  # 0
 
@@ -1486,8 +1475,6 @@ class MainWindow(QMainWindow):
         self.canvas.update()
         self.image_list_widget.setRowCount(0)
         self.class_list.clear()
-        if hasattr(self, "color_palette"):
-            self.color_palette.clear()
         self.image_count_label.setText("")
         self.list_status.setText("")
         self.log("Project closed")
@@ -2449,11 +2436,7 @@ class MainWindow(QMainWindow):
     def _toggle_detection_mode(self):
         """Toggle between segmentation and detection annotation modes."""
         self._detection_mode = not self._detection_mode
-        self.det_btn.blockSignals(True)
         if self._detection_mode:
-            self.det_btn.setChecked(True)
-            self.det_btn.setText("Detection: ON")
-            self.det_btn.blockSignals(False)
             self.log("Switched to Detection mode")
             from detection.box_manager import BoxManager
             from detection.box_overlay import DetectionOverlay
@@ -2464,9 +2447,6 @@ class MainWindow(QMainWindow):
             self.canvas._mode = self.canvas.MODE_PAN
             self._load_det_annotations()
         else:
-            self.det_btn.setChecked(False)
-            self.det_btn.setText("Detection: OFF")
-            self.det_btn.blockSignals(False)
             self.log("Switched to Segmentation mode")
             self.canvas._det_overlay = None
             self.canvas.update()
@@ -2659,16 +2639,8 @@ class MainWindow(QMainWindow):
             return
         if current >= 0:
             self.canvas.set_class(current)
-            if hasattr(self, "color_palette"):
-                self.color_palette.set_selected(current)
 
 
-    def _on_palette_class_clicked(self, idx):
-        """Sync palette click to class list and canvas."""
-        if hasattr(self, "class_list") and idx < self.class_list.count():
-            self.class_list.setCurrentRow(idx, emit=False)
-            if hasattr(self.canvas, "label_manager"):
-                self.canvas.set_class(idx)
 
     def _on_canvas_width_changed(self, v):
         """工具栏宽度微调框 -> 画布笔刷大小。"""
@@ -2685,8 +2657,6 @@ class MainWindow(QMainWindow):
             return
         self.class_list.setCurrentRow(cid, emit=False)
         self.canvas.set_class(cid)
-        if hasattr(self, "color_palette"):
-            self.color_palette.set_selected(cid)
 
     def _add_class(self):
         """Add a new class to the project."""
@@ -2803,8 +2773,6 @@ class MainWindow(QMainWindow):
         if hasattr(self, "class_list"):
             self.class_list.set_project_dir(self._project_dir_or_none())
             self.class_list.set_classes(classes)
-        if hasattr(self, "color_palette"):
-            self.color_palette.set_classes(classes, [CLASS_COLORS[k % len(CLASS_COLORS)] for k in range(len(classes))])
 
     # ============ UI Panel Toggles ============
 
