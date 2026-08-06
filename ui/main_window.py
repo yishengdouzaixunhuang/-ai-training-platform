@@ -31,7 +31,7 @@ from ui.crop_tool import CropToolDialog
 from ui.resize_tool import ResizeToolDialog
 from ui.mixed_add_dialog import MixedAddImagesDialog
 from annotation.labelme_io import save_mask_to_json, save_labelme_json, mask_to_shapes
-from annotation.version_manager import list_versions, restore_version, get_version_diff
+from annotation.version_manager import list_versions, restore_version
 from training.trainer import Trainer
 from training.dataset import get_train_test_split, save_train_test_split
 from inference.predictor import Predictor
@@ -621,7 +621,6 @@ class MainWindow(QMainWindow):
         self.version_list.itemDoubleClicked.connect(self._restore_version)
         vl.addWidget(self.version_list)
         vbl = QHBoxLayout()
-        vbl.addWidget(QPushButton("Diff", clicked=self._diff_version))
         vbl.addWidget(QPushButton("Restore", clicked=self._slot_restore_version))
         self.version_count_label = QLabel("0 versions"); vbl.addWidget(self.version_count_label)
         vl.addLayout(vbl)
@@ -1454,6 +1453,12 @@ class MainWindow(QMainWindow):
                     if os.path.isdir(hm_dir) and any(
                             f.endswith("_heatmap.jpg") for f in os.listdir(hm_dir)):
                         self.canvas._show_heatmap = True
+            # Default to the annotation panel on the right after opening a project
+            # (task switching above may have moved it to inference/training).
+            if hasattr(self, "_right_tabs"):
+                self._right_stack.setCurrentIndex(0)
+                self._right_tabs.button(0).setChecked(True)
+
             self._load_image_list_async()
             self.log(f"Opened: {name}")
             self.setWindowTitle(f"{APP_NAME} - {name}")
@@ -5152,9 +5157,6 @@ class MainWindow(QMainWindow):
         if row > 0:
             self.image_list_widget.setCurrentCell(row - 1, 0)
 
-    def _diff_version(self):
-        """Compare two versions from version history."""
-        self.log("Version diff not yet implemented")
 
     def _slot_restore_version(self):
         """Slot wrapper for version restore."""
