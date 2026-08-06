@@ -507,6 +507,7 @@ class ClassificationTrainer:
         # Run epochs
         epochs_total = start_epoch + epochs
         best_acc = max(self.history.get("val_acc", [0])) if self.history.get("val_acc") else 0.0
+        no_improve = 0
 
         for epoch in range(start_epoch, epochs_total):
             if self._stop_flag or (stop_check and stop_check()):
@@ -540,6 +541,15 @@ class ClassificationTrainer:
 
             self._save_model("last_model.pth")
 
+            if val_acc > best_acc:
+                no_improve = 0
+            elif early_stop_patience and early_stop_patience > 0:
+                no_improve += 1
+                if no_improve >= early_stop_patience:
+                    if log_callback:
+                        log_callback(f"Early stop at epoch {epoch+1}: no val improvement for {early_stop_patience} epochs (best {best_acc:.4f})")
+                    break
+
             if progress_callback:
                 progress_callback(epoch + 1 - start_epoch, epochs_total - start_epoch)
             if plot_callback:
@@ -547,6 +557,16 @@ class ClassificationTrainer:
 
         if log_callback:
             log_callback(f"Training complete! Best Acc: {best_acc:.4f}")
+
+        # Roll back to the best-validated checkpoint before export/archive
+        try:
+            self.load_model("best_model.pth")
+            self._ema = None
+            if log_callback:
+                log_callback(f"Rolled back to best_model.pth (Best Acc: {best_acc:.4f})")
+        except Exception as e:
+            if log_callback:
+                log_callback(f"Warning: best-model rollback failed: {e}")
 
         # Export for inference
         try:
@@ -1338,6 +1358,7 @@ class DualClassificationTrainer:
         self._ema = ModelEMA(self.model, decay=ema_decay) if ema else None
 
         best_acc = self.history.get("val_acc", [0])[-1] if self.history.get("val_acc") else 0
+        no_improve = 0
         for epoch in range(start_epoch, epochs):
             train_loss = self.train_epoch()
             if self._ema is not None:
@@ -1375,12 +1396,19 @@ class DualClassificationTrainer:
 
             if val_acc > best_acc:
                 best_acc = val_acc
+                no_improve = 0
                 if self._ema is not None:
                     ckpt = dict(ckpt)
                     ckpt["model_state_dict"] = {k: v.detach().clone() for k, v in self._ema.shadow.items()}
                 torch.save(ckpt, self.project_dir / "models" / "classification" / "best_model.pth")
                 if log_callback:
                     log_callback(f"  Best saved (Acc: {best_acc:.4f})")
+            elif early_stop_patience and early_stop_patience > 0:
+                no_improve += 1
+                if no_improve >= early_stop_patience:
+                    if log_callback:
+                        log_callback(f"Early stop at epoch {epoch+1}: no val improvement for {early_stop_patience} epochs (best {best_acc:.4f})")
+                    break
 
             if progress_callback:
                 progress_callback(epoch + 1, epochs)
@@ -1389,6 +1417,16 @@ class DualClassificationTrainer:
 
         if log_callback:
             log_callback(f"Training complete. Best accuracy: {best_acc:.4f}")
+
+        # Roll back to the best-validated checkpoint before archiving
+        try:
+            self.load_model("best_model.pth")
+            self._ema = None
+            if log_callback:
+                log_callback(f"Rolled back to best_model.pth (Best Acc: {best_acc:.4f})")
+        except Exception as e:
+            if log_callback:
+                log_callback(f"Warning: best-model rollback failed: {e}")
 
         # 模型版本归档
         try:
