@@ -13,6 +13,10 @@ class AnnotationCanvas(QWidget):
     mask_changed = pyqtSignal()
     det_boxes_changed = pyqtSignal()
     status_message = pyqtSignal(str)
+    mode_changed = pyqtSignal(str)
+    width_changed = pyqtSignal(int)
+    class_select_requested = pyqtSignal(int)
+    save_requested = pyqtSignal()
 
     MODE_BRUSH = "brush"
     MODE_POLYGON = "polygon"
@@ -21,7 +25,9 @@ class AnnotationCanvas(QWidget):
     MODE_IGNORE = "ignore"
     MODE_PAN = "pan"
     MODE_SAM = "sam"
-    MODE_SAM = "sam"
+    MODE_RECT = "rect"
+    MODE_CIRCLE = "circle"
+    MODE_ELLIPSE = "ellipse"
 
     MIN_ZOOM = 0.05
     MAX_ZOOM = 30.0
@@ -81,12 +87,9 @@ class AnnotationCanvas(QWidget):
 
         self._line_start = None
         self._line_end = None
-        # SAM state
-        self._sam_points = []
-        self._sam_labels = []
-        self._sam_mask = None
-        self._sam_score = 0.0
-        self._sam_predicting = False
+        self._shape_start = None   # 矩形/圆/椭圆 拖拽起点（图像坐标）
+        self._shape_cur = None     # 拖拽当前点
+        self._redo_stack = []      # 重做栈
         # SAM state
         self._sam_points = []
         self._sam_labels = []
@@ -106,8 +109,6 @@ class AnnotationCanvas(QWidget):
         self._heatmap_qimage = None     # Grad-CAM heatmap overlay
         self._show_heatmap = False      # Space toggles heatmap in cls mode
         self._ocr_overlay = None          # OCR detection overlay
-        self._heatmap_qimage = None     # Grad-CAM heatmap overlay
-        self._show_heatmap = False      # Space toggles heatmap in cls mode
         
         self.mask_changed.connect(self._auto_save_json)
 
@@ -563,6 +564,10 @@ class AnnotationCanvas(QWidget):
             painter.setClipping(False)
             self._draw_line_preview(painter)
             painter.setClipping(True)
+        if self._mode in (self.MODE_RECT, self.MODE_CIRCLE, self.MODE_ELLIPSE) and self._shape_start is not None:
+            painter.setClipping(False)
+            self._draw_shape_preview(painter)
+            painter.setClipping(True)
         if self._mode == self.MODE_SAM:
             self._draw_sam_overlay(painter)
         if self._mode in (self.MODE_BRUSH, self.MODE_ERASER):
@@ -588,6 +593,7 @@ class AnnotationCanvas(QWidget):
         zoom_pct = int(self.zoom_level / self._fit_zoom * 100)
         mode_names = {self.MODE_BRUSH: 'Brush', self.MODE_ERASER: 'Eraser', self.MODE_IGNORE: 'Ignore',
                        self.MODE_POLYGON: "Polygon", self.MODE_LINE: "Line",
+                       self.MODE_RECT: "Rect", self.MODE_CIRCLE: "Circle", self.MODE_ELLIPSE: "Ellipse",
                        self.MODE_PAN: "Pan", self.MODE_SAM: "SAM"}
         ann_status = "Annot:ON" if self._show_annotation else "Annot:OFF"
         if self._det_overlay is not None:
@@ -595,10 +601,13 @@ class AnnotationCanvas(QWidget):
         else:
             pred_status = "Pred:ON" if self._show_prediction else "Pred:OFF"
         res = "%dx%d" % (self.image.size[0], self.image.size[1]) if self.image else "N/A"
-        info = "%s | %s | %s | %s | Zoom: %d%% | Brush: %d" % (
+        cls_name = "?"
+        if self.label_manager is not None and 0 <= self.current_class_id < len(self.label_manager.classes):
+            cls_name = self.label_manager.classes[self.current_class_id]
+        info = "%s | %s | Class: %s | %s | %s | Zoom: %d%% | Width: %d" % (
             res,
             mode_names.get(self._mode, self._mode),
-            ann_status, pred_status, zoom_pct, self.brush_size)
+            cls_name, ann_status, pred_status, zoom_pct, self.brush_size)
         self._draw_class_labels(painter)
         # Semi-transparent background so boxes don't obscure status text
         font = QFont("Sans", 9)
@@ -889,7 +898,8 @@ class AnnotationCanvas(QWidget):
 
             return
         pt = self._window_to_image(event.pos())
-        if pt is None and self._mode not in (self.MODE_POLYGON, self.MODE_IGNORE, self.MODE_LINE, self.MODE_SAM):
+        if pt is None and self._mode not in (self.MODE_POLYGON, self.MODE_IGNORE, self.MODE_LINE, self.MODE_SAM,
+                                             self.MODE_RECT, self.MODE_CIRCLE, self.MODE_ELLIPSE):
             return
         if self._mode == self.MODE_PAN:
             self._panning = True
@@ -914,6 +924,12 @@ class AnnotationCanvas(QWidget):
             self._push_undo("line")
             self._line_start = self._window_to_image_unclamped(event.pos())
             self._line_end = self._window_to_image_unclamped(event.pos())
+            self.update()
+        elif self._mode in (self.MODE_RECT, self.MODE_CIRCLE, self.MODE_ELLIPSE):
+            self._push_undo(self._mode)
+            self._shape_start = self._window_to_image_unclamped(event.pos())
+            self._shape_cur = self._shape_start
+            self._drawing = True
             self.update()
         elif self._mode == self.MODE_SAM:
             self._handle_sam_click(event)
@@ -940,6 +956,9 @@ class AnnotationCanvas(QWidget):
             self._draw_brush_at(event.pos())
         elif self._drawing and self._mode == self.MODE_ERASER:
             self._draw_eraser_at(event.pos())
+        if self._drawing and self._mode in (self.MODE_RECT, self.MODE_CIRCLE, self.MODE_ELLIPSE):
+            self._shape_cur = self._window_to_image_unclamped(event.pos())
+            self.update()
         if self._mode in (self.MODE_BRUSH, self.MODE_ERASER, self.MODE_POLYGON, self.MODE_IGNORE, self.MODE_LINE):
             self.update()
         # Prediction hover tooltip (uses precomputed stats, O(1) per move)
@@ -988,10 +1007,31 @@ class AnnotationCanvas(QWidget):
             self._overlay_dirty = True
             self.update()
             self.mask_changed.emit()
+        if self._mode in (self.MODE_RECT, self.MODE_CIRCLE, self.MODE_ELLIPSE) and self._shape_start is not None:
+            self._shape_cur = self._window_to_image_unclamped(event.pos())
+            self._fill_shape()
+            self._shape_start = None
+            self._shape_cur = None
+            self._drawing = False
+            self._overlay_dirty = True
+            self.update()
+            self.mask_changed.emit()
 
     def mouseDoubleClickEvent(self, event):
         if self._mode in (self.MODE_POLYGON, self.MODE_IGNORE) and len(self._polygon_points) >= 3:
             self._close_polygon()
+
+    def _zoom_step(self, factor):
+        """以视图中心为基准缩放。"""
+        if self.image is None:
+            return
+        c = self.rect().center()
+        new_zoom = max(self.MIN_ZOOM, min(self.MAX_ZOOM, self.zoom_level * factor))
+        actual = new_zoom / self.zoom_level
+        self.zoom_level = new_zoom
+        self.pan_offset_x = c.x() - actual * (c.x() - self.pan_offset_x)
+        self.pan_offset_y = c.y() - actual * (c.y() - self.pan_offset_y)
+        self.update()
 
     def wheelEvent(self, event):
         if self.image is None:
@@ -1026,25 +1066,50 @@ class AnnotationCanvas(QWidget):
                         self.update()
                         self.status_message.emit("SAM: all points removed")
                 return
-        # SAM mode: Enter=accept, Esc=cancel, Backspace=undo last point
-        if self._mode == self.MODE_SAM:
-            if event.key() == Qt.Key_Return or event.key() == Qt.Key_Enter:
-                self._accept_sam_mask()
-                return
-            elif event.key() == Qt.Key_Escape:
-                self._cancel_sam()
-                return
-            elif event.key() == Qt.Key_Backspace or event.key() == Qt.Key_Delete:
-                if self._sam_points:
-                    self._sam_points.pop()
-                    self._sam_labels.pop()
-                    if self._sam_points:
-                        self._run_sam_prediction()
-                    else:
-                        self._sam_mask = None
-                        self.update()
-                        self.status_message.emit("SAM: all points removed")
-                return
+        key = event.key()
+        mods = event.modifiers()
+        # 工具快捷键（不与 Ctrl 组合冲突）
+        _tool_keys = {
+            Qt.Key_B: self.MODE_BRUSH,
+            Qt.Key_L: self.MODE_LINE,
+            Qt.Key_R: self.MODE_RECT,
+            Qt.Key_C: self.MODE_CIRCLE,
+            Qt.Key_O: self.MODE_ELLIPSE,
+            Qt.Key_P: self.MODE_POLYGON,
+            Qt.Key_E: self.MODE_ERASER,
+            Qt.Key_I: self.MODE_IGNORE,
+            Qt.Key_A: self.MODE_SAM,
+            Qt.Key_H: self.MODE_PAN,
+        }
+        if key in _tool_keys and not (mods & Qt.ControlModifier):
+            self.set_mode(_tool_keys[key])
+            return
+        if Qt.Key_1 <= key <= Qt.Key_9 and not (mods & Qt.ControlModifier):
+            self.class_select_requested.emit(key - Qt.Key_0)
+            return
+        if key in (Qt.Key_Plus, Qt.Key_Equal):
+            self._zoom_step(1.25)
+            return
+        if key == Qt.Key_Minus:
+            self._zoom_step(1 / 1.25)
+            return
+        if key in (Qt.Key_0, Qt.Key_F):
+            self._fit_to_window()
+            self.update()
+            return
+        if key == Qt.Key_BracketRight:
+            self.brush_size = min(100, self.brush_size + 2)
+            self.width_changed.emit(self.brush_size)
+            self.status_message.emit("Brush size: %d" % self.brush_size)
+            self.update()
+            return
+        if key == Qt.Key_BracketLeft:
+            self.brush_size = max(1, self.brush_size - 2)
+            self.width_changed.emit(self.brush_size)
+            self.status_message.emit("Brush size: %d" % self.brush_size)
+            self.update()
+            return
+
         # Left/Right arrow to switch between grayscale and rainbow height map
         if self._height_image is not None and self._view_mode != 2:
             if event.key() == Qt.Key_Left or event.key() == Qt.Key_Right:
@@ -1076,14 +1141,13 @@ class AnnotationCanvas(QWidget):
 
         if event.key() == Qt.Key_Z and event.modifiers() == Qt.ControlModifier:
             # Ctrl+Z: undo last mask edit
-            if self._undo_stack:
-                self.mask, desc = self._undo_stack.pop()
-                self._overlay_dirty = True
-                self.update()
-                self.mask_changed.emit()
-                self.status_message.emit("Undo: %s (%d left)" % (desc, len(self._undo_stack)))
-            else:
-                self.status_message.emit("Nothing to undo")
+            self.undo()
+        elif event.key() == Qt.Key_Y and event.modifiers() == Qt.ControlModifier:
+            # Ctrl+Y: redo
+            self.redo()
+        elif event.key() == Qt.Key_S and event.modifiers() == Qt.ControlModifier:
+            # Ctrl+S: save annotation
+            self.save_requested.emit()
         elif event.key() == Qt.Key_Escape:
             if self._mode in (self.MODE_POLYGON, self.MODE_IGNORE) and self._polygon_points:
                 self._polygon_points = []
@@ -1200,107 +1264,51 @@ class AnnotationCanvas(QWidget):
         cv2.line(self.mask, (x1, y1), (x2, y2), color=self.current_class_id, thickness=thickness)
         self.status_message.emit("Line drawn (width=%d)" % thickness)
 
-    # ======================== SAM Assist ========================
-
-    def _handle_sam_click(self, event):
-        """Add a SAM prompt point on click."""
-        pt = self._window_to_image(event.pos())
-        if pt is None:
+    def _fill_shape(self):
+        """把矩形/圆/椭圆选区填充为当前类别（图像坐标）。"""
+        if self._shape_start is None or self._shape_cur is None or self.mask is None:
             return
-        if event.button() == Qt.LeftButton:
-            self._sam_points.append(pt)
-            self._sam_labels.append(1)  # foreground
-        elif event.button() == Qt.RightButton:
-            self._sam_points.append(pt)
-            self._sam_labels.append(0)  # background
-        else:
+        x0 = min(self._shape_start[0], self._shape_cur[0])
+        y0 = min(self._shape_start[1], self._shape_cur[1])
+        x1 = max(self._shape_start[0], self._shape_cur[0])
+        y1 = max(self._shape_start[1], self._shape_cur[1])
+        h, w = self.mask.shape
+        x0 = max(0, int(round(x0))); y0 = max(0, int(round(y0)))
+        x1 = min(w - 1, int(round(x1))); y1 = min(h - 1, int(round(y1)))
+        if x1 <= x0 or y1 <= y0:
             return
-        self._run_sam_prediction()
-
-    def _run_sam_prediction(self):
-        """Run SAM inference with current points."""
-        if self._sam_predicting:
-            return
-        if not self._sam_points:
-            return
-        self._sam_predicting = True
-        self.status_message.emit("SAM: predicting...")
-        self.update()
-        import threading
-        def _predict():
-            try:
-                from annotation.sam_assist import sam_predict
-                img = self.image
-                result = sam_predict(img, self._sam_points, self._sam_labels)
-                if result:
-                    self._sam_mask = result["mask"]
-                    self._sam_score = result["score"]
-                    self.status_message.emit(
-                        "SAM: score=%.3f | Enter=accept, Esc=cancel, +click=refine" % self._sam_score)
-                else:
-                    self.status_message.emit("SAM: prediction returned no mask")
-            except ImportError as e:
-                self.status_message.emit("SAM: segment-anything not installed. Run: pip install segment-anything")
-            except Exception as e:
-                self.status_message.emit("SAM error: %s" % str(e))
-            finally:
-                self._sam_predicting = False
-                self.update()
-        threading.Thread(target=_predict, daemon=True).start()
-
-    def _draw_sam_overlay(self, painter):
-        """Draw SAM prompt points and mask preview."""
-        rect = self._image_to_widget_rect()
-        scale = self.zoom_level
-
-        # Draw mask preview
-        if self._sam_mask is not None and self._sam_mask.any():
-            painter.setClipping(True)
-            painter.setClipRect(rect)
-            h, w = self._sam_mask.shape
-            arr = np.zeros((h, w, 4), dtype=np.uint8)
-            color = list(CLASS_COLORS[self.current_class_id % len(CLASS_COLORS)])
-            arr[self._sam_mask, :3] = color
-            arr[self._sam_mask, 3] = 120
-            qimg = QImage(arr.data, w, h, w * 4, QImage.Format_RGBA8888)
-            painter.drawImage(rect, qimg)
-            painter.setClipping(False)
-
-        # Draw prompt points
-        for i, pt in enumerate(self._sam_points):
-            wp = self._image_to_widget(pt[0], pt[1])
-            if self._sam_labels[i] == 1:
-                painter.setPen(QPen(QColor(0, 255, 0), 2))
-                painter.setBrush(QBrush(QColor(0, 255, 0, 180)))
+        yy, xx = np.mgrid[y0:y1 + 1, x0:x1 + 1]
+        region = np.ones_like(xx, dtype=bool)
+        if self._mode in (self.MODE_CIRCLE, self.MODE_ELLIPSE):
+            cx = (x0 + x1) / 2.0
+            cy = (y0 + y1) / 2.0
+            if self._mode == self.MODE_CIRCLE:
+                r = max(min(x1 - x0, y1 - y0) / 2.0, 0.5)
+                rx = ry = r
             else:
-                painter.setPen(QPen(QColor(255, 0, 0), 2))
-                painter.setBrush(QBrush(QColor(255, 0, 0, 180)))
-            painter.drawEllipse(wp, 5, 5)
+                rx = max((x1 - x0) / 2.0, 0.5)
+                ry = max((y1 - y0) / 2.0, 0.5)
+            region = ((xx - cx) / rx) ** 2 + ((yy - cy) / ry) ** 2 <= 1.0
+        self.mask[y0:y1 + 1, x0:x1 + 1][region] = self.current_class_id
+        self.status_message.emit("%s filled (class %d)" % (self._mode, self.current_class_id))
 
-    def _accept_sam_mask(self):
-        """Accept SAM mask: fill into current class mask."""
-        if self._sam_mask is None or not self._sam_mask.any():
-            self.status_message.emit("SAM: no mask to accept")
+    def _draw_shape_preview(self, painter):
+        """拖拽时的虚线预览。"""
+        if self._shape_start is None or self._shape_cur is None:
             return
-        self._push_undo("sam")
-        self.mask[self._sam_mask] = self.current_class_id
-        self._overlay_dirty = True
-        self._sam_points = []
-        self._sam_labels = []
-        self._sam_mask = None
-        self._sam_score = 0.0
-        self.update()
-        self.mask_changed.emit()
-        self.status_message.emit("SAM mask applied")
-
-    def _cancel_sam(self):
-        """Cancel SAM: clear all points and mask."""
-        self._sam_points = []
-        self._sam_labels = []
-        self._sam_mask = None
-        self._sam_score = 0.0
-        self.update()
-        self.status_message.emit("SAM: cancelled")
+        sp = self._image_to_widget(self._shape_start[0], self._shape_start[1])
+        ep = self._image_to_widget(self._shape_cur[0], self._shape_cur[1])
+        r = QRectF(sp, ep).normalized()
+        color = CLASS_COLORS[self.current_class_id % len(CLASS_COLORS)]
+        painter.setPen(QPen(QColor(*color), 2, Qt.DashLine))
+        painter.setBrush(QBrush(QColor(color[0], color[1], color[2], 40)))
+        if self._mode == self.MODE_RECT:
+            painter.drawRect(r)
+        elif self._mode in (self.MODE_CIRCLE, self.MODE_ELLIPSE):
+            if self._mode == self.MODE_CIRCLE:
+                d = min(r.width(), r.height())
+                r = QRectF(r.center().x() - d / 2.0, r.center().y() - d / 2.0, d, d)
+            painter.drawEllipse(r)
 
     # ======================== SAM Assist ========================
 
@@ -1413,11 +1421,14 @@ class AnnotationCanvas(QWidget):
             self._polygon_points = []
         self._line_start = None
         self._line_end = None
+        self._shape_start = None
+        self._shape_cur = None
         self._drawing = False
         self._panning = False
         self._mode = mode
         self._update_mode_cursor()
         self.update()
+        self.mode_changed.emit(mode)
 
     def _update_mode_cursor(self):
         cursors = {
@@ -1426,6 +1437,9 @@ class AnnotationCanvas(QWidget):
             self.MODE_IGNORE: Qt.CrossCursor,
             self.MODE_POLYGON: Qt.CrossCursor,
             self.MODE_LINE: Qt.CrossCursor,
+            self.MODE_RECT: Qt.CrossCursor,
+            self.MODE_CIRCLE: Qt.CrossCursor,
+            self.MODE_ELLIPSE: Qt.CrossCursor,
             self.MODE_PAN: Qt.OpenHandCursor,
             self.MODE_SAM: Qt.CrossCursor,
         }
@@ -1446,38 +1460,20 @@ class AnnotationCanvas(QWidget):
         self._update_mode_cursor()
         self.update()
 
-
-    def set_heatmap(self, qimage):
-        """Set Grad-CAM heatmap overlay QImage (classification mode)."""
-        self._heatmap_qimage = qimage.copy() if qimage else None
+    def cancel_current(self):
+        """取消当前操作（等价于 Esc）：多边形/SAM/形状/直线。"""
+        if self._mode in (self.MODE_POLYGON, self.MODE_IGNORE) and self._polygon_points:
+            self._polygon_points = []
+            self.status_message.emit("Polygon cancelled")
+        if self._mode == self.MODE_SAM:
+            self._cancel_sam()
+        self._line_start = None
+        self._line_end = None
+        self._shape_start = None
+        self._shape_cur = None
+        self._drawing = False
         self.update()
 
-
-    def load_heatmap_from_file(self, filepath):
-        """Load heatmap overlay from a saved image file."""
-        import os
-        if not os.path.exists(filepath):
-            self._heatmap_qimage = None
-            return
-        from PyQt5.QtGui import QImage
-        qimg = QImage(filepath)
-        if qimg.isNull():
-            self._heatmap_qimage = None
-            return
-        # Resize to match current image if needed
-        if self.image is not None:
-            iw, ih = self.image.size
-            if qimg.width() != iw or qimg.height() != ih:
-                qimg = qimg.scaled(iw, ih)
-        self._heatmap_qimage = qimg.copy()
-        self._show_heatmap = True
-        self.update()
-
-    def clear_heatmap(self):
-        """Clear Grad-CAM heatmap overlay."""
-        self._heatmap_qimage = None
-        self._show_heatmap = False
-        self.update()
 
     def set_heatmap(self, qimage):
         self._heatmap_qimage = qimage.copy() if qimage else None
@@ -1544,6 +1540,33 @@ class AnnotationCanvas(QWidget):
             self._undo_stack.append((self.mask.copy(), desc))
             if len(self._undo_stack) > self._max_undo:
                 self._undo_stack.pop(0)
+            self._redo_stack.clear()
+
+    def undo(self):
+        """撤销上一次标注操作。"""
+        if not self._undo_stack:
+            self.status_message.emit("Nothing to undo")
+            return
+        if self.mask is not None:
+            self._redo_stack.append((self.mask.copy(), self._undo_stack[-1][1]))
+        self.mask, desc = self._undo_stack.pop()
+        self._overlay_dirty = True
+        self.update()
+        self.mask_changed.emit()
+        self.status_message.emit("Undo: %s (%d left)" % (desc, len(self._undo_stack)))
+
+    def redo(self):
+        """重做被撤销的标注操作。"""
+        if not self._redo_stack:
+            self.status_message.emit("Nothing to redo")
+            return
+        if self.mask is not None:
+            self._undo_stack.append((self.mask.copy(), self._redo_stack[-1][1]))
+        self.mask, desc = self._redo_stack.pop()
+        self._overlay_dirty = True
+        self.update()
+        self.mask_changed.emit()
+        self.status_message.emit("Redo: %s (%d left)" % (desc, len(self._redo_stack)))
 
     def _auto_save_json(self):
         """Auto-save current mask as LabelMe JSON after each edit."""

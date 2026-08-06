@@ -38,6 +38,7 @@ from training.dataset import get_train_test_split, save_train_test_split
 from inference.predictor import Predictor
 from ui.system_monitor import SystemMonitor
 from ui.screen_ocr import screen_ocr_and_show
+from ui.annotation_toolbar import AnnotationToolbar
 from ui.global_hotkey import register_global_hotkey, unregister_global_hotkey, WM_HOTKEY
 import ctypes
 from ctypes import wintypes
@@ -550,6 +551,24 @@ class MainWindow(QMainWindow):
         self._version_refresh_timer.timeout.connect(self._refresh_versions)
         self.canvas.mask_changed.connect(lambda: self._version_refresh_timer.start())
         self.canvas.det_boxes_changed.connect(self._on_det_boxes_changed)
+
+        # 横向标注工具栏（画布上方）
+        self.annotation_toolbar = AnnotationToolbar()
+        self.annotation_toolbar.mode_selected.connect(self._set_annotation_mode)
+        self.annotation_toolbar.width_changed.connect(self._on_canvas_width_changed)
+        self.annotation_toolbar.undo_requested.connect(self.canvas.undo)
+        self.annotation_toolbar.redo_requested.connect(self.canvas.redo)
+        self.annotation_toolbar.clear_requested.connect(self._clear_current_mask)
+        self.annotation_toolbar.cancel_requested.connect(self.canvas.cancel_current)
+        self.annotation_toolbar.reload_requested.connect(self._on_toolbar_reload)
+        self.annotation_toolbar.save_requested.connect(self._save_current_mask)
+        self.annotation_toolbar.prev_requested.connect(self._prev_image)
+        self.annotation_toolbar.next_requested.connect(self._next_image)
+        self.canvas.mode_changed.connect(self.annotation_toolbar.set_mode)
+        self.canvas.width_changed.connect(self.annotation_toolbar.set_width)
+        self.canvas.class_select_requested.connect(self._on_canvas_class_select)
+        self.canvas.save_requested.connect(self._save_current_mask)
+        cl.addWidget(self.annotation_toolbar)
         cl.addWidget(self._viewer_stack)
 
         outer.addWidget(cc)
@@ -589,41 +608,16 @@ class MainWindow(QMainWindow):
         self.class_list.move_down_requested.connect(lambda: self._move_class(1))
         self.class_list.rename_requested.connect(self._rename_class)
         al.addWidget(self.class_list)
-        bl = QHBoxLayout(); bl.addWidget(QLabel("Brush:"))
         al.addWidget(QLabel("<b>Palette:</b>"))
         self.color_palette = ColorPalette()
         self.color_palette.class_selected.connect(self._on_palette_class_clicked)
         al.addWidget(self.color_palette)
-        self.brush_slider = QSlider(Qt.Horizontal)
-        self.brush_slider.setRange(2, 100); self.brush_slider.setValue(15)
-        self.brush_slider.valueChanged.connect(lambda v: setattr(self.canvas, "brush_size", v))
-        bl.addWidget(self.brush_slider); al.addLayout(bl)
-        al.addWidget(QLabel("<b>Mode:</b>"))
-        mode_layout = QHBoxLayout()
-        self.mode_group = QButtonGroup(self); self.mode_group.setExclusive(True)
-        modes = [("Brush","brush"),("Polygon","polygon"),("Line","line"),("Eraser","eraser"),("Ignore","ignore"),("SAM","sam"),("Pan","pan")]
-        self._mode_buttons = {}
-        for label, mode_id in modes:
-            btn = QPushButton(label); btn.setCheckable(True); btn.setMinimumWidth(64)
-            def make_callback(m): return lambda: self._set_annotation_mode(m)
-            btn.clicked.connect(make_callback(mode_id))
-            if mode_id == "pan": btn.setChecked(True)
-            self.mode_group.addButton(btn); self._mode_buttons[mode_id] = btn
-            mode_layout.addWidget(btn)
-        al.addLayout(mode_layout)
         # Detection mode toggle button
         self.det_btn = QPushButton("Detection Mode (Ctrl+D)")
         self.det_btn.setCheckable(True)
         self.det_btn.clicked.connect(self._toggle_detection_mode)
         self.det_btn.setStyleSheet("QPushButton { padding: 6px; } QPushButton:checked { background-color: #2d6a4f; color: white; }")
         al.addWidget(self.det_btn)
-        al.addWidget(QPushButton("Reset View (Fit)", clicked=lambda: self.canvas.reset_view()))
-        al.addWidget(QPushButton("Save Annotation", clicked=self._save_current_mask))
-        al.addWidget(QPushButton("Clear Annotation", clicked=self._clear_current_mask))
-        nl = QHBoxLayout()
-        nl.addWidget(QPushButton("< Prev", clicked=self._prev_image))
-        nl.addWidget(QPushButton("Next >", clicked=self._next_image))
-        al.addLayout(nl)
         al.addStretch()
         self._right_stack.addWidget(panel_annot)  # 0
 
@@ -1527,6 +1521,8 @@ class MainWindow(QMainWindow):
 
     def _set_task(self, task):
         """Switch between segmentation and detection task modes."""
+        # Annotation toolbar (rect/circle/ellipse brush tools) is segmentation-only
+        self.annotation_toolbar.setVisible(task == "segmentation")
         if task == "detection":
             self._detection_mode = True
             self._cls_mode = False
@@ -1539,9 +1535,8 @@ class MainWindow(QMainWindow):
             classes = getattr(self, "_cached_classes", None) or ["background"]
             self._box_manager = BoxManager(categories=classes)
             self.canvas._det_overlay = DetectionOverlay(self.canvas, self._box_manager)
-            if "pan" in getattr(self, "_mode_buttons", {}):
-                self._mode_buttons["pan"].setChecked(True)
-                self.canvas._mode = self.canvas.MODE_PAN
+            self.annotation_toolbar.set_mode("pan")
+            self.canvas._mode = self.canvas.MODE_PAN
             self._load_det_annotations()
             self._populate_det_class_list()
             self._infer_title.setText("推理 · 目标检测")
@@ -2465,9 +2460,8 @@ class MainWindow(QMainWindow):
             classes = getattr(self, "_cached_classes", None) or ["background"]
             self._box_manager = BoxManager(categories=classes)
             self.canvas._det_overlay = DetectionOverlay(self.canvas, self._box_manager)
-            if "pan" in getattr(self, "_mode_buttons", {}):
-                self._mode_buttons["pan"].setChecked(True)
-                self.canvas._mode = self.canvas.MODE_PAN
+            self.annotation_toolbar.set_mode("pan")
+            self.canvas._mode = self.canvas.MODE_PAN
             self._load_det_annotations()
         else:
             self.det_btn.setChecked(False)
@@ -2533,7 +2527,7 @@ class MainWindow(QMainWindow):
     # ============ Annotation Modes ============
 
     def _set_annotation_mode(self, mode):
-        """Set the annotation tool mode (brush/pan/polygon/line/eraser)."""
+        """Set the annotation tool mode (brush/pan/polygon/line/eraser/rect/circle/ellipse/sam)."""
         mode_map = {
             "pan": self.canvas.MODE_PAN,
             "brush": self.canvas.MODE_BRUSH,
@@ -2542,11 +2536,12 @@ class MainWindow(QMainWindow):
             "eraser": self.canvas.MODE_ERASER,
             "ignore": self.canvas.MODE_IGNORE,
             "sam": self.canvas.MODE_SAM,
+            "rect": self.canvas.MODE_RECT,
+            "circle": self.canvas.MODE_CIRCLE,
+            "ellipse": self.canvas.MODE_ELLIPSE,
         }
         if mode in mode_map:
-            self.canvas._mode = mode_map[mode]
-            self.canvas._update_mode_cursor()
-            self.canvas.update()
+            self.canvas.set_mode(mode_map[mode])
             if mode == "sam":
                 self.log("SAM Assist: Left-click=foreground, Right-click=background, Enter=accept, Esc=cancel")
 
@@ -2674,6 +2669,24 @@ class MainWindow(QMainWindow):
             self.class_list.setCurrentRow(idx, emit=False)
             if hasattr(self.canvas, "label_manager"):
                 self.canvas.set_class(idx)
+
+    def _on_canvas_width_changed(self, v):
+        """工具栏宽度微调框 -> 画布笔刷大小。"""
+        self.canvas.brush_size = max(1, int(v))
+
+    def _on_toolbar_reload(self):
+        """刷新视图：重置缩放/平移。"""
+        self.canvas.reset_view()
+        self.canvas.update()
+
+    def _on_canvas_class_select(self, cid):
+        """数字键 1-9 选择类别。"""
+        if cid < 0 or cid >= self.class_list.count():
+            return
+        self.class_list.setCurrentRow(cid, emit=False)
+        self.canvas.set_class(cid)
+        if hasattr(self, "color_palette"):
+            self.color_palette.set_selected(cid)
 
     def _add_class(self):
         """Add a new class to the project."""
