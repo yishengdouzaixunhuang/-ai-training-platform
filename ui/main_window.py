@@ -29,6 +29,7 @@ from ui.mixed_viewer import MixedViewer
 from ui.class_table import ClassTableView
 from ui.crop_tool import CropToolDialog
 from ui.resize_tool import ResizeToolDialog
+from ui.heatmap_analyzer import HeatmapAnalyzerDialog
 from ui.mixed_add_dialog import MixedAddImagesDialog
 from annotation.labelme_io import save_mask_to_json, save_labelme_json, mask_to_shapes
 from annotation.version_manager import list_versions, restore_version
@@ -314,6 +315,7 @@ class MainWindow(QMainWindow):
         tm.addSeparator()
         tm.addAction("Image Crop Tool...", self._open_crop_tool)
         tm.addAction("Image Resize Tool...", self._open_resize_tool)
+        tm.addAction("Heatmap Region Analyzer...", self._open_heatmap_analyzer)
         tm.addSeparator()
         tm.addAction("Flow Editor...", self._open_flow_editor)
         sm = mb.addMenu("Settings(&S)")
@@ -5157,6 +5159,12 @@ class MainWindow(QMainWindow):
     def _open_resize_tool(self):
         """Open the image resize tool dialog."""
         dlg = ResizeToolDialog(self)
+        dlg.exec_()
+
+    def _open_heatmap_analyzer(self):
+        """Tools 菜单：批量热力图区域分析（辅助 NG 样本种类/个数统计）。"""
+        dlg = HeatmapAnalyzerDialog(self)
+        dlg.resize(1180, 760)
         dlg.exec_()
     def _open_flow_editor(self):
         """打开可视化流程编辑器（Vision Flow）。"""
