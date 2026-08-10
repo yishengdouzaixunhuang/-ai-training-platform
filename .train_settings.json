@@ -8,7 +8,7 @@
   "augment": "medium",
   "resume": true,
   "augment_flags": {
-    "enabled": true,
+    "enabled": false,
     "zoom_out": false,
     "zoom_in": false,
     "translate": false,

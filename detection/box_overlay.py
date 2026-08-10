@@ -67,6 +67,7 @@ class DetectionOverlay:
         self._drag_offset = None
         self._rotation_start_angle = 0.0
         self._hovered_box_id = None
+        self._draw_enabled = True    # False = pan-select only (no new boxes)
 
     # ---- Drawing ----
 
@@ -183,7 +184,11 @@ class DetectionOverlay:
             corners = self._get_obb_corners_scaled(bbox, scale, ox, oy)
         else:
             x, y, w, h = [v * scale for v in bbox[:4]]
-            corners = [(x, y), (x + w, y), (x + w, y + h), (x, y + h)]
+            # Must apply the viewport offset (ox, oy) exactly like _draw_hbb;
+            # otherwise the 4 corner handles float away from the box corners
+            # (e.g. onto the dark background) when the image is centered/panned.
+            corners = [(x + ox, y + oy), (x + w + ox, y + oy),
+                       (x + w + ox, y + h + oy), (x + ox, y + h + oy)]
 
         for cx, cy in corners:
             painter.drawRect(QRectF(cx - handle_size, cy - handle_size,
@@ -232,11 +237,16 @@ class DetectionOverlay:
                 self._drag_offset = (pos_image.x() - bbox[0], pos_image.y() - bbox[1])
             return True
 
-        # Start drawing new box
-        self._state = self.STATE_DRAWING
-        self._draw_start = pos_image
-        self._draw_current = pos_image
-        self._active_box_id = None
+        # No box under cursor: start drawing a new box (draw tool on),
+        # or just clear the selection (draw tool off / pan-select mode)
+        if self._draw_enabled:
+            self._state = self.STATE_DRAWING
+            self._draw_start = pos_image
+            self._draw_current = pos_image
+            self._active_box_id = None
+        else:
+            self._state = self.STATE_IDLE
+            self._active_box_id = None
         return True
 
     def mouse_move(self, pos_image):
@@ -310,8 +320,6 @@ class DetectionOverlay:
 
     def cancel_drawing(self):
         """Cancel current draw/transform operation."""
-        if self._state == self.STATE_DRAWING:
-            self.box_manager.undo()
         self._state = self.STATE_IDLE
         self._draw_start = None
         self._draw_current = None
@@ -326,6 +334,16 @@ class DetectionOverlay:
     def clear_selection(self):
         self._active_box_id = None
         self._state = self.STATE_IDLE
+
+    def set_draw_enabled(self, enabled):
+        """Enable/disable drawing new boxes (False = pan-select only)."""
+        self._draw_enabled = bool(enabled)
+        if not self._draw_enabled and self._state == self.STATE_DRAWING:
+            self.cancel_drawing()
+
+    def has_active_box(self):
+        """Whether a box is currently selected."""
+        return self._active_box_id is not None
 
     def get_drawing_preview_rect(self):
         """Get current drawing preview rect in image coords. 

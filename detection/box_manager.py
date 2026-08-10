@@ -15,6 +15,7 @@ class BoxManager:
         self._boxes = []          # annotation boxes [{id, category, bbox, area, score=None}, ...]
         self._pred_boxes = []     # prediction boxes [{category, bbox, score}, ...] (read-only)
         self._undo_stack = []     # List of box snapshots for undo
+        self._redo_stack = []     # List of box snapshots for redo
         self._next_id = 1
         self._categories = categories or ["background"]
         self._image_path = None
@@ -71,6 +72,7 @@ class BoxManager:
             self._next_id = 1
             # Image dimensions will be set by caller
         self._undo_stack.clear()
+        self._redo_stack.clear()
         self._dirty = False
 
     def save(self):
@@ -115,6 +117,7 @@ class BoxManager:
         self._undo_stack.append(copy.deepcopy(self._boxes))
         if len(self._undo_stack) > 50:
             self._undo_stack.pop(0)
+        self._redo_stack.clear()
 
     def add_box(self, bbox, category="object", score=None):
         """Add a new bounding box.
@@ -177,10 +180,29 @@ class BoxManager:
         """Undo last operation."""
         if not self._undo_stack:
             return False
+        self._redo_stack.append(copy.deepcopy(self._boxes))
         self._boxes = self._undo_stack.pop()
         self._dirty = True
         self.save()
         return True
+
+    def redo(self):
+        """Redo last undone operation."""
+        if not self._redo_stack:
+            return False
+        self._undo_stack.append(copy.deepcopy(self._boxes))
+        self._boxes = self._redo_stack.pop()
+        self._dirty = True
+        self.save()
+        return True
+
+    def can_undo(self):
+        """Whether an undo is available."""
+        return bool(self._undo_stack)
+
+    def can_redo(self):
+        """Whether a redo is available."""
+        return bool(self._redo_stack)
 
     def find_box_at(self, px, py, margin=8):
         """Find box id at pixel position (px, py). 

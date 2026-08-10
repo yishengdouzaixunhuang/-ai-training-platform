@@ -1,4 +1,4 @@
-﻿"""Annotation version manager - auto-snapshot, list, restore, diff."""
+"""Annotation version manager - auto-snapshot, list, restore, diff."""
 import os, json, shutil, time, glob
 from datetime import datetime
 
@@ -82,12 +82,14 @@ def list_versions(project_dir, image_path):
 
 
 def restore_version(project_dir, image_path, version_path):
-    """Restore a version: copy version file to current JSON path."""
+    """Restore a version: copy version file to current JSON path.
+
+    No auto-backup before restore: the pre-restore state was already snapshotted
+    by save_labelme_json on the last save, so restoring would only add duplicate
+    version entries and bloat the history list.
+    """
     from annotation.labelme_io import get_json_path
     json_path = get_json_path(image_path)
-
-    # First save current as a version (so restore is undoable)
-    save_version(project_dir, image_path)
 
     # Copy version back
     shutil.copy2(version_path, json_path)

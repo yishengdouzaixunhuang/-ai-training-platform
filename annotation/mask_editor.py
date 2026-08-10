@@ -12,6 +12,7 @@ from annotation.labelme_io import load_mask_from_json, save_mask_to_json, load_l
 class AnnotationCanvas(QWidget):
     mask_changed = pyqtSignal()
     det_boxes_changed = pyqtSignal()
+    det_selection_changed = pyqtSignal()
     status_message = pyqtSignal(str)
     mode_changed = pyqtSignal(str)
     width_changed = pyqtSignal(int)
@@ -55,6 +56,7 @@ class AnnotationCanvas(QWidget):
         self._cached_height_pil = None      # PIL Image of rainbow for standard path
         self._gray_image = None       # cached original grayscale PIL Image
         self._det_overlay = None  # detection box overlay (attached by main_window)
+        self._mask_editing = True  # False in classification/detection/OCR modes
         self._cached_overlay_qimage = None
         self._overlay_dirty = True
         self._show_annotation = True
@@ -894,8 +896,12 @@ class AnnotationCanvas(QWidget):
             pt = self._window_to_image(event.pos())
             if pt is not None and self._det_overlay.mouse_press(pt, event.modifiers()):
                 self.update()
+                self.det_selection_changed.emit()
                 return
 
+            return
+        if not self._mask_edit_enabled() and self._mode != self.MODE_PAN:
+            self.status_message.emit("Mask editing is disabled in this task mode")
             return
         pt = self._window_to_image(event.pos())
         if pt is None and self._mode not in (self.MODE_POLYGON, self.MODE_IGNORE, self.MODE_LINE, self.MODE_SAM,
@@ -951,6 +957,8 @@ class AnnotationCanvas(QWidget):
                 self.update()
                 return
 
+            return
+        if not self._mask_edit_enabled() and self._mode != self.MODE_PAN:
             return
         if self._drawing and self._mode == self.MODE_BRUSH:
             self._draw_brush_at(event.pos())
@@ -1081,6 +1089,8 @@ class AnnotationCanvas(QWidget):
             Qt.Key_A: self.MODE_SAM,
             Qt.Key_H: self.MODE_PAN,
         }
+        if not self._mask_edit_enabled() and key in _tool_keys:
+            return
         if key in _tool_keys and not (mods & Qt.ControlModifier):
             self.set_mode(_tool_keys[key])
             return
@@ -1138,6 +1148,23 @@ class AnnotationCanvas(QWidget):
             self.update()
             self.det_boxes_changed.emit()
             return
+
+        # Detection mode: Ctrl+Z / Ctrl+Y / Esc operate on boxes (not masks)
+        if self._det_overlay is not None:
+            if event.key() == Qt.Key_Z and event.modifiers() == Qt.ControlModifier:
+                if self._det_overlay.box_manager.undo():
+                    self.update()
+                    self.det_boxes_changed.emit()
+                return
+            if event.key() == Qt.Key_Y and event.modifiers() == Qt.ControlModifier:
+                if self._det_overlay.box_manager.redo():
+                    self.update()
+                    self.det_boxes_changed.emit()
+                return
+            if event.key() == Qt.Key_Escape:
+                self._det_overlay.cancel_drawing()
+                self.update()
+                return
 
         if event.key() == Qt.Key_Z and event.modifiers() == Qt.ControlModifier:
             # Ctrl+Z: undo last mask edit
@@ -1412,6 +1439,10 @@ class AnnotationCanvas(QWidget):
 
     # ======================== Mode & State ========================
 
+    def _mask_edit_enabled(self):
+        """Whether mask drawing is allowed (segmentation annotation only)."""
+        return getattr(self, "_mask_editing", True)
+
     def set_mode(self, mode):
         if self._mode == self.MODE_SAM and mode != self.MODE_SAM:
             self._sam_points = []
@@ -1570,6 +1601,8 @@ class AnnotationCanvas(QWidget):
 
     def _auto_save_json(self):
         """Auto-save current mask as LabelMe JSON after each edit."""
+        if not self._mask_edit_enabled():
+            return
         if not self.current_image_path or not self.project_dir:
             return
         if self.label_manager is None:
@@ -1581,6 +1614,8 @@ class AnnotationCanvas(QWidget):
             pass  # Silent fail for auto-save
 
     def save_mask(self):
+        if not self._mask_edit_enabled():
+            return
         if self.current_image_path and self.project_dir:
             self._auto_save_json()
             # Also save PNG for backward compat

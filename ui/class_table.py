@@ -240,6 +240,11 @@ class ClassTableView(QWidget):
         self._classes.clear()
         self._current_idx = -1
 
+    def refresh(self):
+        """Recompute per-class counts from project files and redraw the table."""
+        if self._classes and self._project_dir:
+            self.set_classes(list(self._classes))
+
     def count(self):
         return len(self._classes)
 
@@ -395,17 +400,32 @@ class ClassTableView(QWidget):
                     return cids
             except Exception:
                 pass
+        cids = set()
         mask_path = ann_dir / (img_path.stem + "_mask.png")
         if mask_path.exists():
             try:
                 import numpy as _np
                 from PIL import Image as _Image
                 arr = _np.array(_Image.open(str(mask_path)))
-                return set(int(v) for v in _np.unique(arr)
+                cids = set(int(v) for v in _np.unique(arr)
                            if 0 < int(v) < len(labels) and int(v) != 255)
             except Exception:
-                return set()
-        return set()
+                pass
+        # Detection projects: count boxes from COCO _det.json (fallback when
+        # there are no labelme shapes / mask pixels).
+        if not cids:
+            det_json = img_path.with_name(img_path.stem + "_det.json")
+            if det_json.exists():
+                try:
+                    from detection.coco_io import load_coco_json
+                    boxes, _ = load_coco_json(str(det_json))
+                    for b in boxes:
+                        lab = b.get("category", "")
+                        if lab in labels:
+                            cids.add(labels.index(lab))
+                except Exception:
+                    pass
+        return cids
 
     # ---------- slots ----------
 

@@ -49,6 +49,10 @@ _SVGS = {
               '<path d="M5 7 H19" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>'
               '<path d="M9.5 7 V4.5 H14.5 V7" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>'
               '<path d="M7.5 7 L8.5 20 H15.5 L16.5 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>'),
+    "clear_all": ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">'
+                  '<rect x="3.5" y="4" width="17" height="16" rx="2" fill="none" stroke="currentColor" stroke-width="2"/>'
+                  '<line x1="8.5" y1="9" x2="15.5" y2="15" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>'
+                  '<line x1="15.5" y1="9" x2="8.5" y2="15" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>'),
     "reload": ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">'
                '<path d="M4.5 12 A7.5 7.5 0 0 1 18.5 6.5 M18.5 6.5 V3 M18.5 6.5 H15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>'
                '<path d="M19.5 12 A7.5 7.5 0 0 1 5.5 17.5 M5.5 17.5 V21 M5.5 17.5 H9" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>'),
@@ -78,11 +82,12 @@ def _render(svg, color, size):
 
 
 def make_icon(name, size=24):
-    """双态图标：Off=teal，On=白色（配合工具栏选中高亮）。"""
+    """三态图标：Off=teal，On=白色（选中高亮），Disabled=灰色。"""
     svg = _SVGS[name]
     icon = QIcon()
     icon.addPixmap(_render(svg, COLOR_OFF, size), QIcon.Normal, QIcon.Off)
     icon.addPixmap(_render(svg, COLOR_ON, size), QIcon.Normal, QIcon.On)
+    icon.addPixmap(_render(svg, "#B9C9CC", size), QIcon.Disabled, QIcon.Off)
     return icon
 
 

@@ -15,7 +15,7 @@ from PyQt5.QtWidgets import (
     QLineEdit, QCheckBox, QTableWidget, QTableWidgetItem, QHeaderView, QGridLayout,
     QStackedWidget, QApplication
 )
-from PyQt5.QtGui import QFont, QColor, QImage, QPixmap, QPainter, QLinearGradient, QKeySequence
+from PyQt5.QtGui import QFont, QColor, QImage, QPixmap, QPainter, QLinearGradient, QKeySequence, QCursor
 from PyQt5.QtCore import Qt, pyqtSignal, QTimer
 import matplotlib
 matplotlib.use("Qt5Agg")
@@ -38,6 +38,7 @@ from inference.predictor import Predictor
 from ui.system_monitor import SystemMonitor
 from ui.screen_ocr import screen_ocr_and_show
 from ui.annotation_toolbar import AnnotationToolbar
+from ui.det_toolbar import DetToolbar
 from ui.global_hotkey import register_global_hotkey, unregister_global_hotkey, WM_HOTKEY
 import ctypes
 from ctypes import wintypes
@@ -554,6 +555,13 @@ class MainWindow(QMainWindow):
         self.canvas.mask_changed.connect(lambda: self._version_refresh_timer.start())
         self.canvas.det_boxes_changed.connect(self._on_det_boxes_changed)
 
+        # 标注变更后防抖刷新列表「标注」列与 Class 表统计
+        self._ann_refresh_timer = QTimer()
+        self._ann_refresh_timer.setSingleShot(True)
+        self._ann_refresh_timer.setInterval(600)
+        self._ann_refresh_timer.timeout.connect(self._refresh_annotation_views)
+        self.canvas.mask_changed.connect(lambda: self._ann_refresh_timer.start())
+
         # 横向标注工具栏（画布上方）
         self.annotation_toolbar = AnnotationToolbar()
         self.annotation_toolbar.mode_selected.connect(self._set_annotation_mode)
@@ -571,6 +579,16 @@ class MainWindow(QMainWindow):
         self.canvas.class_select_requested.connect(self._on_canvas_class_select)
         self.canvas.save_requested.connect(self._save_current_mask)
         cl.addWidget(self.annotation_toolbar)
+        # 轻量级目标检测标注工具栏（仅 detection 项目显示，与分割工具栏同位置互斥）
+        self.det_toolbar = DetToolbar()
+        self.det_toolbar.draw_toggled.connect(self._set_det_draw_mode)
+        self.det_toolbar.clear_requested.connect(self._det_clear_all)
+        self.det_toolbar.delete_requested.connect(self._det_delete_box)
+        self.det_toolbar.cancel_requested.connect(self._det_cancel)
+        self.det_toolbar.undo_requested.connect(self._det_undo)
+        self.det_toolbar.redo_requested.connect(self._det_redo)
+        self.canvas.det_selection_changed.connect(self._sync_det_toolbar)
+        cl.addWidget(self.det_toolbar)
         cl.addWidget(self._viewer_stack)
 
         outer.addWidget(cc)
@@ -1063,8 +1081,8 @@ class MainWindow(QMainWindow):
 
         self._right_stack.addWidget(panel_annot)        # 0: annotation
         self._right_stack.addWidget(panel_ver)          # 1: version
-        self._right_stack.addWidget(panel_infer_group)  # 2: inference
-        self._right_stack.addWidget(panel_train_group)  # 3: training
+        self._right_stack.addWidget(panel_train_group)  # 2: training
+        self._right_stack.addWidget(panel_infer_group)  # 3: inference
         self._right_stack.addWidget(panel_det)          # 4: detection tools
         self._right_stack.addWidget(panel_hm)           # 5: height map
         self._right_stack.addWidget(panel_aug)          # 6: augmentation
@@ -1078,8 +1096,8 @@ class MainWindow(QMainWindow):
         tab_defs = [
             ("标注", "标注工具", 0),
             ("版本", "版本历史", 1),
-            ("推理", "推理（按项目类型自动切换）", 2),
-            ("训练", "训练（按项目类型自动切换）", 3),
+            ("训练", "训练（按项目类型自动切换）", 2),
+            ("推理", "推理（按项目类型自动切换）", 3),
             ("检测", "检测工具", 4),
             ("高度", "高度图", 5),
             ("增强", "数据增强（全局）", 6),
@@ -1430,7 +1448,11 @@ class MainWindow(QMainWindow):
             # Auto-detect task type BEFORE async image scan
             # (prevents race condition where scan completes before _mixed_cls_mode is set)
             self._load_classes()
-            task_map = {"语义分割":"segmentation","目标检测":"detection","图像分类":"classification","混合分类":"mixed_classification","OCR文字识别":"ocr","OCV字符质检":"ocv"}
+            task_map = {"语义分割":"segmentation","目标检测":"detection","图像分类":"classification","混合分类":"mixed_classification","OCR文字识别":"ocr","OCV字符质检":"ocv",
+                        # 兼容旧版英文 task_type
+                        "semantic_segmentation":"segmentation","object_detection":"detection",
+                        "image_classification":"classification","mixed_classification":"mixed_classification",
+                        "ocr_recognition":"ocr","ocv":"ocv"}
             config_path = os.path.join(self._project_dir, "project.json")
             if os.path.exists(config_path):
                 try:
@@ -1518,6 +1540,13 @@ class MainWindow(QMainWindow):
         """Switch between segmentation and detection task modes."""
         # Annotation toolbar (rect/circle/ellipse brush tools) is segmentation-only
         self.annotation_toolbar.setVisible(task == "segmentation")
+        # Lightweight detection toolbar is detection-only
+        self.det_toolbar.setVisible(task == "detection")
+        # Mask editing is only for segmentation; other tasks must not draw or
+        # save mask shapes (would pollute their JSON with polygons).
+        self.canvas._mask_editing = (task == "segmentation")
+        if task != "segmentation":
+            self.canvas.set_mode(self.canvas.MODE_PAN)
         if task == "detection":
             self._detection_mode = True
             self._cls_mode = False
@@ -1534,12 +1563,14 @@ class MainWindow(QMainWindow):
             self.canvas._mode = self.canvas.MODE_PAN
             self._load_det_annotations()
             self._populate_det_class_list()
+            self.det_toolbar.set_draw_active(True)
+            self._sync_det_toolbar()
             self._infer_title.setText("推理 · 目标检测")
             self._train_title.setText("训练 · 目标检测")
             if self._task_model_exists("detection"):
-                self._show_task_panel(2, infer_idx=0, train_idx=1)
-            else:
                 self._show_task_panel(3, infer_idx=0, train_idx=1)
+            else:
+                self._show_task_panel(2, infer_idx=0, train_idx=1)
         elif task == "classification":
             self._detection_mode = False
             self._cls_mode = True
@@ -1559,9 +1590,9 @@ class MainWindow(QMainWindow):
             self._infer_title.setText("推理 · 图像分类")
             self._train_title.setText("训练 · 图像分类")
             if self._task_model_exists("classification"):
-                self._show_task_panel(2, infer_idx=1, train_idx=2)
-            else:
                 self._show_task_panel(3, infer_idx=1, train_idx=2)
+            else:
+                self._show_task_panel(2, infer_idx=1, train_idx=2)
         elif task == "mixed_classification":
             self._detection_mode = False
             self._cls_mode = True
@@ -1582,9 +1613,9 @@ class MainWindow(QMainWindow):
             self._infer_title.setText("推理 · 混合分类")
             self._train_title.setText("训练 · 混合分类")
             if self._task_model_exists("mixed_classification"):
-                self._show_task_panel(2, infer_idx=1, train_idx=2)
-            else:
                 self._show_task_panel(3, infer_idx=1, train_idx=2)
+            else:
+                self._show_task_panel(2, infer_idx=1, train_idx=2)
         elif task == "ocr":
             self._detection_mode = False
             self._cls_mode = False
@@ -1597,7 +1628,7 @@ class MainWindow(QMainWindow):
             self.canvas.update()
             self._infer_title.setText("推理 · OCR 文字识别")
             self._train_title.setText("训练 · OCR（无训练流程）")
-            self._show_task_panel(2, infer_idx=2, train_idx=3)
+            self._show_task_panel(3, infer_idx=2, train_idx=3)
         elif task == "ocv":
             self._detection_mode = False
             self._cls_mode = False
@@ -1609,7 +1640,7 @@ class MainWindow(QMainWindow):
             self.canvas.update()
             self._infer_title.setText("推理 · OCV 字符质检")
             self._train_title.setText("训练 · OCV（无训练流程）")
-            self._show_task_panel(2, infer_idx=3, train_idx=3)
+            self._show_task_panel(3, infer_idx=3, train_idx=3)
         else:
             self._detection_mode = False
             self._cls_mode = False
@@ -1624,9 +1655,9 @@ class MainWindow(QMainWindow):
             self._infer_title.setText("推理 · 语义分割")
             self._train_title.setText("训练 · 语义分割")
             if self._task_model_exists("segmentation"):
-                self._show_task_panel(2, infer_idx=0, train_idx=0)
-            else:
                 self._show_task_panel(3, infer_idx=0, train_idx=0)
+            else:
+                self._show_task_panel(2, infer_idx=0, train_idx=0)
 
     def _load_classification_labels(self):
         """Load classification labels from class_labels.json."""
@@ -1716,8 +1747,12 @@ class MainWindow(QMainWindow):
         self._suppress_cell_change = True
         self._filter_images("")
         self._suppress_cell_change = False
-        self._detection_mode = False  # False=segmentation, True=detection
-        self._box_manager = None  # BoxManager for detection annotations
+        # Keep detection annotation state created by _set_task("detection")
+        # for detection projects. The async image-list scan must not reset it,
+        # otherwise the det overlay/BoxManager lose their loaded boxes and
+        # Ctrl+Space can never display existing rectangles after opening a project.
+        if not self._detection_mode:
+            self._box_manager = None  # BoxManager for detection annotations
         # Async load output stats (pred counts + IoU scores)
         if self.current_project:
             pd = str(self.pm.get_project_dir(self.current_project["name"]))
@@ -2457,6 +2492,7 @@ class MainWindow(QMainWindow):
     def _toggle_detection_mode(self):
         """Toggle between segmentation and detection annotation modes."""
         self._detection_mode = not self._detection_mode
+        self.canvas._mask_editing = not self._detection_mode
         if self._detection_mode:
             self.log("Switched to Detection mode")
             from detection.box_manager import BoxManager
@@ -2466,10 +2502,14 @@ class MainWindow(QMainWindow):
             self.canvas._det_overlay = DetectionOverlay(self.canvas, self._box_manager)
             self.annotation_toolbar.set_mode("pan")
             self.canvas._mode = self.canvas.MODE_PAN
+            self.det_toolbar.setVisible(True)
+            self.det_toolbar.set_draw_active(True)
             self._load_det_annotations()
+            self._sync_det_toolbar()
         else:
             self.log("Switched to Segmentation mode")
             self.canvas._det_overlay = None
+            self.det_toolbar.setVisible(False)
             self.canvas.update()
 
 
@@ -4971,6 +5011,19 @@ class MainWindow(QMainWindow):
         # Refresh image list (annotation counts) and stats
         self._filter_images(self.search_input.text())
         self._update_ann_stats()
+        self._sync_det_toolbar()
+        if hasattr(self, "class_list"):
+            self.class_list.refresh()
+
+    def _refresh_annotation_views(self):
+        """标注变更后刷新列表「标注」列与 Class 表统计。"""
+        if getattr(self, "_all_images", None) and self.current_project:
+            try:
+                self._filter_images(self.search_input.text())
+            except Exception:
+                pass
+        if hasattr(self, "class_list"):
+            self.class_list.refresh()
 
     def _set_det_bbox_type(self, bbox_type):
         """Switch between HBB and OBB box types."""
@@ -5001,6 +5054,40 @@ class MainWindow(QMainWindow):
             self.canvas.update()
             self.canvas.det_boxes_changed.emit()
             self.log("All boxes deleted")
+
+    def _set_det_draw_mode(self, checked):
+        """画框开关：点亮=可画新框；熄灭=仅选中/拖动/缩放已有框。"""
+        ov = getattr(self.canvas, "_det_overlay", None)
+        if ov is not None:
+            ov.set_draw_enabled(checked)
+        self.canvas.setCursor(QCursor(Qt.CrossCursor if checked else Qt.OpenHandCursor))
+
+    def _det_cancel(self):
+        """取消当前画到一半的框（不撤销已完成的操作）。"""
+        ov = getattr(self.canvas, "_det_overlay", None)
+        if ov is not None:
+            ov.cancel_drawing()
+            self.canvas.update()
+
+    def _det_undo(self):
+        """撤销上一次框操作。"""
+        if self._box_manager is not None and self._box_manager.undo():
+            self.canvas.update()
+            self.canvas.det_boxes_changed.emit()
+
+    def _det_redo(self):
+        """重做被撤销的框操作。"""
+        if self._box_manager is not None and self._box_manager.redo():
+            self.canvas.update()
+            self.canvas.det_boxes_changed.emit()
+
+    def _sync_det_toolbar(self):
+        """同步检测工具栏按钮可用状态（撤销/重做/删除选中）。"""
+        bm = getattr(self, "_box_manager", None)
+        ov = getattr(self.canvas, "_det_overlay", None)
+        self.det_toolbar.set_can_undo(bool(bm) and bm.can_undo())
+        self.det_toolbar.set_can_redo(bool(bm) and bm.can_redo())
+        self.det_toolbar.set_has_selection(bool(ov) and ov.has_active_box())
 
     def _populate_det_class_list(self):
         """Populate detection class list from project categories."""
@@ -5111,6 +5198,9 @@ class MainWindow(QMainWindow):
 
     def _save_current_mask(self):
         """Save current annotation mask to JSON."""
+        if not getattr(self.canvas, "_mask_editing", True):
+            self.log("Mask saving is disabled in this task mode")
+            return
         if self.canvas.image is None:
             return
         path = getattr(self.canvas, "current_image_path", "")
@@ -5120,6 +5210,7 @@ class MainWindow(QMainWindow):
             from annotation.labelme_io import save_mask_to_json
             save_mask_to_json(path, self.canvas.mask, self.canvas.label_manager.classes, self.current_project)
             self._refresh_class_ui()
+            self._ann_refresh_timer.start()
             self.log("Annotation saved")
         except Exception as e:
             self.log(f"Save failed: {e}")
