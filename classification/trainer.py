@@ -349,8 +349,18 @@ def write_version_archive(project_dir, version_num, state_dict, optimizer_state,
     meta = dict(meta)
     meta["version"] = version_num
     meta.setdefault("created", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-    (vdir / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
-    (vdir / "history.json").write_text(json.dumps(history, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def _jsonable(o):
+        if isinstance(o, dict):
+            return {k: _jsonable(v) for k, v in o.items()}
+        if isinstance(o, (list, tuple)):
+            return [_jsonable(v) for v in o]
+        if isinstance(o, np.ndarray):
+            return o.tolist()
+        return o
+
+    (vdir / "meta.json").write_text(json.dumps(_jsonable(meta), ensure_ascii=False, indent=2), encoding="utf-8")
+    (vdir / "history.json").write_text(json.dumps(_jsonable(history), ensure_ascii=False, indent=2), encoding="utf-8")
     return vdir
 
 
@@ -408,7 +418,8 @@ class ClassificationTrainer:
               early_stop_patience=0,
               ema=True, ema_decay=0.999, class_balanced=False,
               progress_callback=None, log_callback=None,
-              stop_check=None, plot_callback=None, batch_callback=None):
+              stop_check=None, plot_callback=None, batch_callback=None,
+              keep_aspect=False):
         """Train classification model.
 
         Args:
@@ -431,6 +442,7 @@ class ClassificationTrainer:
         """
         self._image_size = image_size
         self._scale_factor = scale_factor
+        self._keep_aspect = keep_aspect
         self._stop_flag = False
         self._stop_check_fn = stop_check
 
@@ -443,7 +455,8 @@ class ClassificationTrainer:
                 dropout, lr_scheduler, warmup_epochs, early_stop_patience,
                 progress_callback, log_callback, stop_check,
                 plot_callback, batch_callback,
-                ema=ema, ema_decay=ema_decay, class_balanced=class_balanced
+                ema=ema, ema_decay=ema_decay, class_balanced=class_balanced,
+                keep_aspect=keep_aspect
             )
 
         # Ensure train/val split exists
@@ -464,6 +477,7 @@ class ClassificationTrainer:
                 self.model_name = ckpt.get("model_name", self.model_name)
                 self._image_size = ckpt.get("image_size", self._image_size)
                 self._scale_factor = ckpt.get("scale_factor", self._scale_factor)
+                self._keep_aspect = ckpt.get("keep_aspect", False)
                 self._target_size = ckpt.get("target_size", None)
                 self.history = ckpt.get("history", {"train_loss": [], "val_loss": [], "val_acc": []})
                 start_epoch = len(self.history.get("train_loss", []))
@@ -496,7 +510,8 @@ class ClassificationTrainer:
             start_epoch = 0
 
         # Build datasets and dataloaders
-        self._prepare_data(batch_size, image_size, scale_factor, augment=augment)
+        self._prepare_data(batch_size, image_size, scale_factor, augment=augment,
+                           keep_aspect=keep_aspect)
 
         # Build loss function
         self._build_loss(loss_func, label_smoothing, focal_gamma, class_balanced=class_balanced)
@@ -631,15 +646,16 @@ class ClassificationTrainer:
         else:
             self.criterion = nn.CrossEntropyLoss(weight=weights)
 
-    def _prepare_data(self, batch_size, image_size, scale_factor=1.0, augment=None):
+    def _prepare_data(self, batch_size, image_size, scale_factor=1.0, augment=None,
+                      keep_aspect=False):
         flags = _resolve_cls_augment(augment)
         train_ds = ClassificationDataset(
             str(self.project_dir), split="train", image_size=image_size,
-            scale_factor=scale_factor, augment_flags=flags
+            scale_factor=scale_factor, augment_flags=flags, keep_aspect=keep_aspect
         )
         val_ds = ClassificationDataset(
             str(self.project_dir), split="val", image_size=image_size,
-            scale_factor=scale_factor, augment_flags=None
+            scale_factor=scale_factor, augment_flags=None, keep_aspect=keep_aspect
         )
         self._target_size = getattr(train_ds, "_target_size", None)
         self._scale_factor = scale_factor
@@ -650,11 +666,11 @@ class ClassificationTrainer:
             auto_split(str(self.project_dir), val_split=0.2)
             train_ds = ClassificationDataset(
                 str(self.project_dir), split="train", image_size=image_size,
-                scale_factor=scale_factor, augment_flags=flags
+                scale_factor=scale_factor, augment_flags=flags, keep_aspect=keep_aspect
             )
             val_ds = ClassificationDataset(
                 str(self.project_dir), split="val", image_size=image_size,
-                scale_factor=scale_factor, augment_flags=None
+                scale_factor=scale_factor, augment_flags=None, keep_aspect=keep_aspect
             )
         if len(val_ds) == 0:
             raise ValueError("Validation set is empty! Not enough samples.")
@@ -760,7 +776,8 @@ class ClassificationTrainer:
                      dropout, lr_scheduler, warmup_epochs, early_stop_patience,
                      progress_callback, log_callback, stop_check,
                      plot_callback, batch_callback,
-                     ema=True, ema_decay=0.999, class_balanced=False):
+                     ema=True, ema_decay=0.999, class_balanced=False,
+                     keep_aspect=False):
         """K-fold cross-validation with stratified splits."""
         # Ensure split exists to get all samples
         split_file = self.project_dir / "train_test_split.json"
@@ -771,7 +788,8 @@ class ClassificationTrainer:
 
         # Load all samples
         all_ds = ClassificationDataset(
-            str(self.project_dir), split="all", image_size=image_size
+            str(self.project_dir), split="all", image_size=image_size,
+            keep_aspect=keep_aspect
         )
         num_samples = len(all_ds)
         if num_samples < k:
@@ -791,7 +809,7 @@ class ClassificationTrainer:
                              ema=ema, ema_decay=ema_decay, class_balanced=class_balanced,
                              progress_callback=progress_callback, log_callback=log_callback,
                              stop_check=stop_check, plot_callback=plot_callback,
-                             batch_callback=batch_callback)
+                             batch_callback=batch_callback, keep_aspect=keep_aspect)
 
         # Stratified fold assignment
         all_labels = [pid for _, _, pid in all_ds._pairs]
@@ -929,11 +947,16 @@ class ClassificationTrainer:
             "image_size": self._image_size,
             "scale_factor": getattr(self, "_scale_factor", 1.0),
             "target_size": getattr(self, "_target_size", None),
+            "keep_aspect": getattr(self, "_keep_aspect", False),
             "history": self.history,
         }, path)
 
     def load_model(self, filename="best_model.pth"):
         """Load a trained model for inference."""
+        # 已加载过同一个模型时直接复用，避免每张图重复 torch.load + load_state_dict
+        # （批量推理对每张图调用 predict_single，会反复触发 load_model，是 0.5s/图 的主因之一）。
+        if self.model is not None and getattr(self, "_loaded_model_file", None) == filename:
+            return getattr(self, "_loaded_history", {})
         path = resolve_model_path(self.project_dir, filename)
         if not path.exists():
             raise FileNotFoundError(f"Model not found: {path}")
@@ -943,6 +966,7 @@ class ClassificationTrainer:
         self.model_name = ckpt.get("model_name", self.model_name)
         self._image_size = ckpt.get("image_size", 224)
         self._scale_factor = ckpt.get("scale_factor", 1.0)
+        self._keep_aspect = ckpt.get("keep_aspect", False)
         self._target_size = ckpt.get("target_size", None)
 
         self.model = _create_classification_model(
@@ -950,15 +974,19 @@ class ClassificationTrainer:
         ).to(self.device)
         self.model.load_state_dict(ckpt["model_state_dict"])
         self.model.eval()
-        return ckpt.get("history", {})
+        self._loaded_model_file = filename
+        self._loaded_history = ckpt.get("history", {})
+        return self._loaded_history
 
     def _resolve_inference_resize(self):
         """Return (h, w) resize tuple for inference, or None when no resize applies.
 
-        Precedence: stored image_size (square) -> stored target_size (from
-        scale_factor training) -> project scale settings + train split max dims.
+        Precedence: stored image_size (int=square 或 (W,H) tuple) -> stored target_size
+        (from scale_factor training) -> project scale settings + train split max dims.
         """
         if self._image_size is not None:
+            if isinstance(self._image_size, (tuple, list)):
+                return (int(self._image_size[1]), int(self._image_size[0]))  # (H, W)
             return (self._image_size, self._image_size)
         if getattr(self, "_target_size", None):
             tw, th = self._target_size
@@ -1063,6 +1091,7 @@ class ClassificationTrainer:
             "image_size": getattr(self, "_image_size", None),
             "scale_factor": getattr(self, "_scale_factor", 1.0),
             "target_size": getattr(self, "_target_size", None),
+            "keep_aspect": getattr(self, "_keep_aspect", False),
             "best_val_acc": max(self.history.get("val_acc", [0])) if self.history.get("val_acc") else 0.0,
         }
         if config:
@@ -1139,8 +1168,13 @@ class ClassificationTrainer:
             images = [images]
 
         rsz = self._resolve_inference_resize()
+        if rsz is not None and getattr(self, "_keep_aspect", False):
+            from .dataset import KeepAspectResize
+            resize_step = KeepAspectResize((rsz[1], rsz[0]))  # (W, H)
+        else:
+            resize_step = T.Resize(rsz) if rsz is not None else T.Lambda(lambda x: x)
         transform = T.Compose([
-            T.Resize(rsz) if rsz is not None else T.Lambda(lambda x: x),
+            resize_step,
             T.ToTensor(),
             T.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
         ])
@@ -1318,7 +1352,8 @@ class DualClassificationTrainer:
               optimizer=None, loss_func=None, scale_factor=1.0, use_amp=None,
               k_folds=1, weight_decay=None, momentum=None, label_smoothing=None,
               focal_gamma=None, dropout=None, lr_scheduler=None,
-              warmup_epochs=None, early_stop_patience=None, plot_callback=None):
+              warmup_epochs=None, early_stop_patience=None, plot_callback=None,
+              keep_aspect=None):
         if resume:
             ckpt_path = self.project_dir / "models" / "classification" / "last_model.pth"
             if ckpt_path.exists():

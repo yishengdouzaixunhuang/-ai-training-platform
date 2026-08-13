@@ -111,6 +111,38 @@ class _GlobalAugment:
         return apply_image_augment(image, self.flags)
 
 
+class KeepAspectResize:
+    """等比缩放后居中填边（letterbox）到固定尺寸，保持原始宽高比、不变形。
+
+    与 T.Resize((h, w)) 直接拉伸不同：本变换按 min(tw/w, th/h) 缩放，使整张图
+    完整落在目标画布内，短边用 fill 填充。适合长条状缺陷（如极耳 2.5:1）避免
+    压成正方形后丢失形状信息。
+
+    Args:
+        size: int（正方形）或 (W, H) 元组（目标画布宽、高）。
+        fill: 填充色 0~255，默认 0（黑边）。
+    """
+
+    def __init__(self, size, fill=0):
+        if isinstance(size, int):
+            size = (size, size)
+        self.size = (int(size[0]), int(size[1]))  # (W, H)
+        self.fill = int(fill)
+
+    def __call__(self, img):
+        tw, th = self.size  # 目标 (W, H)
+        w, h = img.size
+        if w == tw and h == th:
+            return img
+        scale = min(tw / w, th / h)
+        nw = max(1, round(w * scale))
+        nh = max(1, round(h * scale))
+        img = img.resize((nw, nh), Image.BILINEAR)
+        canvas = Image.new("RGB", (tw, th), (self.fill,) * 3)
+        canvas.paste(img, ((tw - nw) // 2, (th - nh) // 2))
+        return canvas
+
+
 class ClassificationDataset(Dataset):
     """Image classification PyTorch Dataset.
 
@@ -121,11 +153,12 @@ class ClassificationDataset(Dataset):
     """
 
     def __init__(self, project_dir, split="train", transform=None, image_size=224, scale_factor=1.0,
-                 augment_flags=None):
+                 augment_flags=None, keep_aspect=False):
         self.project_dir = Path(project_dir)
         self.split = split
         self.image_size = image_size if (image_size is None or isinstance(image_size, (tuple, list))) else (image_size, image_size)
         self.scale_factor = scale_factor
+        self.keep_aspect = keep_aspect
 
         split_map = _default_split_map(project_dir)
         pairs, class_names = _list_images_mapping(project_dir, split, split_map)
@@ -138,53 +171,21 @@ class ClassificationDataset(Dataset):
         # Build default transforms
         if transform is None:
             import torchvision.transforms as T
-            if self.image_size is None:
-                if self._target_size is not None:
-                    # scale_factor mode - Resize to common target size after per-image pre-scaling
-                    ts = (self._target_size[1], self._target_size[0])  # (h, w) for T.Resize
-                    if split == "train":
-                        self.transform = T.Compose([
-                            T.Resize(ts),
-                            T.RandomHorizontalFlip(p=0.5),
-                            T.RandomRotation(degrees=10),
-                            T.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
-                            T.ToTensor(),
-                            T.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
-                        ])
-                    else:
-                        self.transform = T.Compose([
-                            T.Resize(ts),
-                            T.ToTensor(),
-                            T.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
-                        ])
-                elif split == "train":
-                    self.transform = T.Compose([
-                        T.RandomHorizontalFlip(p=0.5),
-                        T.RandomRotation(degrees=10),
-                        T.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
-                        T.ToTensor(),
-                        T.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
-                    ])
-                else:
-                    self.transform = T.Compose([
-                        T.ToTensor(),
-                        T.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
-                    ])
-            elif split == "train":
-                self.transform = T.Compose([
-                    T.Resize(self.image_size),
+            resize_step = self._build_resize_step()
+            steps = []
+            if resize_step is not None:
+                steps.append(resize_step)
+            if split == "train":
+                steps += [
                     T.RandomHorizontalFlip(p=0.5),
                     T.RandomRotation(degrees=10),
                     T.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
-                    T.ToTensor(),
-                    T.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
-                ])
-            else:
-                self.transform = T.Compose([
-                    T.Resize(self.image_size),
-                    T.ToTensor(),
-                    T.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
-                ])
+                ]
+            steps += [
+                T.ToTensor(),
+                T.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
+            ]
+            self.transform = T.Compose(steps)
         else:
             self.transform = transform
 
@@ -197,6 +198,25 @@ class ClassificationDataset(Dataset):
                     continue
                 keep.append(s)
             self.transform = T.Compose([_GlobalAugment(augment_flags)] + keep)
+
+    def _build_resize_step(self):
+        """返回 resize 变换；keep_aspect=True 时用 letterbox 等比填边，否则 T.Resize 直接拉伸。
+
+        image_size / _target_size 均约定为 (W, H)。返回 None 表示不做 resize（保持原尺寸，
+        由 trainer 的 _pad_collate 在 batch 内补齐）。
+        """
+        import torchvision.transforms as T
+        size = None
+        if self.image_size is not None:
+            size = self.image_size
+        elif self._target_size is not None:
+            size = self._target_size
+        if size is None:
+            return None
+        w, h = int(size[0]), int(size[1])
+        if self.keep_aspect:
+            return KeepAspectResize((w, h))
+        return T.Resize((h, w))
 
     def _compute_target_size(self):
         """Compute target size from scale_factor.

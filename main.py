@@ -39,6 +39,18 @@ def _write_crash(exc_type, exc_value, exc_tb):
         pass
 
 def main():
+    # ===== 高 DPI 缩放（幻16 等 2.5K/4K 高分屏，否则界面字体像蚂蚁一样小）=====
+    # PyQt5 默认不开启高 DPI 缩放，必须显式设置，且必须在 QApplication 创建之前。
+    from PyQt5.QtCore import Qt
+    QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
+    QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
+    try:
+        # PassThrough：按系统实际缩放比例（如 150% -> 1.5x）精确缩放，避免四舍五入过大/过小
+        QApplication.setHighDpiScaleFactorRoundingPolicy(
+            Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
+    except Exception:
+        pass
+
     # 修复 PyQt5 在 Windows 上 "Could not find the Qt platform plugin windows" 的问题：
     # 拆分包（PyQt5 + PyQt5-Qt5）在部分环境不会自动解析插件路径，这里显式指定。
     try:
@@ -65,7 +77,7 @@ def main():
             background-color: #0A0E17;
             color: #E6F0FF;
             font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
-            font-size: 12px;
+            font-size: 13px;
         }
         QMainWindow { background-color: #0A0E17; }
         QDialog { background-color: #0D1220; }

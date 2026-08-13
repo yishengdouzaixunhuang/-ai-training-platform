@@ -45,6 +45,8 @@ class ClassTableView(QWidget):
     move_up_requested = pyqtSignal()
     move_down_requested = pyqtSignal()
     rename_requested = pyqtSignal()
+    # 点击「训练集/测试集/验证集/空集」数字格子 -> (类别名, split_key)
+    cell_filter_requested = pyqtSignal(str, str)
 
     _HEADERS = ["序号", "类别名", "颜色", "训练集", "测试集", "验证集", "空集"]
 
@@ -93,6 +95,7 @@ class ClassTableView(QWidget):
         self._project_dir = None
         self._current_idx = -1
         self._updating = False
+        self._split_bases = {}  # (class_idx, split_key) -> set(image base names)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -152,6 +155,7 @@ class ClassTableView(QWidget):
 
         self.table.verticalHeader().setDefaultSectionSize(28)
         self.table.currentCellChanged.connect(self._on_current_cell_changed)
+        self.table.cellClicked.connect(self._on_cell_clicked)
         self.table.cellDoubleClicked.connect(lambda *_: self.rename_requested.emit())
         self.table.setMinimumHeight(140)
         self.table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -317,6 +321,7 @@ class ClassTableView(QWidget):
         tests = [0] * len(labels)
         vals = [0] * len(labels)
         empties = [0] * len(labels)
+        self._split_bases = {}
         # De-duplicate: mapping may contain both "images/x.bmp" and "x.bmp".
         base_cls = {}
         for rel, cls_id in mapping.items():
@@ -337,6 +342,9 @@ class ClassTableView(QWidget):
                 vals[cls_id] += 1
             else:
                 trains[cls_id] += 1
+            key = (cls_id, split)
+            self._split_bases.setdefault(key, set()).add(base)
+            self._split_bases[key].add(os.path.basename(base))
 
         # Segmentation projects: no class_labels.json mapping, so classify
         # every image under images/ from its labelme JSON / mask PNG instead.
@@ -355,7 +363,16 @@ class ClassTableView(QWidget):
                             rel = norm(str(f.relative_to(img_dir)))
                             if rel not in mapped:
                                 empties[cls_id] += 1
+                                self._split_bases.setdefault((cls_id, "empty"), set()).add(f.stem)
         return {i: (trains[i], tests[i], vals[i], empties[i]) for i in range(len(labels))}
+
+    def bases_for(self, cls_name, split_key):
+        """Return the set of image base names for (class, split) — for click-to-filter."""
+        try:
+            cid = self._classes.index(cls_name)
+        except ValueError:
+            return set()
+        return getattr(self, "_split_bases", {}).get((cid, split_key), set())
 
     def _count_segmentation(self, pd, labels, trains, tests, vals, split_map):
         """Count per-class image counts by split for segmentation projects."""
@@ -436,6 +453,15 @@ class ClassTableView(QWidget):
         if row != self._current_idx:
             self._current_idx = row
             self.currentRowChanged.emit(row)
+
+    def _on_cell_clicked(self, row, col):
+        """Count cells (训练集/测试集/验证集/空集) filter the image list."""
+        if col not in (3, 4, 5, 6):
+            return
+        if not (0 <= row < len(self._classes)):
+            return
+        split_key = {3: "train", 4: "test", 5: "val", 6: "empty"}[col]
+        self.cell_filter_requested.emit(self._classes[row], split_key)
 
     def _toggle_select_all(self, checked):
         if checked:

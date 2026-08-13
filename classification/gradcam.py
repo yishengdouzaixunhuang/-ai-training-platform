@@ -21,7 +21,7 @@ def _find_target_layer(model, model_name: str):
             return m
     return None
 
-def generate_gradcam_heatmap(model, image_np, model_name="resnet18", target_class=None, image_size=None, resize_size=None):
+def generate_gradcam_heatmap(model, image_np, model_name="resnet18", target_class=None, image_size=None, resize_size=None, keep_aspect=False):
     try:
         target_layer = _find_target_layer(model, model_name)
         if target_layer is None:
@@ -30,8 +30,12 @@ def generate_gradcam_heatmap(model, image_np, model_name="resnet18", target_clas
         from PIL import Image
         h_orig, w_orig = image_np.shape[:2]
         if resize_size is not None:
-            rh, rw = resize_size
-            pil_img = Image.fromarray(image_np).resize((int(rw), int(rh)))
+            rh, rw = resize_size  # (H, W)
+            if keep_aspect:
+                from .dataset import KeepAspectResize
+                pil_img = KeepAspectResize((int(rw), int(rh)))(Image.fromarray(image_np))
+            else:
+                pil_img = Image.fromarray(image_np).resize((int(rw), int(rh)))
         elif image_size is not None:
             pil_img = Image.fromarray(image_np).resize((image_size, image_size))
         else:

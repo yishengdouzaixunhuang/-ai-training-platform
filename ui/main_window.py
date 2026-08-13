@@ -21,7 +21,7 @@ import matplotlib
 matplotlib.use("Qt5Agg")
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
-from core.config import APP_NAME, APP_VERSION, load_config, save_config
+from core.config import APP_NAME, APP_VERSION, load_config, save_config, CLASS_COLORS
 from core.project_manager import ProjectManager
 from annotation.label_manager import LabelManager
 from annotation.mask_editor import AnnotationCanvas
@@ -365,6 +365,8 @@ class MainWindow(QMainWindow):
 
         self.project_tree = QTreeWidget()
         self.project_tree.setHeaderLabels(["Name", "Time"])
+        # Name 列宽度根据工程名自适应，避免工程名被截断、用户手动拉伸
+        self.project_tree.header().setSectionResizeMode(0, QHeaderView.ResizeToContents)
         self.project_tree.setContextMenuPolicy(Qt.CustomContextMenu)
         self.project_tree.customContextMenuRequested.connect(self._on_project_context_menu)
         self.project_tree.itemDoubleClicked.connect(self._on_project_double_click)
@@ -626,6 +628,7 @@ class MainWindow(QMainWindow):
         self.class_list.add_requested.connect(self._add_class)
         self.class_list.delete_requested.connect(self._delete_class)
         self.class_list.refresh_requested.connect(self._refresh_class_stats)
+        self.class_list.cell_filter_requested.connect(self._on_class_cell_filter)
         self.class_list.move_up_requested.connect(lambda: self._move_class(-1))
         self.class_list.move_down_requested.connect(lambda: self._move_class(1))
         self.class_list.rename_requested.connect(self._rename_class)
@@ -801,6 +804,20 @@ class MainWindow(QMainWindow):
         self.cls_scale_w_spin.valueChanged.connect(lambda: self._sync_cls_scale("w"))
         self.cls_scale_h_spin.valueChanged.connect(lambda: self._sync_cls_scale("h"))
         cfl.addRow("Pre-Scale:", hl_scale)
+        hl_input = QHBoxLayout()
+        self.cls_input_w_spin = QSpinBox(); self.cls_input_w_spin.setRange(32, 2048); self.cls_input_w_spin.setSingleStep(32)
+        self.cls_input_w_spin.setValue(448)
+        self.cls_input_w_spin.setToolTip("输入尺寸宽（letterbox 目标画布宽）")
+        hl_input.addWidget(QLabel("W:")); hl_input.addWidget(self.cls_input_w_spin)
+        self.cls_input_h_spin = QSpinBox(); self.cls_input_h_spin.setRange(32, 2048); self.cls_input_h_spin.setSingleStep(32)
+        self.cls_input_h_spin.setValue(192)
+        self.cls_input_h_spin.setToolTip("输入尺寸高（letterbox 目标画布高）")
+        hl_input.addWidget(QLabel("H:")); hl_input.addWidget(self.cls_input_h_spin)
+        cfl.addRow("Input Size:", hl_input)
+        self.cls_keep_aspect_check = QCheckBox("保持宽高比 Letterbox（不拉伸变形）")
+        self.cls_keep_aspect_check.setChecked(True)
+        self.cls_keep_aspect_check.setToolTip("等比缩放后居中黑边填充到输入尺寸；关闭=直接拉伸到 W×H")
+        cfl.addRow("", self.cls_keep_aspect_check)
         self.cls_amp_check = QCheckBox("AMP (mixed precision)"); self.cls_amp_check.setChecked(True)
         cfl.addRow("", self.cls_amp_check)
         self.cls_kfold_spin = QSpinBox(); self.cls_kfold_spin.setRange(1, 10); self.cls_kfold_spin.setValue(1)
@@ -1330,6 +1347,7 @@ class MainWindow(QMainWindow):
             else:
                 self.older_item.addChild(item)
         self.project_tree.expandAll()
+        self.project_tree.resizeColumnToContents(0)
 
     def _on_project_context_menu(self, pos):
         item = self.project_tree.itemAt(pos)
@@ -2173,21 +2191,21 @@ class MainWindow(QMainWindow):
                 self.image_list_widget.setItem(row, col, item)
             # Store path in first column
             self.image_list_widget.item(row, 0).setData(Qt.UserRole, data['path'])
-            # Color: green=Train, orange=Val, red=Test
-            if "Test" in data['split_status']:
-                clr = QColor(180, 0, 0)
-            elif "Val" in data['split_status']:
-                clr = QColor(200, 150, 0)
-            elif data['has_ann']:
-                clr = QColor(0, 120, 0)
-            else:
-                clr = QColor(0, 0, 0)
+            # 默认整行白色；「标注」「结果」两列的类别名用 Class 表对应的类别颜色
             if getattr(self, "_mixed_cls_mode", False) and data.get('height_fname'):
                 self.image_list_widget.setRowHeight(row, 40)
             for col in range(8):
                 item = self.image_list_widget.item(row, col)
                 if item:
-                    item.setForeground(clr)
+                    item.setForeground(QColor(255, 255, 255))
+            if self._cls_mode:
+                labels = getattr(self, "_cached_classes", []) or []
+                # 标注列（第 4 列）
+                if data.get('shape_labels'):
+                    self._apply_class_color(row, 4, data['shape_labels'][0], labels)
+                # 结果列（第 5 列）
+                if data.get('cls_text'):
+                    self._apply_class_color(row, 5, data['cls_text'], labels)
 
         # Update pagination controls
         self.page_info_label.setText(f"Page {self._current_page + 1}/{total_pages}")
@@ -2207,6 +2225,18 @@ class MainWindow(QMainWindow):
                     break
 
         self._suppress_cell_change = False
+
+    def _apply_class_color(self, row, col, class_name, labels):
+        """给某单元格按类别名着色为 Class 表对应的类别颜色。"""
+        try:
+            cid = labels.index(class_name)
+        except ValueError:
+            return
+        if not (0 <= cid < len(labels)):
+            return
+        it = self.image_list_widget.item(row, col)
+        if it is not None:
+            it.setForeground(QColor(*CLASS_COLORS[cid % len(CLASS_COLORS)]))
 
     def _go_to_page(self, page):
         """Navigate to a specific page."""
@@ -2719,6 +2749,25 @@ class MainWindow(QMainWindow):
         if current >= 0:
             self.canvas.set_class(current)
 
+    def _on_class_cell_filter(self, cls_name, split_key):
+        """点击 Class 表的「训练集/测试集/验证集/空集」数字格子 -> 图片列表过滤出这批图。"""
+        matched = self.class_list.bases_for(cls_name, split_key)
+        if not matched:
+            self.log(f"[Class] {cls_name} / {split_key} -> 0 images")
+            return
+        self._cm_filter_bases = set(matched)
+        # 复位搜索框与数据集下拉，避免与这批过滤冲突
+        self.search_input.blockSignals(True)
+        self.search_input.setText("")
+        self.search_input.blockSignals(False)
+        if self.split_filter.currentIndex() != 0:
+            self.split_filter.blockSignals(True)
+            self.split_filter.setCurrentIndex(0)
+            self.split_filter.blockSignals(False)
+        self._filter_images("")
+        self._cm_filter_bases = None
+        self.log(f"[Class] {cls_name} / {split_key} -> {len(matched)} images")
+
 
 
     def _on_canvas_width_changed(self, v):
@@ -2889,6 +2938,9 @@ class MainWindow(QMainWindow):
         ("loss", "cls_loss_combo", "text"),
         ("scale_w", "cls_scale_w_spin", "float"),
         ("scale_h", "cls_scale_h_spin", "float"),
+        ("input_w", "cls_input_w_spin", "int"),
+        ("input_h", "cls_input_h_spin", "int"),
+        ("keep_aspect", "cls_keep_aspect_check", "bool"),
         ("amp", "cls_amp_check", "bool"),
         ("k_folds", "cls_kfold_spin", "int"),
         ("resume", "cls_resume_check", "bool"),
@@ -3107,8 +3159,14 @@ class MainWindow(QMainWindow):
         scale_w = self.cls_scale_w_spin.value()
         scale_h = self.cls_scale_h_spin.value()
         scale_factor = (scale_w, scale_h) if scale_w != 1.0 or scale_h != 1.0 else 1.0
-        self._save_cls_train_settings()  # persist Pre-Scale values
-        image_size = None  # let dataset handle via scale_factor
+        self._save_cls_train_settings()  # persist settings (incl. input size / keep_aspect)
+        mixed_mode = self.cls_mixed_check.isChecked()
+        keep_aspect = self.cls_keep_aspect_check.isChecked()
+        if mixed_mode:
+            image_size = None  # 双输入模式保持原行为
+        else:
+            # 固定输入尺寸 + letterbox（保持宽高比），避免长条图被硬压成正方形
+            image_size = (self.cls_input_w_spin.value(), self.cls_input_h_spin.value())
         lr = self.cls_lr_spin.value()
         optim_name = self.cls_optim_combo.currentText()
         loss_name = self.cls_loss_combo.currentText()
@@ -3116,7 +3174,6 @@ class MainWindow(QMainWindow):
         use_amp = self.cls_amp_check.isChecked()
         k_folds = self.cls_kfold_spin.value()
         resume = self.cls_resume_check.isChecked()
-        mixed_mode = self.cls_mixed_check.isChecked()
         weight_decay = self.cls_wd_spin.value()
         momentum_val = self.cls_momentum_spin.value()
         label_smoothing = self.cls_ls_spin.value()
@@ -3168,6 +3225,7 @@ class MainWindow(QMainWindow):
                     early_stop_patience=early_stop_patience,
                     class_balanced=self.cls_balanced_check.isChecked(),
                     ema=self.cls_ema_check.isChecked(),
+                    keep_aspect=keep_aspect,
                     progress_callback=epoch_cb, stop_check=stop_check,
                     log_callback=lambda msg: self.log_signal.emit(msg),
                     plot_callback=lambda h: self.chart_signal.emit(h),
@@ -3466,6 +3524,7 @@ class MainWindow(QMainWindow):
                                     model_name=model_nm,
                                     target_class=target_cls,
                                     resize_size=rsz,
+                                    keep_aspect=getattr(ct2, "_keep_aspect", False),
                                 )
                                 if overlay is not None:
                                     Image.fromarray(overlay).save(hm_file, quality=85)
@@ -3649,6 +3708,7 @@ class MainWindow(QMainWindow):
                 model_name=getattr(ct, "model_name", "resnet18"),
                 target_class=target_class,
                 resize_size=rsz,
+                keep_aspect=getattr(ct, "_keep_aspect", False),
             )
             if overlay is not None:
                 h, w, ch = overlay.shape
@@ -4187,6 +4247,7 @@ class MainWindow(QMainWindow):
                     model_path="classification/" + model_file,
                     batch_size=32, image_size=ct._image_size,
                     compute_confusion=True, top_k=(1, min(5, ct.num_classes)),
+                    keep_aspect=ct._keep_aspect,
                     log_callback=lambda msg: self.log_signal.emit(msg),
                 )
                 cm = result.get("confusion_matrix")

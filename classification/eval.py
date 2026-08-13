@@ -25,6 +25,7 @@ def evaluate_classification(
     progress_callback=None,
     log_callback=None,
     compute_confusion=False,
+    keep_aspect=None,
 ):
     """Evaluate a trained classification model and return metrics dict.
 
@@ -57,6 +58,8 @@ def evaluate_classification(
     num_classes = ckpt["num_classes"]
     class_names = ckpt.get("class_names", [f"class_{i}" for i in range(num_classes)])
     model_name = ckpt.get("model_name", "resnet18")
+    if keep_aspect is None:
+        keep_aspect = bool(ckpt.get("keep_aspect", False))
 
     # Create and load model directly (avoids circular import)
     from .trainer import _create_classification_model
@@ -66,7 +69,7 @@ def evaluate_classification(
 
     # Build dataset
     dataset = ClassificationDataset(
-        str(project_dir), split=split, image_size=image_size
+        str(project_dir), split=split, image_size=image_size, keep_aspect=keep_aspect
     )
 
     if len(dataset) == 0:
