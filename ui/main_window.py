@@ -3543,7 +3543,7 @@ class MainWindow(QMainWindow):
                             item = QTableWidgetItem(str(cm_display[i][j]))
                             item.setTextAlignment(Qt.AlignCenter)
                             if i == j:
-                                item.setBackground(QColor(180, 255, 180))
+                                item.setBackground(QColor(180, 255, 180)); item.setForeground(QColor("#0A0E17"))
                             self.cls_cm_table.setItem(i, j, item)
                         item = QTableWidgetItem(str(row_sums[i]))
                         item.setTextAlignment(Qt.AlignCenter)
@@ -3969,15 +3969,15 @@ class MainWindow(QMainWindow):
         n = table.rowCount() - 1
         if n >= 1 and table.rowCount() == table.columnCount():
             bold = QFont(table.font()); bold.setBold(True)
-            gray = QColor(233, 233, 233)
+            hl = QColor("#1B2740")  # 深色主题：汇总行/列用略亮深底，浅色字清晰
             for j in range(table.columnCount()):
                 item = table.item(n, j)
                 if item is not None:
-                    item.setFont(bold); item.setBackground(gray)
+                    item.setFont(bold); item.setBackground(hl)
             for i in range(table.rowCount()):
                 item = table.item(i, n)
                 if item is not None:
-                    item.setFont(bold); item.setBackground(gray)
+                    item.setFont(bold); item.setBackground(hl)
 
     def _selected_cls_version(self):
         """返回版本表当前选中行的版本名，无则 None。"""
@@ -4219,7 +4219,7 @@ class MainWindow(QMainWindow):
                             item = QTableWidgetItem(str(cm_display[i][j]))
                             item.setTextAlignment(Qt.AlignCenter)
                             if i == j:
-                                item.setBackground(QColor(180, 255, 180))
+                                item.setBackground(QColor(180, 255, 180)); item.setForeground(QColor("#0A0E17"))
                             self.cls_cm_table.setItem(i, j, item)
                         item = QTableWidgetItem(str(row_sums[i]))
                         item.setTextAlignment(Qt.AlignCenter)
@@ -4308,7 +4308,7 @@ class MainWindow(QMainWindow):
                 item = QTableWidgetItem(str(cm_display[i][j]))
                 item.setTextAlignment(Qt.AlignCenter)
                 if i == j:
-                    item.setBackground(QColor(180, 255, 180))
+                    item.setBackground(QColor(180, 255, 180)); item.setForeground(QColor("#0A0E17"))
                 self.cls_cm_table.setItem(i, j, item)
             item = QTableWidgetItem(str(row_sums[i]))
             item.setTextAlignment(Qt.AlignCenter)
@@ -4354,7 +4354,7 @@ class MainWindow(QMainWindow):
                     item = QTableWidgetItem(str(cm[i][j]))
                     item.setTextAlignment(Qt.AlignCenter)
                     if i == j:
-                        item.setBackground(QColor(180, 255, 180))
+                        item.setBackground(QColor(180, 255, 180)); item.setForeground(QColor("#0A0E17"))
                     self.cls_cm_table.setItem(i, j, item)
                 item = QTableWidgetItem(str(row_sums[i]))
                 item.setTextAlignment(Qt.AlignCenter)
