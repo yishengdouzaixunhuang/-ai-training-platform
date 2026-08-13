@@ -10,21 +10,21 @@ from PyQt5.QtGui import QColor
 from PyQt5.QtCore import Qt
 
 STYLE = """
-QDialog { background-color: #ffffff; }
-QListWidget { border: 1px solid #d0d0d0; border-radius: 2px; background-color: #ffffff; font-size: 12px; color: #1a1a1a; }
-QListWidget::item { padding: 3px 6px; border-bottom: 1px solid #f0f0f0; }
-QListWidget::item:hover { background-color: #e8f0fe; }
-QPushButton { border: 1px solid #c0c0c0; border-radius: 4px; padding: 6px 14px; background-color: #f5f5f5; font-size: 13px; color: #333333; }
-QPushButton:hover { background-color: #e0e0e0; }
-QPushButton#ok_btn { background-color: #1a73e8; color: white; border: none; font-weight: bold; }
-QPushButton#ok_btn:hover { background-color: #1557b0; }
-QPushButton#ok_btn:disabled { background-color: #a0c4f0; }
-QPushButton#cancel_btn { background-color: transparent; border: 1px solid #c0c0c0; }
-QCheckBox { font-size: 13px; color: #333333; }
-QLabel#col_header { font-size: 14px; font-weight: bold; color: #333333; }
-QLabel#error_label { font-size: 12px; color: #d93025; padding: 4px 0; }
-QLabel#count_label { font-size: 13px; font-weight: bold; color: #666666; }
-QFrame#placeholder { background-color: #f5f5f5; border: 1px dashed #cccccc; border-radius: 4px; }
+QDialog { background-color: #0D1220; }
+QListWidget { border: 1px solid #2A3A5C; border-radius: 4px; background-color: #0E1420; font-size: 12px; color: #E6F0FF; }
+QListWidget::item { padding: 3px 6px; border-bottom: 1px solid #1A2440; }
+QListWidget::item:hover { background-color: #131B2E; }
+QPushButton { border: 1px solid #2A3A5C; border-radius: 4px; padding: 6px 14px; background-color: #131B2E; font-size: 13px; color: #D6E4FF; }
+QPushButton:hover { background-color: #1B2740; border-color: #00E5FF; color: #00E5FF; }
+QPushButton#ok_btn { background-color: #00E5FF; color: #061018; border: none; font-weight: bold; }
+QPushButton#ok_btn:hover { background-color: #33ECFF; }
+QPushButton#ok_btn:disabled { background-color: #0E3A52; color: #55607A; }
+QPushButton#cancel_btn { background-color: transparent; border: 1px solid #2A3A5C; }
+QCheckBox { font-size: 13px; color: #D6E4FF; }
+QLabel#col_header { font-size: 14px; font-weight: bold; color: #00E5FF; }
+QLabel#error_label { font-size: 12px; color: #FF2A6D; padding: 4px 0; }
+QLabel#count_label { font-size: 13px; font-weight: bold; color: #8A93A6; }
+QFrame#placeholder { background-color: #0E1420; border: 1px dashed #2A3A5C; border-radius: 4px; }
 """
 
 class MixedAddImagesDialog(QDialog):
@@ -101,7 +101,7 @@ class MixedAddImagesDialog(QDialog):
         for (ic, cb), tip in zip(icons, tips):
             b = QPushButton(ic); b.setFixedSize(32, 26); b.setToolTip(tip)
             if ic.startswith("\U0001f5d1"):
-                b.setStyleSheet("QPushButton { color: #d93025; } QPushButton:hover { background-color: #fce8e6; }")
+                b.setStyleSheet("QPushButton { color: #FF2A6D; } QPushButton:hover { background-color: #2A1220; }")
             b.clicked.connect(cb); r.addWidget(b)
         r.addWidget(cnt)
         return r

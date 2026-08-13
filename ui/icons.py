@@ -2,7 +2,7 @@
 """内嵌 SVG 图标工厂。
 
 用 QSvgRenderer 把内嵌 SVG 渲染成 QIcon（2x 渲染保证高分屏锐利）。
-- Normal/Off 态：teal 色（#2E7E8A）
+- Normal/Off 态：霓虹青（#00E5FF）
 - Normal/On 态（选中）：白色，配合工具栏 QSS 高亮背景
 AI 徽标用 QPainter 绘制渐变圆角块。
 """
@@ -10,7 +10,7 @@ from PyQt5.QtCore import QByteArray, QRectF, Qt
 from PyQt5.QtGui import QColor, QFont, QIcon, QLinearGradient, QPainter, QPixmap
 from PyQt5.QtSvg import QSvgRenderer
 
-COLOR_OFF = "#2E7E8A"  # 正常态
+COLOR_OFF = "#00E5FF"  # 正常态（赛博朋克霓虹青）
 COLOR_ON = "#FFFFFF"   # 选中态
 
 # 24x24 viewBox，stroke 用 currentColor 占位（渲染时替换）
@@ -87,7 +87,7 @@ def make_icon(name, size=24):
     icon = QIcon()
     icon.addPixmap(_render(svg, COLOR_OFF, size), QIcon.Normal, QIcon.Off)
     icon.addPixmap(_render(svg, COLOR_ON, size), QIcon.Normal, QIcon.On)
-    icon.addPixmap(_render(svg, "#B9C9CC", size), QIcon.Disabled, QIcon.Off)
+    icon.addPixmap(_render(svg, "#3A4560", size), QIcon.Disabled, QIcon.Off)
     return icon
 
 

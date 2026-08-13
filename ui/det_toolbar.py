@@ -15,14 +15,14 @@ QToolButton {
     padding: 3px; margin: 1px;
     background: transparent;
 }
-QToolButton:hover { background: #DFF1F4; }
-QToolButton:pressed { background: #BFE9ED; }
+QToolButton:hover { background: #131B2E; border: 1px solid #00E5FF; }
+QToolButton:pressed { background: #0E1830; }
 QToolButton:checked {
-    background: #2E7E8A;
-    border: 1px solid #1F6E78;
+    background: #0E3A52;
+    border: 1px solid #00E5FF;
 }
 QToolButton:disabled { background: transparent; }
-QFrame[frameShape="4"] { color: #CFE7EA; }
+QFrame[frameShape="4"], QFrame[frameShape="5"] { color: #2A3A5C; }
 """
 
 

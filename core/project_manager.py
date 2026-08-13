@@ -77,6 +77,27 @@ class ProjectManager:
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
     
+    def register_external_project(self, dirpath):
+        """注册（导入）工作区之外的已有工程目录，返回工程名。
+
+        用于「Open Project」选择目录后，把包含 project.json 的文件夹登记到
+        custom-dirs 注册表，使 list_projects() 能列出、open_project() 能解析。
+        同时把 meta 里从其它机器拷贝过来后失效的 parent_dir 修正为当前实际父目录。
+        """
+        d = Path(dirpath).resolve()
+        meta_path = d / "project.json"
+        if not meta_path.exists():
+            raise FileNotFoundError(f"所选目录不含 project.json: {d}")
+        with open(meta_path, "r", encoding="utf-8") as f:
+            meta = json.load(f)
+        name = meta.get("name") or d.name
+        meta["parent_dir"] = str(d.parent)
+        with open(meta_path, "w", encoding="utf-8") as f:
+            json.dump(meta, f, indent=2, ensure_ascii=False)
+        self._custom_dirs[name] = str(d)
+        self._save_custom_dirs()
+        return name
+
     def save_project_meta(self, name, meta):
         path = self._resolve_project_dir(name) / "project.json"
         with open(path, "w", encoding="utf-8") as f:

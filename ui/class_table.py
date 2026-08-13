@@ -60,28 +60,29 @@ class ClassTableView(QWidget):
 
     _TABLE_QSS = """
     QTableWidget {
-        background-color: #FFFFFF;
-        alternate-background-color: #F4FAFB;
-        border: 1px solid #D9E9EC;
+        background-color: #0C1220;
+        alternate-background-color: #101828;
+        border: 1px solid #22304A;
         border-radius: 8px;
-        gridline-color: #EAF2F4;
-        selection-background-color: #BFE9ED;
-        selection-color: #14444E;
+        gridline-color: #1A2440;
+        selection-background-color: #0E3A52;
+        selection-color: #00E5FF;
         font-size: 12px;
     }
     QTableWidget::item { padding: 2px 4px; }
     QHeaderView::section {
-        background-color: #E8F6F7;
-        color: #2E7E8A;
+        background-color: #0F1728;
+        color: #00E5FF;
         font-weight: bold;
         border: none;
-        border-right: 1px solid #D8EEF0;
-        border-bottom: 1px solid #CFE7EA;
+        border-right: 1px solid #22304A;
+        border-bottom: 1px solid #2A3A5C;
         padding: 5px 4px;
     }
-    QTableCornerButton::section { background-color: #E8F6F7; border: none; }
+    QTableCornerButton::section { background-color: #0F1728; border: none; }
     QScrollBar:vertical { background: transparent; width: 8px; }
-    QScrollBar::handle:vertical { background: #C3DDE1; border-radius: 4px; min-height: 20px; }
+    QScrollBar::handle:vertical { background: #2A3A5C; border-radius: 4px; min-height: 20px; }
+    QScrollBar::handle:vertical:hover { background: #00E5FF; }
     QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
     QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
     """

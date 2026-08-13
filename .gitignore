@@ -76,3 +76,6 @@ temp/
 # JSON annotations (keep project config)
 project.json.backup
 *.bak
+
+# Git helper scripts (local only)
+git_commit_push.bat

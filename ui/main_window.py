@@ -132,7 +132,7 @@ class TrainSettingsDialog(QDialog):
         layout.addRow("Loss:", self.loss_combo)
         self.augment_hint = QLabel("数据增强：请在主界面右侧「增强」面板设置（全局生效）")
         self.augment_hint.setWordWrap(True)
-        self.augment_hint.setStyleSheet("color: #666;")
+        self.augment_hint.setStyleSheet("color: #8A93A6;")
         layout.addRow("Augment:", self.augment_hint)
         self.resume_check = QCheckBox("Resume from last checkpoint")
         self.resume_check.setChecked(saved.get("resume", False))
@@ -395,8 +395,8 @@ class MainWindow(QMainWindow):
             btn = QPushButton(f"{label} (0)")
             btn.setCheckable(True); btn.setFixedHeight(22)
             btn.setStyleSheet(
-                "QPushButton { font-size: 10px; padding: 1px 6px; border: 1px solid #888; border-radius: 2px; }"
-                "QPushButton:checked { background-color: #2C5F8A; color: white; font-weight: bold; }"
+                "QPushButton { font-size: 10px; padding: 1px 6px; border: 1px solid #2A3A5C; border-radius: 2px; color: #D6E4FF; }"
+                "QPushButton:checked { background-color: #0E3A52; color: #00E5FF; border-color: #00E5FF; font-weight: bold; }"
             )
             btn.clicked.connect(lambda checked, i=i: self._switch_accordion(i))
             ah_layout.addWidget(btn)
@@ -471,8 +471,8 @@ class MainWindow(QMainWindow):
         self.image_list_widget.setSelectionBehavior(QTableWidget.SelectRows)
         self.image_list_widget.setSelectionMode(QTableWidget.ExtendedSelection)
         self.image_list_widget.setStyleSheet(
-            "QTableWidget::item:selected { background-color: #2D6A4F; color: #FFFFFF; }\n"
-            "QTableWidget::item:selected:!active { background-color: #2D6A4F; color: #FFFFFF; }")
+            "QTableWidget::item:selected { background-color: #0E3A52; color: #00E5FF; }\n"
+            "QTableWidget::item:selected:!active { background-color: #0E3A52; color: #00E5FF; }")
         self.image_list_widget.setEditTriggers(QTableWidget.NoEditTriggers)
         self.image_list_widget.setAlternatingRowColors(True)
         self.image_list_widget.verticalHeader().setVisible(False)
@@ -683,7 +683,7 @@ class MainWindow(QMainWindow):
         btns = QHBoxLayout()
         self.btn_train_start = QPushButton("Start Training")
         self.btn_train_start.clicked.connect(self._start_training)
-        self.btn_train_start.setStyleSheet("QPushButton { background-color: #4CAF50; color: white; font-weight: bold; padding: 4px 12px; }")
+        self.btn_train_start.setStyleSheet("QPushButton { background-color: #00FF9C; color: #061018; font-weight: bold; padding: 4px 12px; }")
         btns.addWidget(self.btn_train_start)
         self.btn_train_stop = QPushButton("Stop")
         self.btn_train_stop.clicked.connect(self._stop_batch)
@@ -780,7 +780,7 @@ class MainWindow(QMainWindow):
         cfl.addRow("Loss:", self.cls_loss_combo)
         cls_aug_hint = QLabel("数据增强：右侧「增强」面板（全局生效）")
         cls_aug_hint.setWordWrap(True)
-        cls_aug_hint.setStyleSheet("color: #666;")
+        cls_aug_hint.setStyleSheet("color: #8A93A6;")
         cfl.addRow("Augment:", cls_aug_hint)
         hl_scale = QHBoxLayout()
         self.cls_scale_w_spin = QDoubleSpinBox(); self.cls_scale_w_spin.setRange(0.1, 1.0); self.cls_scale_w_spin.setSingleStep(0.05)
@@ -857,13 +857,13 @@ class MainWindow(QMainWindow):
         ctl.addLayout(cfl)
         self.cls_recommend_btn = QPushButton("🧠 智能推荐训练参数", clicked=self._open_cls_recommend)
         self.cls_recommend_btn.setStyleSheet(
-            "QPushButton { background:#1565c0; color:white; font-weight:bold; padding:6px; }"
-            "QPushButton:hover { background:#1976d2; }")
+            "QPushButton { background:#7B2FBE; color:white; font-weight:bold; padding:6px; border:none; }"
+            "QPushButton:hover { background:#B967FF; }")
         ctl.addWidget(self.cls_recommend_btn)
         self.cls_native_btn = QPushButton("⚡ 原生基线参数（最简，无增强/EMA/类平衡）", clicked=self._apply_cls_native_params)
         self.cls_native_btn.setStyleSheet(
-            "QPushButton { background:#2e7d32; color:white; font-weight:bold; padding:6px; }"
-            "QPushButton:hover { background:#388e3c; }")
+            "QPushButton { background:#00A86B; color:#061018; font-weight:bold; padding:6px; border:none; }"
+            "QPushButton:hover { background:#00FF9C; }")
         ctl.addWidget(self.cls_native_btn)
         self._cls_start_btn = QPushButton("Start Training", clicked=self._start_cls_training)
         ctl.addWidget(self._cls_start_btn)
@@ -983,10 +983,10 @@ class MainWindow(QMainWindow):
         panel_hm = QWidget(); hml = QVBoxLayout(panel_hm); hml.setContentsMargins(4, 2, 2, 2)
         hml.addWidget(QLabel("<b>Height Map Colormap</b>"))
         self.hm_status = QLabel("No height map loaded")
-        self.hm_status.setStyleSheet("color: #888; font-size: 11px;")
+        self.hm_status.setStyleSheet("color: #8A93A6; font-size: 11px;")
         hml.addWidget(self.hm_status)
         self.hm_data_range = QLabel("")
-        self.hm_data_range.setStyleSheet("color: #666; font-size: 10px;")
+        self.hm_data_range.setStyleSheet("color: #8A93A6; font-size: 10px;")
         hml.addWidget(self.hm_data_range)
         hml.addWidget(QLabel("Mapping Range (mm):"))
         rng = QHBoxLayout()
@@ -1017,7 +1017,7 @@ class MainWindow(QMainWindow):
         bth.addWidget(auto_btn)
         apply_btn = QPushButton("Apply")
         apply_btn.clicked.connect(self._hm_apply)
-        apply_btn.setStyleSheet("QPushButton { background-color: #2C5F8A; color: white; font-weight: bold; }")
+        apply_btn.setStyleSheet("QPushButton { background-color: #0E3A52; color: #00E5FF; border: 1px solid #00E5FF; font-weight: bold; }")
         bth.addWidget(apply_btn)
         hml.addLayout(bth)
         hml.addStretch()
@@ -1026,7 +1026,7 @@ class MainWindow(QMainWindow):
         panel_aug = QWidget(); augl = QVBoxLayout(panel_aug); augl.setContentsMargins(4, 2, 2, 2)
         augl.addWidget(QLabel("<b>数据增强（全局）</b>"))
         aug_tip = QLabel("对所有训练任务生效：分割 / 分类 / 检测\n（随机应用已勾选的增强方式）")
-        aug_tip.setStyleSheet("color: #666; font-size: 11px;")
+        aug_tip.setStyleSheet("color: #8A93A6; font-size: 11px;")
         aug_tip.setWordWrap(True)
         augl.addWidget(aug_tip)
         self.aug_enabled_check = QCheckBox("启用数据增强")
@@ -1049,14 +1049,14 @@ class MainWindow(QMainWindow):
         abtns.addWidget(b_all); abtns.addWidget(b_none); abtns.addWidget(b_def)
         augl.addLayout(abtns)
         self.aug_status = QLabel(""); self.aug_status.setWordWrap(True)
-        self.aug_status.setStyleSheet("color: #888; font-size: 11px;")
+        self.aug_status.setStyleSheet("color: #8A93A6; font-size: 11px;")
         augl.addWidget(self.aug_status)
         augl.addStretch()
 
         # ===== Inference group (auto-switch by project type) =====
         panel_infer_group = QWidget(); igl = QVBoxLayout(panel_infer_group); igl.setContentsMargins(4, 2, 2, 2)
         self._infer_title = QLabel("推理 · 语义分割")
-        self._infer_title.setStyleSheet("font-weight: bold; color: #2C5F8A;")
+        self._infer_title.setStyleSheet("font-weight: bold; color: #00E5FF;")
         igl.addWidget(self._infer_title)
         self._infer_stack = QStackedWidget()
         self._infer_stack.addWidget(panel_infer)      # 0: seg / det (shared)
@@ -1068,7 +1068,7 @@ class MainWindow(QMainWindow):
         # ===== Training group (auto-switch by project type) =====
         panel_train_group = QWidget(); tgl = QVBoxLayout(panel_train_group); tgl.setContentsMargins(4, 2, 2, 2)
         self._train_title = QLabel("训练 · 语义分割")
-        self._train_title.setStyleSheet("font-weight: bold; color: #2C5F8A;")
+        self._train_title.setStyleSheet("font-weight: bold; color: #FF2A6D;")
         tgl.addWidget(self._train_title)
         self._train_stack = QStackedWidget()
         self._train_stack.addWidget(panel_train)      # 0: segmentation
@@ -1076,7 +1076,7 @@ class MainWindow(QMainWindow):
         self._train_stack.addWidget(panel_cls_train)  # 2: classification
         panel_train_na = QWidget(); nal = QVBoxLayout(panel_train_na)
         na_label = QLabel("该任务类型无独立训练流程\n请在「推理」面板中直接操作")
-        na_label.setWordWrap(True); na_label.setStyleSheet("color: #888;")
+        na_label.setWordWrap(True); na_label.setStyleSheet("color: #8A93A6;")
         nal.addWidget(na_label); nal.addStretch()
         self._train_stack.addWidget(panel_train_na)   # 3: no training flow (OCR/OCV)
         tgl.addWidget(self._train_stack)
@@ -1108,7 +1108,7 @@ class MainWindow(QMainWindow):
             btn = QPushButton(icon_text)
             btn.setCheckable(True); btn.setFixedSize(46, 32)
             btn.setToolTip(tooltip)
-            btn.setStyleSheet("QPushButton { font-size: 11px; font-weight: bold; padding: 1px; } QPushButton:checked { background-color: #2C5F8A; color: white; border-radius: 3px; }")
+            btn.setStyleSheet("QPushButton { font-size: 11px; font-weight: bold; padding: 1px; color: #D6E4FF; } QPushButton:checked { background-color: #0E3A52; color: #00E5FF; border: 1px solid #00E5FF; border-radius: 3px; }")
             btn.clicked.connect(lambda checked, i=idx: self._right_stack.setCurrentIndex(i))
             self._right_tabs.addButton(btn, idx)
             tab_layout.addWidget(btn)
@@ -1439,7 +1439,22 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.warning(self, "Error", str(e))
     def _open_project(self):
+        from pathlib import Path
+        # 弹窗选择工程目录（含 project.json 的文件夹），支持打开工作区之外的工程
+        d = QFileDialog.getExistingDirectory(self, "Select Project Directory",
+                                              str(Path.home()))
+        if not d:
+            return
+        try:
+            name = self.pm.register_external_project(d)
+        except FileNotFoundError as e:
+            QMessageBox.warning(self, "Error", str(e))
+            return
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Failed to open project: {e}")
+            return
         self._refresh_projects()
+        self._open_project_by_name(name)
 
     def _open_project_by_name(self, name):
         try:
@@ -3393,7 +3408,7 @@ class MainWindow(QMainWindow):
                                 pred = result["predictions"][0]
                                 results[base] = {"class": pred["class"], "confidence": pred["confidence"]}
                                 self.log_signal.emit(
-                                    f"[{i+1}/{total}] {base}: {pred["class"]} ({pred["confidence"]:.2%}, {elapsed:.2f}s)")
+                                    f"[{i+1}/{total}] {base}: {pred['class']} ({pred['confidence']:.2%}, {elapsed:.2f}s)")
                             else:
                                 self.log_signal.emit(f"[{i+1}/{total}] {base}: no result")
                         except Exception as ex:
