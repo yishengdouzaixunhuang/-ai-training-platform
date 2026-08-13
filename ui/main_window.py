@@ -916,7 +916,7 @@ class MainWindow(QMainWindow):
         hl3.addWidget(self.cls_auto_heatmap)
         cil.addLayout(hl3)
         self.cls_tta_check = QCheckBox("TTA 多裁剪投票（单张推理更稳）")
-        saved_tta = self._load_ui_setting("cls_tta", True)
+        saved_tta = self._load_ui_setting("cls_tta", False)
         self.cls_tta_check.setChecked(saved_tta)
         self.cls_tta_check.toggled.connect(lambda v: self._save_ui_setting("cls_tta", v))
         cil.addWidget(self.cls_tta_check)
@@ -3099,7 +3099,7 @@ class MainWindow(QMainWindow):
             self.cls_resume_check.setChecked(params["resume"])
             self.cls_balanced_check.setChecked(bool(params.get("class_balanced", False)))
             self.cls_ema_check.setChecked(bool(params.get("ema", True)))
-            self.cls_tta_check.setChecked(bool(params.get("tta", True)))
+            self.cls_tta_check.setChecked(bool(params.get("tta", False)))
             self.log_signal.emit(
                 f"[智能推荐] 已套用: {params['model']}, {params['epochs']}ep, "
                 f"batch={params['batch_size']}, lr={params['lr']}, loss={params['loss']}, "
@@ -3452,6 +3452,9 @@ class MainWindow(QMainWindow):
                     from classification.trainer import ClassificationTrainer
                     ct = ClassificationTrainer(project_dir)
                     ct.load_model(model_file)
+                    self.log_signal.emit(
+                        f"Batch inference: device={ct.device}, TTA={self.cls_tta_check.isChecked()}, "
+                        f"keep_aspect={getattr(ct, '_keep_aspect', False)}, model={model_file}")
                     for i, img_path in enumerate(images):
                         if self._stop_flag:
                             self.log_signal.emit(f"Batch classification stopped at {i}/{total}")
