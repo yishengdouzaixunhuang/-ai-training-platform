@@ -18,6 +18,9 @@ class AnnotationCanvas(QWidget):
     width_changed = pyqtSignal(int)
     class_select_requested = pyqtSignal(int)
     save_requested = pyqtSignal()
+    # 视图状态变化（缩放/平移/标注显示开关）。多视图预览靠它即时同步参考窗，
+    # 不再依赖轮询：轮询最快也要等到下一个周期，看着就是"窗口 2/3 慢一拍"。
+    view_changed = pyqtSignal()
 
     MODE_BRUSH = "brush"
     MODE_POLYGON = "polygon"
@@ -60,9 +63,18 @@ class AnnotationCanvas(QWidget):
         self._cached_overlay_qimage = None
         self._overlay_dirty = True
         self._show_annotation = True
+        # Ctrl+Alt：单独控制忽略区(__ignore__, 255)的显示。
+        # 忽略区常常占满整颗电芯（背面/边缘等不关注区域），跟缺陷类别混在一个开关里
+        # 要么"想只看缺陷却被忽略区糊住"，要么"想看忽略区却把缺陷也带出来"。
+        self._show_ignore = True
         self._show_prediction = False
         self._show_annotation_boxes = True   # Ctrl+Space: toggle annotation boxes
         self._show_pred_boxes = True         # Space: toggle prediction boxes
+        # 状态信息默认叠加画在图像上（单图模式沿用原样）。多视图模式下由顶部信息栏
+        # 显示同一份文本，这里关掉，免得那行字压住图像左下角。
+        self._status_overlay = True
+        # 画布底色：多视图模式下会被改成和参考窗同色，三个窗口看起来才是一套
+        self._bg_color = QColor(40, 40, 40)
         self._pred_overlay_cache = {}  # key -> QImage
         self._pred_stats_cache = {}  # class_id -> (area, avg_gray, radius, iou)
         self.setMouseTracking(True)
@@ -382,7 +394,14 @@ class AnnotationCanvas(QWidget):
         self._cached_gray = np.mean(arr.astype(np.float32), axis=2)
 
     def _build_overlay(self):
-        """Build annotation overlay with HATCH pattern (distinct from solid prediction fill)."""
+        """Build annotation overlay (原图 + 掩膜 的合成图)。
+
+        叠加层的画法统一来自 `core/mask_overlay.py`：**低透明度纯色底 + 高透明度斜纹
+        + 轮廓线**。早期这里只画 25% 密度的细斜纹（12px 周期/3px 宽），缩到 fit
+        （约 0.12 倍）时斜纹周期只剩 1.5px，屏幕上直接被采样掉；而参考窗用的又是
+        `IGNORE_CLASS_COLOR`=(128,128,128) 灰，跟形状图1 的底色 130 几乎同色 ——
+        结果就是"预览窗口2 不显示 ignore"。两处现在共用同一份实现，外观也一致了。
+        """
         if self.image is None or self.mask is None:
             self._cached_overlay_qimage = None
             return
@@ -394,31 +413,14 @@ class AnnotationCanvas(QWidget):
         if h != ih or w != iw:
             self._cached_overlay_qimage = None
             return
-        overlay = img_arr.copy()
-        import cv2
-        # Diagonal hatch pattern: 3px line every 12px
-        yy, xx = np.mgrid[0:h, 0:w]
-        hatch = ((xx + yy) % 12 < 3).astype(np.float32)
-        unique_ids = np.unique(self.mask)
-        for cid in unique_ids:
-            if cid == 0:
-                continue
-            region = (self.mask == cid)
-            if not region.any():
-                continue
-            if int(cid) == IGNORE_CLASS_ID:
-                color = IGNORE_CLASS_COLOR
-            else:
-                color = CLASS_COLORS[int(cid) % len(CLASS_COLORS)]
-            # Only draw color on hatch lines within the region
-            hatch_region = region & (hatch > 0)
-            for ch in range(3):
-                overlay[:, :, ch][hatch_region] = color[ch]
-            # Thin border around each region
-            binary = region.astype(np.uint8) * 255
-            contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            cv2.drawContours(overlay, contours, -1, (int(color[0]), int(color[1]), int(color[2])), 1)
-        overlay = np.clip(overlay, 0, 255).astype(np.uint8)
+        from core.mask_overlay import build_overlay_rgba, composite_over_image
+        rgba = build_overlay_rgba(self.mask,
+                                  show_classes=bool(getattr(self, "_show_annotation", True)),
+                                  show_ignore=bool(getattr(self, "_show_ignore", True)))
+        if rgba is None:
+            self._cached_overlay_qimage = None
+            return
+        overlay = composite_over_image(img_arr, rgba)
         qimg = QImage(overlay.data, w, h, 3 * w, QImage.Format_RGB888)
         self._cached_overlay_qimage = qimg.copy()
         self._overlay_dirty = False
@@ -427,7 +429,7 @@ class AnnotationCanvas(QWidget):
         painter = QPainter(self)
         if self.zoom_level < 1.0:
             painter.setRenderHint(QPainter.SmoothPixmapTransform)
-        painter.fillRect(self.rect(), QColor(40, 40, 40))
+        painter.fillRect(self.rect(), getattr(self, "_bg_color", QColor(40, 40, 40)))
         if self.image is None:
             painter.setPen(QColor(150, 150, 150))
             painter.drawText(self.rect(), Qt.AlignCenter, "No image loaded")
@@ -525,11 +527,15 @@ class AnnotationCanvas(QWidget):
                 painter.drawImage(rect, self._cached_qimage)
         self._build_overlay()
         # Draw annotation overlay (hatch pattern)
-        if self._show_annotation and self._cached_overlay_qimage is not None:
+        # 两个开关任一为开都要画（叠加图本身已经按开关过滤过类别/忽略区）
+        if (getattr(self, "_show_annotation", True) or getattr(self, "_show_ignore", True)) \
+                and self._cached_overlay_qimage is not None:
             painter.drawImage(rect, self._cached_overlay_qimage)
         # Draw prediction overlay on top
         if self._show_prediction:
-            with_bg = not self._show_annotation  # transparent when annotation is also visible
+            # 标注层（类别或忽略区）任一看得见时，预测层就不再铺底，免得盖住标注
+            with_bg = not (getattr(self, "_show_annotation", True)
+                           or getattr(self, "_show_ignore", True))
             pred_arr = self._build_prediction_overlay(with_background=with_bg)
             if pred_arr is not None:
                 h, w = pred_arr.shape[:2]
@@ -592,12 +598,28 @@ class AnnotationCanvas(QWidget):
                 painter.setBrush(QBrush(QColor(255, 255, 255, 30)))
                 painter.drawRect(QRectF(x, y, w, h))
 
-        zoom_pct = int(self.zoom_level / self._fit_zoom * 100)
+        self._draw_class_labels(painter)
+        if getattr(self, "_status_overlay", True):
+            self._draw_status_overlay(painter)
+
+    def status_info_text(self):
+        """状态信息文本（如 "1175x3739 | Pan | Class: ? | Annot:ON | ... | Width: 8"）。
+
+        画布自己的叠加层和多视图模式的顶部信息栏**共用这一份**，
+        不要在两处各拼一遍字符串——两边格式一漂移就是两个互相矛盾的显示。
+        """
+        zoom_pct = 100
+        try:
+            if self._fit_zoom:
+                zoom_pct = int(self.zoom_level / self._fit_zoom * 100)
+        except Exception:
+            zoom_pct = 100
         mode_names = {self.MODE_BRUSH: 'Brush', self.MODE_ERASER: 'Eraser', self.MODE_IGNORE: 'Ignore',
-                       self.MODE_POLYGON: "Polygon", self.MODE_LINE: "Line",
-                       self.MODE_RECT: "Rect", self.MODE_CIRCLE: "Circle", self.MODE_ELLIPSE: "Ellipse",
-                       self.MODE_PAN: "Pan", self.MODE_SAM: "SAM"}
+                      self.MODE_POLYGON: "Polygon", self.MODE_LINE: "Line",
+                      self.MODE_RECT: "Rect", self.MODE_CIRCLE: "Circle", self.MODE_ELLIPSE: "Ellipse",
+                      self.MODE_PAN: "Pan", self.MODE_SAM: "SAM"}
         ann_status = "Annot:ON" if self._show_annotation else "Annot:OFF"
+        ign_status = "Ignore:ON" if getattr(self, "_show_ignore", True) else "Ignore:OFF"
         if self._det_overlay is not None:
             pred_status = "Pred:ON" if self._show_pred_boxes else "Pred:OFF"
         else:
@@ -606,11 +628,31 @@ class AnnotationCanvas(QWidget):
         cls_name = "?"
         if self.label_manager is not None and 0 <= self.current_class_id < len(self.label_manager.classes):
             cls_name = self.label_manager.classes[self.current_class_id]
-        info = "%s | %s | Class: %s | %s | %s | Zoom: %d%% | Width: %d" % (
+        return "%s | %s | Class: %s | %s | %s | %s | Zoom: %d%% | Width: %d" % (
             res,
             mode_names.get(self._mode, self._mode),
-            cls_name, ann_status, pred_status, zoom_pct, self.brush_size)
-        self._draw_class_labels(painter)
+            cls_name, ann_status, ign_status, pred_status, zoom_pct, self.brush_size)
+
+    def set_status_overlay(self, enabled):
+        """是否把状态信息叠加画在图像左下角（多视图模式下改由顶部信息栏显示）。"""
+        enabled = bool(enabled)
+        if enabled != getattr(self, "_status_overlay", True):
+            self._status_overlay = enabled
+            self.update()
+
+    def set_bg_color(self, color):
+        """设置图像区底色（多视图模式下与参考窗同色）。"""
+        try:
+            c = QColor(color)
+        except Exception:
+            return
+        if not c.isValid() or c == getattr(self, "_bg_color", None):
+            return
+        self._bg_color = c
+        self.update()
+
+    def _draw_status_overlay(self, painter):
+        info = self.status_info_text()
         # Semi-transparent background so boxes don't obscure status text
         font = QFont("Sans", 9)
         painter.setFont(font)
@@ -1053,6 +1095,7 @@ class AnnotationCanvas(QWidget):
         self.pan_offset_x = event.pos().x() - actual_factor * (event.pos().x() - self.pan_offset_x)
         self.pan_offset_y = event.pos().y() - actual_factor * (event.pos().y() - self.pan_offset_y)
         self.update()
+        self.view_changed.emit()      # 滚轮缩放：立即推给多视图参考窗（拖动平移仍靠 40ms 轮询，避免每个鼠标移动都重画）
 
     def keyPressEvent(self, event):
         # SAM mode: Enter=accept, Esc=cancel, Backspace=undo last point
@@ -1192,16 +1235,11 @@ class AnnotationCanvas(QWidget):
                 self.update()
                 self.status_message.emit("Removed point, %d remaining" % len(self._polygon_points))
         elif event.key() == Qt.Key_Space and event.modifiers() == Qt.ControlModifier:
-            if self._det_overlay is not None:
-                # Detection mode: Ctrl+Space -> toggle annotation boxes
-                self._show_annotation_boxes = not self._show_annotation_boxes
-                self.status_message.emit("Annotation boxes: %s" % ("ON" if self._show_annotation_boxes else "OFF"))
-            else:
-                # Segmentation mode: toggle annotation overlay
-                self._show_annotation = not self._show_annotation
-                self._overlay_dirty = True
-                self.status_message.emit("Annotation: %s" % ("ON" if self._show_annotation else "OFF"))
-            self.update()
+            self.toggle_annotation_visibility()
+            event.accept()
+        elif self._is_ctrl_alt_toggle(event):
+            # Ctrl+Alt（只按修饰键，不配字母）：单独开关忽略区
+            self.toggle_ignore_visibility()
             event.accept()
         elif event.key() == Qt.Key_Space:
             if self._det_overlay is not None:
@@ -1218,6 +1256,62 @@ class AnnotationCanvas(QWidget):
                 self.status_message.emit("Prediction: %s" % ("ON" if self._show_prediction else "OFF"))
             self.update()
             event.accept()
+
+    def _is_ctrl_alt_toggle(self, event):
+        """是否"Ctrl+Alt"这个只看修饰键的开关组合。
+
+        ⚠️ 只按修饰键时 Qt 仍会派发 KeyPress，`key()` 就是修饰键本身的码：
+        先按住 Ctrl 再按 Alt，事件是 key=Key_Alt、modifiers=ControlModifier。
+        再按 Alt 也可以（key=Key_Control、modifiers=AltModifier），两种顺序都认。
+        必须排除 AltGr（Windows 上有些键盘布局用它输入字符，此时 modifiers 会带
+        GroupSwitchModifier），否则会误触发。
+        """
+        if event.isAutoRepeat():
+            return False
+        mods = event.modifiers()
+        if mods & Qt.GroupSwitchModifier:
+            return False
+        # ⚠️ 不使用 == 精确比较：修饰键自身的按下事件里，modifiers() 到底含不含它自己
+        #    在 Qt 各版本/平台上是"按下前"还是"按下后"并不统一。改成"看另一个键在不在"，
+        #    两种顺序（先 Ctrl 后 Alt / 先 Alt 后 Ctrl）与两种语义都能命中。
+        ctrl = bool(mods & Qt.ControlModifier)
+        alt = bool(mods & Qt.AltModifier)
+        if event.key() == Qt.Key_Alt and ctrl:
+            return True
+        if event.key() == Qt.Key_Control and alt:
+            return True
+        # 备用绑定：万一手感/键盘布局导致"只按修饰键"不派发按键事件，
+        # Ctrl+Alt+I 同样能切忽略区（I = Ignore）
+        if event.key() == Qt.Key_I and ctrl and alt:
+            return True
+        return False
+
+    def toggle_ignore_visibility(self):
+        """Ctrl+Alt 的忽略区显示开关（只影响 __ignore__ / 掩膜值 255 的区域）。"""
+        self._show_ignore = not getattr(self, "_show_ignore", True)
+        self._overlay_dirty = True
+        self.status_message.emit("Ignore: %s" % ("ON" if self._show_ignore else "OFF"))
+        self.update()
+        self.view_changed.emit()
+
+    def toggle_annotation_visibility(self):
+        """Ctrl+Space 的标注显示开关（检测模式切框，分割模式切掩膜）。
+
+        单独抽成一个方法，是为了让多视图预览里的参考窗也能触发同一个动作：
+        焦点在参考窗上时按键根本传不到画布（QFrame 默认忽略后往父级冒泡），
+        以前只能等轮询才发现状态变了 —— 就是"窗口 2/3 比窗口 1 慢一点"的原因。
+        """
+        if self._det_overlay is not None:
+            # Detection mode: Ctrl+Space -> toggle annotation boxes
+            self._show_annotation_boxes = not self._show_annotation_boxes
+            self.status_message.emit("Annotation boxes: %s" % ("ON" if self._show_annotation_boxes else "OFF"))
+        else:
+            # Segmentation mode: toggle annotation overlay
+            self._show_annotation = not self._show_annotation
+            self._overlay_dirty = True
+            self.status_message.emit("Annotation: %s" % ("ON" if self._show_annotation else "OFF"))
+        self.update()
+        self.view_changed.emit()
 
     # ======================== Annotation Operations ========================
 

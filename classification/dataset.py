@@ -292,7 +292,8 @@ def auto_split(project_dir, val_split=0.2, seed=42):
 
     # Collect all samples
     label_path = Path(project_dir) / "annotations" / "class_labels.json"
-    all_samples = {}  # base_name → label_id
+    all_samples = {}  # 查找键 → 分层标签
+    stratified = False
 
     if label_path.exists():
         with open(label_path, "r", encoding="utf-8") as f:
@@ -302,8 +303,12 @@ def auto_split(project_dir, val_split=0.2, seed=42):
         for rel_path, cls_id in mapping.items():
             base = os.path.splitext(os.path.basename(rel_path))[0]
             all_samples[base] = cls_id
-    else:
-        # ImageFolder mode
+        stratified = len(all_samples) >= 2
+
+    # mapping 为空（或没有 class_labels.json）时，回退到 ImageFolder 模式按文件夹扫描：
+    # 否则样本集为空 -> 不写划分 -> val 恒为空 -> 训练报 "Validation set is empty"
+    if len(all_samples) < 2:
+        all_samples = {}
         for entry in sorted(img_dir.iterdir()):
             if not entry.is_dir():
                 continue
@@ -311,8 +316,10 @@ def auto_split(project_dir, val_split=0.2, seed=42):
             for f in sorted(entry.iterdir()):
                 if f.suffix.lower() in (".bmp", ".png", ".jpg", ".jpeg"):
                     base = os.path.splitext(f.name)[0]
-                    # Assign temporary ID for splitting
-                    all_samples[f"images/{cls_name}/{f.name}"] = base
+                    # key 必须与 _list_images_mapping 的查找键一致："{类别}/{文件名去扩展名}"
+                    # value 用类别名，供下面按类别分层划分
+                    all_samples[f"{cls_name}/{base}"] = cls_name
+        stratified = True
 
     if len(all_samples) < 2:
         return {}
@@ -323,7 +330,7 @@ def auto_split(project_dir, val_split=0.2, seed=42):
     rng.shuffle(keys)
 
     split_map = {}
-    if label_path.exists():
+    if stratified:
         # Group by label for stratified split
         from collections import defaultdict
         by_label = defaultdict(list)

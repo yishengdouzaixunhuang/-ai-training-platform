@@ -1,5 +1,5 @@
-﻿"""Inference engine - PyTorch + TensorRT + ONNX backends"""
-import os, sys, numpy as np, torch, subprocess, struct
+"""Inference engine - PyTorch + TensorRT + ONNX backends"""
+import os, sys, json, numpy as np, torch, subprocess, struct
 from PIL import Image
 import torchvision.transforms.functional as TF
 from training.models import create_model
@@ -13,7 +13,13 @@ class Predictor:
         self.ort_session = None
         self.trt_server = None  # Persistent TensorRT subprocess
         self._trt_python = None  # Path to Python 3.12 for TRT
-        self.load(model_filename, backend=backend)
+        # 分类工程通常没有分割模型 (models/best_model.pth)：容错处理，延迟到真正
+        # 调用 predict() 时报错；classify()/classify_with_threshold() 会懒加载分类模型。
+        self._load_error = None
+        try:
+            self.load(model_filename, backend=backend)
+        except FileNotFoundError as e:
+            self._load_error = e
 
     def _find_trt_python(self):
         """Find a Python interpreter that can import tensorrt."""
@@ -99,7 +105,7 @@ class Predictor:
         if os.path.exists(path) and self.model is None:
             checkpoint = torch.load(path, map_location=self.device, weights_only=False)
             model_name = checkpoint.get("model_name", "deeplabv3")
-            self.model = create_model(self.num_classes, model_name).to(self.device)
+            self.model = self._build_model(model_name, checkpoint).to(self.device)
             self.model.load_state_dict(checkpoint["model_state_dict"])
             self.model.eval()
 
@@ -231,8 +237,108 @@ class Predictor:
             except Exception:
                 pass
             self.trt_server = None
+    # ────────── 多视图（三视图 9 通道）支持 ──────────
+    def _detect_views(self):
+        """读 project.json 判断是不是多视图工程。
+
+        为什么要有这一步：训练走的是 `create_multiview_model`（9 通道，支持 unet），
+        而推理原来硬套单视图 `create_model`（3 通道，且**没有 unet**）——
+        结果三视图工程一做批量推理，每张图都报一次 `Unknown model: unet`（已踩）。
+        """
+        self.views = ()
+        try:
+            with open(os.path.join(self.project_dir, "project.json"), "r", encoding="utf-8") as f:
+                meta = json.load(f)
+            vs = tuple(meta.get("views") or ())
+            if len(vs) > 1:
+                self.views = vs
+        except Exception:
+            pass
+        return self.views
+
+    def _build_model(self, model_name, checkpoint=None):
+        """按工程类型建模型：多视图 -> create_multiview_model（9 通道），否则单视图。"""
+        ck = checkpoint if isinstance(checkpoint, dict) else {}
+        if getattr(self, "views", ()):
+            from training.multiview import create_multiview_model
+            in_ch = len(self.views) * 3
+            ck_in = ck.get("in_channels") or ck.get("in_ch")
+            if ck_in is not None and int(ck_in) != in_ch:
+                raise RuntimeError(
+                    f"权重通道数与工程不匹配：权重记的是 {ck_in} 通道，"
+                    f"工程 views={self.views} 需要 {in_ch} 通道。"
+                    f"（是否用错了工程的模型？）")
+            print(f"[Predictor] 多视图工程：views={self.views} -> {in_ch} 通道模型 "
+                  f"(model_name={model_name})", flush=True)
+            return create_multiview_model(
+                model_name, self.num_classes, self.views, pretrained=False,
+                unet_base=int(ck.get("unet_base", 16)), unet_depth=int(ck.get("unet_depth", 4)))
+        if model_name not in ("deeplabv3", "lraspp", "fcn"):
+            raise RuntimeError(
+                f"Unknown model: {model_name}（单视图工厂只支持 deeplabv3/lraspp/fcn；"
+                f"若这是三视图 unet 权重，请确认工程 project.json 里的 views 字段）")
+        return create_model(self.num_classes, model_name)
+
+    @torch.inference_mode()
+    def predict_multiview(self, view_images, tile=256, stride=None, return_overlay=False):
+        """三视图推理：按 views 顺序拼成 N*3 通道，**原分辨率分块**跑，再拼回整图。
+
+        view_images: dict{view: PIL.Image 或 ndarray}，必须齐 views 里所有视图（缺就报错，
+        绝不拿别的视图顶替 —— 那会让"形状图"被漫反射冒充，结果看似正常其实全错）。
+        """
+        import cv2
+        from PIL import Image as _I
+        if not getattr(self, "views", ()):
+            raise RuntimeError("不是多视图工程，请用 predict()")
+        missing = [v for v in self.views if v not in view_images or view_images[v] is None]
+        if missing:
+            raise RuntimeError(f"缺少视图 {missing}（三视图必须齐全，不能用其它视图顶替）")
+        imgs = []
+        for v in self.views:
+            im = view_images[v]
+            if isinstance(im, np.ndarray):
+                im = _I.fromarray(im)
+            imgs.append(im.convert("RGB"))
+        W, H = imgs[0].size
+        for v, im in zip(self.views, imgs):
+            if im.size != (W, H):
+                raise RuntimeError(f"视图尺寸不一致：{v}={im.size} vs {imgs[0].size}（三视图必须像素对齐）")
+        t = int(tile)
+        st = int(stride) if stride else max(1, int(t * 0.75))
+        pred = np.zeros((H, W), np.uint8)
+        # 与训练同一套 ImageNet 归一化（写成常量而不是 import：predictor 顶层不依赖 training 包，
+        # 免得推理环境缺训练依赖时直接崩）
+        _MEAN = (0.485, 0.456, 0.406)
+        _STD = (0.229, 0.224, 0.225)
+        mean = torch.tensor(_MEAN * len(self.views)).view(-1, 1, 1)
+        std = torch.tensor(_STD * len(self.views)).view(-1, 1, 1)
+        for y0 in list(range(0, max(1, H - t + 1), st)) + ([H - t] if H > t and (H - t) % st else []):
+            for x0 in list(range(0, max(1, W - t + 1), st)) + ([W - t] if W > t and (W - t) % st else []):
+                chans = []
+                for im in imgs:
+                    box = (max(0, x0), max(0, y0), min(W, x0 + t), min(H, y0 + t))
+                    tile_im = im.crop(box)
+                    if tile_im.size != (t, t):
+                        canvas = _I.new("RGB", (t, t), (0, 0, 0))
+                        canvas.paste(tile_im, (0, 0)); tile_im = canvas
+                    chans.append(np.array(tile_im, dtype=np.float32) / 255.0)
+                x = np.concatenate(chans, axis=2)
+                xt = torch.from_numpy(x).permute(2, 0, 1).unsqueeze(0).to(self.device)
+                xt = (xt - mean.to(self.device)) / std.to(self.device)
+                with torch.amp.autocast("cuda", enabled=(self.device == "cuda")):
+                    out = self.model(xt)
+                if isinstance(out, dict):
+                    out = out["out"]
+                lab = out.argmax(1).squeeze(0).to(torch.uint8).cpu().numpy()
+                y1, x1 = min(H, y0 + t), min(W, x0 + t)
+                pred[max(0, y0):y1, max(0, x0):x1] = lab[: y1 - max(0, y0), : x1 - max(0, x0)]
+        if return_overlay:
+            return pred, self._create_overlay(imgs[0], pred)
+        return pred
+
     def load(self, filename="best_model.pth", backend="pytorch"):
         self.backend = backend
+        self._detect_views()
         models_dir = os.path.join(self.project_dir, "models")
 
         if backend == "tensorrt":
@@ -290,7 +396,7 @@ class Predictor:
         self.num_classes = checkpoint["num_classes"]
         self.classes = checkpoint["classes"]
         model_name = checkpoint.get("model_name", "deeplabv3")
-        self.model = create_model(self.num_classes, model_name).to(self.device)
+        self.model = self._build_model(model_name, checkpoint).to(self.device)
         self.model.load_state_dict(checkpoint["model_state_dict"])
         self.model.eval()
         self.ort_session = None
@@ -334,6 +440,8 @@ class Predictor:
 
     @torch.inference_mode()
     def predict(self, image, return_overlay=False, tiled=True, scale=1.0):
+        """预测整图。**顺带把置信度图存到 self.last_prob**（供「推理参数」的分数过滤用）。"""
+        self.last_prob = None
         if isinstance(image, np.ndarray):
             image = Image.fromarray(image)
 
@@ -363,6 +471,10 @@ class Predictor:
                     output = self.model(img_tensor)
                 if isinstance(output, dict):
                     output = output["out"]
+                # 置信度图（max softmax）：分数过滤要用；只多一次 softmax，代价可忽略
+                with torch.amp.autocast('cuda', enabled=False):
+                    prob = output.float().softmax(1).max(1)[0]
+                self.last_prob = prob.squeeze(0).to(torch.float16).cpu().numpy().astype(np.float32)
                 # Keep on GPU until final step
                 pred = output.argmax(1).squeeze(0).to(torch.uint8).cpu().numpy()
             except RuntimeError:
@@ -372,6 +484,10 @@ class Predictor:
         if scale < 1.0:
             pred_img = Image.fromarray(pred.astype(np.uint8))
             pred = np.array(pred_img.resize((orig_w, orig_h), Image.NEAREST)).astype(pred.dtype)
+            if self.last_prob is not None and self.last_prob.shape[:2] == (sh, sw):
+                p_img = Image.fromarray((self.last_prob * 255).astype(np.uint8))
+                self.last_prob = (np.array(p_img.resize((orig_w, orig_h), Image.BILINEAR))
+                                  .astype(np.float32) / 255.0)
 
         if return_overlay:
             overlay = self._create_overlay(image, pred)
@@ -395,6 +511,10 @@ class Predictor:
                 output = self.model(img_tensor)
             if isinstance(output, dict):
                 output = output["out"]
+            # 置信度图：分数过滤要用（非 tiled 路径）
+            with torch.amp.autocast('cuda', enabled=False):
+                prob = output.float().softmax(1).max(1)[0]
+            self.last_prob = prob.squeeze(0).to(torch.float16).cpu().numpy().astype(np.float32)
             pred = output.argmax(1).squeeze(0).cpu().numpy()
             return pred
         except RuntimeError as e:
@@ -424,6 +544,7 @@ class Predictor:
 
         pred_sum = np.zeros((h, w), dtype=np.float32)
         count_map = np.zeros((h, w), dtype=np.float32)
+        prob_sum = np.zeros((h, w), dtype=np.float32)
 
         # Pre-compute Hanning window (NumPy is fast for this)
         hann = np.sqrt(np.hanning(tile_size).reshape(-1, 1) * np.hanning(tile_size).reshape(1, -1))
@@ -438,17 +559,23 @@ class Predictor:
                 output = self.model(batch)
             if isinstance(output, dict):
                 output = output["out"]
+            # 置信度：与类别同一套 Hann 窗融合，保证分数过滤与掩膜落在同一块上
+            with torch.amp.autocast('cuda', enabled=False):
+                prob_batch = output.float().softmax(1).max(1)[0].to(torch.float16).cpu().numpy().astype(np.float32)
             # Move to CPU as uint8 (smaller transfer than float32)
             batch_preds = output.argmax(1).to(torch.uint8).cpu().numpy()
 
             for j, (x1, y1, x2, y2, ph, pw) in enumerate(positions[i:i+batch_size]):
                 tp = batch_preds[j][:tile_size-ph, :tile_size-pw].astype(np.float32)
+                pp = prob_batch[j][:tile_size-ph, :tile_size-pw]
                 th, tw = tp.shape
                 wgt = hann[:th, :tw] if (th != tile_size or tw != tile_size) else hann
                 pred_sum[y1:y2, x1:x2] += tp * wgt
+                prob_sum[y1:y2, x1:x2] += pp * wgt
                 count_map[y1:y2, x1:x2] += wgt
 
         count_map[count_map == 0] = 1
+        self.last_prob = (prob_sum / count_map).astype(np.float32)
         return np.round(pred_sum / count_map).astype(np.int64)
 
     def _predict_tiled_onnx(self, image, tile_size=512, overlap=64):
@@ -507,13 +634,7 @@ class Predictor:
             )
         
         # Lazy-load classification model if not already loaded
-        if not hasattr(self, "_cls_model"):
-            from classification.trainer import ClassificationTrainer
-            self._cls_trainer = ClassificationTrainer(
-                self.project_dir, device=self.device
-            )
-            self._cls_trainer.load_model("best_model.pth")
-            self._cls_model = self._cls_trainer.model
+        self._ensure_cls_model()
         
         # Prepare image
         import torchvision.transforms as _T
@@ -542,6 +663,94 @@ class Predictor:
             (self._cls_trainer.class_names[idx], float(conf))
             for conf, idx in zip(topk_probs.cpu().numpy(), topk_ids.cpu().numpy())
         ]
+
+    def _ensure_cls_model(self):
+        """懒加载分类模型（只加载一次）。"""
+        if hasattr(self, "_cls_model"):
+            return
+        from classification.trainer import ClassificationTrainer
+        self._cls_trainer = ClassificationTrainer(self.project_dir, device=self.device)
+        self._cls_trainer.load_model("best_model.pth")
+        self._cls_model = self._cls_trainer.model
+
+    def _cls_probs(self, image, tta=False):
+        """返回 (probs[np, C], class_names)。tta=True 时对 原图/水平翻转/垂直翻转 取平均。"""
+        import torchvision.transforms as _T
+        from classification.dataset import IMAGENET_MEAN, IMAGENET_STD
+
+        self._ensure_cls_model()
+        if isinstance(image, np.ndarray):
+            image = Image.fromarray(image)
+        elif isinstance(image, str):
+            image = Image.open(image).convert("RGB")
+
+        img_size = getattr(self, "_cls_image_size", 224)
+        transform = _T.Compose([
+            _T.Resize((img_size, img_size)),
+            _T.ToTensor(),
+            _T.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
+        ])
+        tensor = transform(image).unsqueeze(0).to(self.device)
+        with torch.no_grad():
+            probs = self._cls_model(tensor).softmax(1)
+            if tta:
+                for dim in (2, 3):
+                    probs = probs + self._cls_model(torch.flip(tensor, dims=[dim])).softmax(1)
+                probs = probs / 3.0
+        return probs.squeeze(0).cpu().numpy(), list(self._cls_trainer.class_names)
+
+    def load_cls_threshold(self):
+        """读取阈值调优结果 models/classification/threshold_report.json。
+
+        Returns: (pos_class_name, threshold) —— 无则 (None, None)
+        """
+        import json as _json
+        from pathlib import Path as _Path
+        p = _Path(self.project_dir) / "models" / "classification" / "threshold_report.json"
+        if not p.exists():
+            return None, None
+        try:
+            with open(p, "r", encoding="utf-8") as f:
+                d = _json.load(f)
+            return d.get("pos_class"), (d.get("best") or {}).get("threshold")
+        except Exception:
+            return None, None
+
+    def classify_with_threshold(self, image, tta=False):
+        """**按调优阈值**判定 OK/NG（而非 argmax），用于把过杀/漏检控制在目标内。
+
+        阈值来自 classification.threshold 生成的 threshold_report.json；
+        若未做阈值调优，则退化为 argmax 判定（verdict_by="argmax"）。
+
+        Returns: dict(verdict, ng_class, ng_prob, threshold, verdict_by, topk, class_names)
+        """
+        probs, names = self._cls_probs(image, tta=tta)
+        pos_class, thr = self.load_cls_threshold()
+
+        order = np.argsort(-probs)
+        topk = [(names[i], float(probs[i])) for i in order[:min(len(names), 5)]]
+
+        if pos_class in names and thr is not None:
+            ng_prob = float(probs[names.index(pos_class)])
+            verdict = "NG" if ng_prob >= float(thr) else "OK"
+            by = "threshold"
+        else:  # 无阈值 -> argmax
+            pos_class = names[int(order[0])]
+            thr = None
+            ng_prob = float(probs[order[0]])
+            verdict = "NG" if pos_class not in ("OK", "ok", "良品", "合格") else "OK"
+            by = "argmax"
+
+        return {
+            "verdict": verdict,
+            "ng_class": pos_class,
+            "ng_prob": round(ng_prob, 6),
+            "threshold": thr,
+            "verdict_by": by,
+            "topk": [(n, round(c, 6)) for n, c in topk],
+            "class_names": names,
+            "tta": bool(tta),
+        }
 
     def _create_overlay(self, image, mask, alpha=0.5):
         import cv2

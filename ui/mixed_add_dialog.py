@@ -4,10 +4,10 @@
 import os
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QCheckBox,
-    QListWidget, QListWidgetItem, QFileDialog, QFrame, QSizePolicy
+    QListWidget, QListWidgetItem, QFileDialog, QFrame, QSizePolicy, QToolButton
 )
 from PyQt5.QtGui import QColor
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QSize
 
 STYLE = """
 QDialog { background-color: #0D1220; }
@@ -69,6 +69,10 @@ class MixedAddImagesDialog(QDialog):
         self._gl.itemEntered.connect(self._on_hover)
         self._hl = QListWidget(); self._hl.setToolTip("Height maps")
         self._hl.itemEntered.connect(self._on_hover)
+        # 两列是同一零件的配对图，选中行互相同步，方便逐行核对是否配错
+        self._syncing = False
+        self._gl.currentRowChanged.connect(lambda r: self._sync_row(self._gl, self._hl, r))
+        self._hl.currentRowChanged.connect(lambda r: self._sync_row(self._hl, self._gl, r))
         lst.addWidget(self._gl, 1); lst.addSpacing(12); lst.addWidget(self._hl, 1)
         root.addLayout(lst, 1)
 
@@ -96,12 +100,21 @@ class MixedAddImagesDialog(QDialog):
         r = QHBoxLayout(); r.setSpacing(4)
         lb = QLabel(title); lb.setObjectName("col_header")
         r.addWidget(lb); r.addStretch()
-        icons = [("\U0001f4c2", fcb), ("\U0001f4c1", dcb), ("\U0001f5d1\ufe0f", clcb)]
-        tips = ["Load single " + title, "Load " + title + " folder", "Clear " + title]
-        for (ic, cb), tip in zip(icons, tips):
-            b = QPushButton(ic); b.setFixedSize(32, 26); b.setToolTip(tip)
-            if ic.startswith("\U0001f5d1"):
-                b.setStyleSheet("QPushButton { color: #FF2A6D; } QPushButton:hover { background-color: #2A1220; }")
+        # 原来这里用 emoji 📂📁🗑️ 当按钮图标，在本机字体下渲染不出来，会变成空白方块。
+        # 统一改用平台内嵌 SVG 图标工厂（与 annotation_toolbar 等一致）。
+        from ui import icons as _icons
+        for ikey, cb, tip, danger in (("file_image", fcb, "Load single " + title, False),
+                                      ("folder", dcb, "Load " + title + " folder", False),
+                                      ("trash", clcb, "Clear " + title, True)):
+            b = QToolButton()
+            b.setIcon(_icons.make_icon(ikey))
+            b.setIconSize(QSize(20, 20))
+            b.setFixedSize(28, 26)
+            b.setToolTip(tip)
+            if danger:
+                b.setStyleSheet("QToolButton { border:1px solid #4A2030; border-radius:4px;"
+                                " background-color:#1A1016; }"
+                                " QToolButton:hover { background-color:#2A1220; border-color:#FF2A6D; }")
             b.clicked.connect(cb); r.addWidget(b)
         r.addWidget(cnt)
         return r
@@ -176,6 +189,18 @@ class MixedAddImagesDialog(QDialog):
     def _on_hover(self, item):
         p = item.data(Qt.UserRole)
         if p: item.setToolTip(p)
+
+    def _sync_row(self, src, other, row):
+        """一列换行，另一列跟着换（同一零件的配对图应并排看）。"""
+        if getattr(self, "_syncing", False):
+            return
+        self._syncing = True
+        try:
+            n = other.count()
+            if n:
+                other.setCurrentRow(max(0, min(int(row), n - 1)))
+        finally:
+            self._syncing = False
     def _on_clr_gray(self):
         self._gray_files = []; self._rf(); self._val()
     def _on_clr_hgt(self):

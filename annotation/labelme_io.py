@@ -1,4 +1,5 @@
 """LabelMe JSON format reader/writer for annotation import/export."""
+from core.imgio import imread_u, imwrite_u
 import os, json, numpy as np, cv2
 
 LABELME_VERSION = "5.3.1"
@@ -63,9 +64,13 @@ def save_labelme_json(json_path, image_path, image_width, image_height, shapes, 
         json.dump(data, f, indent=4, ensure_ascii=False)
 
 
-def shapes_to_mask(shapes, class_names, image_size):
+def shapes_to_mask(shapes, class_names, image_size, unknown_out=None):
     """Convert shapes to a numpy mask. class_names[0] = background.
-    Returns mask (H, W) uint8."""
+    Returns mask (H, W) uint8.
+
+    unknown_out: 传入一个 set 时，会把"类别表里没有的标签名"收集进去，
+    交给调用方去补类别表（类别表的**唯一真源**是工程 project.json + 图片 JSON）。
+    """
     h, w = image_size
     mask = np.zeros((h, w), dtype=np.uint8)
 
@@ -82,8 +87,14 @@ def shapes_to_mask(shapes, class_names, image_size):
         elif label in name_to_id:
             class_id = name_to_id[label]
         else:
-            class_id = len(name_to_id)
-            name_to_id[label] = class_id
+            # ⚠️ 这里以前是 class_id = len(name_to_id) 并把新名字塞进本次调用的映射：
+            #    同一张图里"先出现的标签拿小号"，不同图片之间同一个标签还会拿到不同的号
+            #    —— 掩膜语义随图片漂移。已踩过：工程 classes 为空时，
+            #    Ys 在 A 图里是 1、在 B 图里是 2，掩膜 PNG 直接成了垃圾。
+            #    现在未知标签一律按背景处理并记录，绝不临时发明类别号。
+            if unknown_out is not None:
+                unknown_out.add(label)
+            class_id = 0
 
         if shape_type == "polygon" and len(points) >= 3:
             pts = np.array(points, dtype=np.int32).reshape((-1, 1, 2))
@@ -160,21 +171,25 @@ def mask_to_shapes(mask, class_names, simplify_epsilon=2.0):
     return shapes
 
 
-def load_mask_from_json(image_path, project_dir, class_names):
+def load_mask_from_json(image_path, project_dir, class_names, unknown_out=None):
     """Load annotations from a LabelMe JSON for the given image.
-    Falls back to PNG mask if JSON doesn't exist."""
+    Falls back to PNG mask if JSON doesn't exist.
+
+    unknown_out: 见 shapes_to_mask —— 收集"类别表里没有的标签"，
+    调用方据此把新类别补进工程类别表，再重算掩膜。
+    """
     json_path = get_json_path(image_path)
     shapes, info = load_labelme_json(json_path)
 
     if shapes is not None and len(shapes) > 0:
-        img = cv2.imread(image_path)
+        img = imread_u(image_path)
         if img is not None:
             h, w = img.shape[:2]
         elif info:
             h, w = info["imageHeight"], info["imageWidth"]
         else:
             return None
-        mask = shapes_to_mask(shapes, class_names, (h, w))
+        mask = shapes_to_mask(shapes, class_names, (h, w), unknown_out=unknown_out)
         # Also save PNG for backward compatibility
         base = os.path.splitext(os.path.basename(image_path))[0]
         mp = os.path.join(project_dir, "annotations", base + "_mask.png")

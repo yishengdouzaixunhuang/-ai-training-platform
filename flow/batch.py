@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """批量推理执行器：把「图片列表 + Flow」变成可取消、带进度回调的批量服务。
 
 P1 目标：批量推理逻辑从 ui/main_window.py 迁出。UI 只负责：
@@ -93,15 +93,24 @@ def build_cls_flow(project_dir: str = "", model_name: str = "best_model.pth",
 
 def build_seg_flow(project_dir: str = "", model_name: str = "best_model.pth",
                    out_dir: str = "outputs", backend: str = "pytorch",
-                   tiled: bool = True, scale: float = 1.0) -> Flow:
-    """语义分割：SegInfer -> SegResultWriter。"""
+                   tiled: bool = True, scale: float = 1.0,
+                   filter_params: bool = True) -> Flow:
+    """语义分割：SegInfer -> [SegFilter] -> SegResultWriter。
+
+    SegFilter 按 <工程>/inference_params.json（GUI「推理参数」面板）过滤连通域，
+    与单张推理用的是同一份参数 —— 否则会出现"单张看着对、批量结果不一样"。
+    """
     seg = create_node("seg_infer", node_id="seg",
                       project_dir=project_dir, model_name=model_name,
                       backend=backend, tiled=tiled, scale=scale)
     wr = create_node("seg_result_writer", node_id="out", out_dir=out_dir)
-    return (Flow(name="语义分割推理")
-            .add_node(seg).add_node(wr)
-            .add_edge("seg", "out"))
+    flow = Flow(name="语义分割推理").add_node(seg)
+    if filter_params:
+        flt = create_node("seg_filter", node_id="flt", project_dir=project_dir)
+        flow.add_node(flt).add_edge("seg", "flt").add_edge("flt", "out")
+    else:
+        flow.add_edge("seg", "out")
+    return flow.add_node(wr)
 
 
 def build_det_flow(project_dir: str = "", model_name: str = "best.pt",

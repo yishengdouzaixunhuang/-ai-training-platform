@@ -15,6 +15,7 @@ set_classes / clear / count / currentRow / setCurrentRow / currentRowChanged.
 """
 import json
 import os
+import re
 from pathlib import Path
 
 from PyQt5.QtWidgets import (
@@ -29,6 +30,16 @@ from core.config import CLASS_COLORS
 
 def _hex(rgb):
     return "#{:02X}{:02X}{:02X}".format(*rgb)
+
+
+_IMG_EXT = (".bmp", ".png", ".jpg", ".jpeg", ".tif", ".tiff")
+# 多视图命名约定：一组电芯的 N 张图 = <组名>_te_0/_te_1/...
+_VIEW_SUFFIX_RE = re.compile(r"_te_\d+$")
+
+
+def _group_key(stem):
+    """把 te_N 视图文件名的后缀去掉，得到"组"名（图片列表一行对应一组）。"""
+    return _VIEW_SUFFIX_RE.sub("", stem)
 
 
 def _shade(rgb, amount):
@@ -375,19 +386,37 @@ class ClassTableView(QWidget):
         return getattr(self, "_split_bases", {}).get((cid, split_key), set())
 
     def _count_segmentation(self, pd, labels, trains, tests, vals, split_map):
-        """Count per-class image counts by split for segmentation projects."""
+        """Count per-class image counts by split for segmentation projects.
+
+        多视图工程：一台电芯有 te_0/te_1/te_2 三张图，图片列表里只占**一行**，
+        所以统计也必须按"组"来算。早期按文件逐个累加，结果是同一台料被数 3 次，
+        Class 表里的数字点开过滤又和列表行数对不上（同一台料三行里只匹配到一行）。
+        """
         img_dir = pd / "images"
         ann_dir = pd / "annotations"
         if not img_dir.is_dir():
             return
+        groups = {}
         for f in sorted(img_dir.iterdir()):
-            if not f.is_file() or f.suffix.lower() not in (".bmp", ".png", ".jpg", ".jpeg", ".tif", ".tiff"):
+            if not f.is_file() or f.suffix.lower() not in _IMG_EXT:
                 continue
-            cids = self._seg_class_ids(f, ann_dir, labels)
+            groups.setdefault(_group_key(f.stem), []).append(f)
+        for key, files in groups.items():
+            # te_0 优先：列表行的 base 就是 te_0 的文件名
+            files.sort(key=lambda x: (not x.stem.endswith("_te_0"), x.name))
+            cids = set()
+            for f in files:
+                cids |= self._seg_class_ids(f, ann_dir, labels)
             if not cids:
                 continue
-            base = f.stem
-            split = split_map.get(base, split_map.get("images/" + base, "train"))
+            base = files[0].stem
+            # 划分表：多视图工程按 {key}_te_0 作键，单图工程按 {key} 作键，两种都试
+            split = "train"
+            for cand in [f.stem for f in files] + [key]:
+                s = split_map.get(cand, split_map.get("images/" + cand))
+                if s:
+                    split = s
+                    break
             for cid in cids:
                 if not (0 <= cid < len(labels)):
                     continue
@@ -397,6 +426,10 @@ class ClassTableView(QWidget):
                     vals[cid] += 1
                 else:
                     trains[cid] += 1
+                # 记下这一组的"行 base"，点数字格子过滤图片列表时才对得上
+                k = (cid, split)
+                self._split_bases.setdefault(k, set()).add(base)
+                self._split_bases[k].add(os.path.basename(base))
 
     def _seg_class_ids(self, img_path, ann_dir, labels):
         """Class ids present in one segmentation image.

@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """内嵌 SVG 图标工厂。
 
 用 QSvgRenderer 把内嵌 SVG 渲染成 QIcon（2x 渲染保证高分屏锐利）。
@@ -64,6 +64,20 @@ _SVGS = {
              '<path d="M14.5 5 L7.5 12 L14.5 19" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>'),
     "next": ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">'
              '<path d="M9.5 5 L16.5 12 L9.5 19" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>'),
+    # 加图对话框用：加载图像文件 / 加载文件夹
+    # （原先那里用的是 emoji 📂📁🗑️，在本机字体下渲染不出来会变成空白方块）
+    "file_image": ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">'
+                   '<rect x="3.5" y="5" width="17" height="14" rx="1.5" fill="none" stroke="currentColor" stroke-width="2"/>'
+                   '<circle cx="8.6" cy="9.8" r="1.5" fill="none" stroke="currentColor" stroke-width="1.6"/>'
+                   '<path d="M4.6 17.2 L10 11.8 L13.4 15.2 L16.4 12.6 L19.4 15.6" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>'),
+    "folder": ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">'
+               '<path d="M3.5 6.5 A1.5 1.5 0 0 1 5 5 H9.4 L11.4 7.6 H19 A1.5 1.5 0 0 1 20.5 9.1 V17.6 A1.5 1.5 0 0 1 19 19.1 H5 A1.5 1.5 0 0 1 3.5 17.6 Z" '
+               'fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>'),
+    "trash": ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">'
+              '<path d="M4.5 6.5 H19.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>'
+              '<path d="M9.5 6.5 V4.8 A1.3 1.3 0 0 1 10.8 3.5 H13.2 A1.3 1.3 0 0 1 14.5 4.8 V6.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>'
+              '<path d="M6.5 6.5 L7.4 19 A1.5 1.5 0 0 0 8.9 20.5 H15.1 A1.5 1.5 0 0 0 16.6 19 L17.5 6.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>'
+              '<path d="M10.4 10 V17 M13.6 10 V17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>'),
 }
 
 

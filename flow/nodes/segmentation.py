@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """语义分割推理节点：复用 inference/predictor.py 的多后端 Predictor。"""
 from __future__ import annotations
 
@@ -65,5 +65,7 @@ class SegInfer(Node):
             "mask": pred,
             "overlay": overlay,
             "classes": list(predictor.classes),
+            # 置信度图：给 SegFilter 的"分数"过滤用（后端没提供时为 None）
+            "prob": getattr(predictor, "last_prob", None),
         })
         return nf

@@ -38,17 +38,25 @@ class ProjectManager:
             return Path(self._custom_dirs[name])
         return self.workspace / name
 
-    def create_project(self, name, task_type="????", parent_dir=None):
+    def create_project(self, name, task_type="语义分割", parent_dir=None,
+                       views=None, view_names=None):
+        """创建工程。
+
+        views/view_names：多视图（如孚能三视图 漫反射/形状图1/形状图2）声明。
+        声明后会写进 project.json，训练端据此决定输入通道数：
+            单张图像 → 3 通道；三视图 → 9 通道。
+        不声明则按单张图像处理（与既有行为一致）。
+        """
         allowed = self.VALID_TASK_TYPES_FULL
         if task_type not in allowed:
-            raise ValueError(f"????????: {task_type}???: {allowed}")
+            raise ValueError(f"不支持的任务类型: {task_type}；可选: {allowed}")
         if parent_dir:
             parent = Path(parent_dir)
             project_dir = parent / name
         else:
             project_dir = self.workspace / name
         if project_dir.exists():
-            raise FileExistsError(f"?? '{name}' ???")
+            raise FileExistsError(f"工程 '{name}' 已存在")
         project_dir.mkdir(parents=True)
         (project_dir / "images").mkdir()
         (project_dir / "annotations").mkdir()
@@ -64,6 +72,15 @@ class ProjectManager:
             "created": datetime.now().isoformat(),
             "classes": [],
         }
+        # 多视图声明：写进 project.json 后，训练端（is_multiview_project）会自动识别，
+        # 无需再靠扫描文件名去猜。
+        if views:
+            vlist = [str(v) for v in views]
+            meta["views"] = vlist
+            meta["view_count"] = len(vlist)
+            meta["in_channels"] = 3 * len(vlist)
+            if view_names:
+                meta["view_names"] = {str(k): str(v) for k, v in dict(view_names).items()}
         if parent_dir:
             meta["parent_dir"] = str(parent_dir)
         with open(project_dir / "project.json", "w", encoding="utf-8") as f:

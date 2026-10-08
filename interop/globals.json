@@ -1,0 +1,1888 @@
+{
+ "source": "InnoVision Global.lua",
+ "count": 235,
+ "by_index": {
+  "0": {
+   "idx": 0,
+   "type": "BOOL",
+   "name": "bTriggerFlag1",
+   "value": "false",
+   "comment": "上表面触发拍照]"
+  },
+  "1": {
+   "idx": 1,
+   "type": "BOOL",
+   "name": "bTriggerFlag2",
+   "value": "false",
+   "comment": "下表面触发拍照]"
+  },
+  "4": {
+   "idx": 4,
+   "type": "BOOL",
+   "name": "bCapResult1",
+   "value": "false",
+   "comment": "上表面A电池处理总结果]"
+  },
+  "5": {
+   "idx": 5,
+   "type": "BOOL",
+   "name": "bCapResult2",
+   "value": "false",
+   "comment": "上表面B电池处理总结果]"
+  },
+  "6": {
+   "idx": 6,
+   "type": "BOOL",
+   "name": "bCapResult3",
+   "value": "false",
+   "comment": "下表面A电池处理总结果]"
+  },
+  "7": {
+   "idx": 7,
+   "type": "BOOL",
+   "name": "bCapResult4",
+   "value": "false",
+   "comment": "下表面B电池处理总结果]"
+  },
+  "19": {
+   "idx": 19,
+   "type": "BOOL",
+   "name": "bOppCellFlag1",
+   "value": "false",
+   "comment": "下表面A电池标志]"
+  },
+  "20": {
+   "idx": 20,
+   "type": "BOOL",
+   "name": "bOppCellFlag2",
+   "value": "false",
+   "comment": "下表面B电池标志]"
+  },
+  "21": {
+   "idx": 21,
+   "type": "BOOL",
+   "name": "bFroCellFlag1",
+   "value": "false",
+   "comment": "上表面A电池标志]"
+  },
+  "22": {
+   "idx": 22,
+   "type": "BOOL",
+   "name": "bFroCellFlag2",
+   "value": "false",
+   "comment": "上表面B电池标志]"
+  },
+  "23": {
+   "idx": 23,
+   "type": "BOOL",
+   "name": "bCapFlag1",
+   "value": "false",
+   "comment": "上表面触发拍照标志]"
+  },
+  "24": {
+   "idx": 24,
+   "type": "BOOL",
+   "name": "bCapFlag2",
+   "value": "false",
+   "comment": "下表面触发拍照标志]"
+  },
+  "27": {
+   "idx": 27,
+   "type": "STRING",
+   "name": "strCellCode1",
+   "value": "''",
+   "comment": "上表面A电池条码]"
+  },
+  "28": {
+   "idx": 28,
+   "type": "STRING",
+   "name": "strCellCode2",
+   "value": "''",
+   "comment": "上表面B电池条码]"
+  },
+  "29": {
+   "idx": 29,
+   "type": "STRING",
+   "name": "strCellCode3",
+   "value": "''",
+   "comment": "下表面A电池条码]"
+  },
+  "30": {
+   "idx": 30,
+   "type": "STRING",
+   "name": "strCellCode4",
+   "value": "''",
+   "comment": "下表面B电池条码]"
+  },
+  "31": {
+   "idx": 31,
+   "type": "INT",
+   "name": "nCapResult1",
+   "value": "1",
+   "comment": "上表面A电池处理总结果]"
+  },
+  "32": {
+   "idx": 32,
+   "type": "INT",
+   "name": "nCapResult2",
+   "value": "1",
+   "comment": "上表面B电池处理总结果]"
+  },
+  "33": {
+   "idx": 33,
+   "type": "INT",
+   "name": "nCapResult3",
+   "value": "1",
+   "comment": "下表面A电池处理总结果]"
+  },
+  "34": {
+   "idx": 34,
+   "type": "INT",
+   "name": "nCapResult4",
+   "value": "1",
+   "comment": "下表面B电池处理总结果]"
+  },
+  "53": {
+   "idx": 53,
+   "type": "BOOL",
+   "name": "bSendFlag1",
+   "value": "false",
+   "comment": "]"
+  },
+  "54": {
+   "idx": 54,
+   "type": "BOOL",
+   "name": "bSendFlag2",
+   "value": "false",
+   "comment": "]"
+  },
+  "55": {
+   "idx": 55,
+   "type": "BOOL",
+   "name": "bCap1ResultA",
+   "value": "false",
+   "comment": "上表面电池A的处理结果1]"
+  },
+  "56": {
+   "idx": 56,
+   "type": "BOOL",
+   "name": "bCap1ResultB",
+   "value": "false",
+   "comment": "上表面电池B的处理结果1]"
+  },
+  "57": {
+   "idx": 57,
+   "type": "BOOL",
+   "name": "bCap2ResultA",
+   "value": "false",
+   "comment": "下表面电池A的处理结果1]"
+  },
+  "58": {
+   "idx": 58,
+   "type": "BOOL",
+   "name": "bCap2ResultB",
+   "value": "false",
+   "comment": "下表面电池B的处理结果1]"
+  },
+  "59": {
+   "idx": 59,
+   "type": "BOOL",
+   "name": "bCap1FinishFlag",
+   "value": "false",
+   "comment": "上表面处理完成标志1]"
+  },
+  "60": {
+   "idx": 60,
+   "type": "BOOL",
+   "name": "bCap2FinishFlag",
+   "value": "false",
+   "comment": "下表面处理完成标志1]"
+  },
+  "62": {
+   "idx": 62,
+   "type": "INT",
+   "name": "HhGLOBALNG2",
+   "value": "0",
+   "comment": "]"
+  },
+  "65": {
+   "idx": 65,
+   "type": "INT",
+   "name": "HhGLOBALNG1",
+   "value": "0",
+   "comment": "]"
+  },
+  "66": {
+   "idx": 66,
+   "type": "INT",
+   "name": "HhGLOBALAJGZM",
+   "value": "0",
+   "comment": "]"
+  },
+  "67": {
+   "idx": 67,
+   "type": "INT",
+   "name": "HhGLOBALBJGZM",
+   "value": "0",
+   "comment": "]"
+  },
+  "68": {
+   "idx": 68,
+   "type": "INT",
+   "name": "HhGLOBALAJGFM",
+   "value": "0",
+   "comment": "]"
+  },
+  "69": {
+   "idx": 69,
+   "type": "INT",
+   "name": "HhGLOBALBJGFM",
+   "value": "0",
+   "comment": "]"
+  },
+  "70": {
+   "idx": 70,
+   "type": "INT",
+   "name": "Zmhs",
+   "value": "0",
+   "comment": "正面发送结果完成]"
+  },
+  "71": {
+   "idx": 71,
+   "type": "INT",
+   "name": "Fmhs",
+   "value": "0",
+   "comment": "反面发送结果完成]"
+  },
+  "72": {
+   "idx": 72,
+   "type": "INT",
+   "name": "QRjg",
+   "value": "0",
+   "comment": "二维码结果]"
+  },
+  "73": {
+   "idx": 73,
+   "type": "DOUBLE",
+   "name": "zm",
+   "value": "0.1501",
+   "comment": "单像素精度]"
+  },
+  "74": {
+   "idx": 74,
+   "type": "BOOL",
+   "name": "bCapResult5",
+   "value": "false",
+   "comment": "正面流程2A结果]"
+  },
+  "75": {
+   "idx": 75,
+   "type": "BOOL",
+   "name": "bCapResult6",
+   "value": "false",
+   "comment": "正面流程2B结果]"
+  },
+  "76": {
+   "idx": 76,
+   "type": "BOOL",
+   "name": "bCapResult7",
+   "value": "false",
+   "comment": "反面流程2A结果]"
+  },
+  "77": {
+   "idx": 77,
+   "type": "BOOL",
+   "name": "bCapResult8",
+   "value": "false",
+   "comment": "反面流程2B结果]"
+  },
+  "82": {
+   "idx": 82,
+   "type": "BOOL",
+   "name": "bFroCellFlag5",
+   "value": "false",
+   "comment": "正面2流程开始标志]"
+  },
+  "83": {
+   "idx": 83,
+   "type": "BOOL",
+   "name": "bFroCellFlag6",
+   "value": "false",
+   "comment": "正面3流程开始标志]"
+  },
+  "84": {
+   "idx": 84,
+   "type": "BOOL",
+   "name": "bFroCellFlag7",
+   "value": "false",
+   "comment": "反面2流程开始标志]"
+  },
+  "85": {
+   "idx": 85,
+   "type": "BOOL",
+   "name": "bFroCellFlag8",
+   "value": "false",
+   "comment": "反面3流程开始标志]"
+  },
+  "86": {
+   "idx": 86,
+   "type": "BOOL",
+   "name": "bCap1Result1",
+   "value": "false",
+   "comment": "正面2流程处理完成]"
+  },
+  "87": {
+   "idx": 87,
+   "type": "BOOL",
+   "name": "bCap1Result2",
+   "value": "false",
+   "comment": "正面3流程处理完成]"
+  },
+  "88": {
+   "idx": 88,
+   "type": "BOOL",
+   "name": "bCap1Result3",
+   "value": "false",
+   "comment": "反面2流程处理完成]"
+  },
+  "89": {
+   "idx": 89,
+   "type": "BOOL",
+   "name": "bCap1Result4",
+   "value": "false",
+   "comment": "反面3流程处理完成]"
+  },
+  "100": {
+   "idx": 100,
+   "type": "BOOL",
+   "name": "bCapResult9",
+   "value": "false",
+   "comment": "极耳A铝极耳测量结果]"
+  },
+  "101": {
+   "idx": 101,
+   "type": "BOOL",
+   "name": "bCapResult10",
+   "value": "false",
+   "comment": "极耳A铜极耳测量结果]"
+  },
+  "102": {
+   "idx": 102,
+   "type": "BOOL",
+   "name": "bCapResult11",
+   "value": "false",
+   "comment": "极耳B铝极耳测量结果]"
+  },
+  "103": {
+   "idx": 103,
+   "type": "BOOL",
+   "name": "bCapResult12",
+   "value": "false",
+   "comment": "极耳B铜极耳测量结果]"
+  },
+  "104": {
+   "idx": 104,
+   "type": "BOOL",
+   "name": "bCapResult13",
+   "value": "false",
+   "comment": "]"
+  },
+  "105": {
+   "idx": 105,
+   "type": "BOOL",
+   "name": "bCapResult14",
+   "value": "false",
+   "comment": "]"
+  },
+  "106": {
+   "idx": 106,
+   "type": "BOOL",
+   "name": "bCapResult15",
+   "value": "false",
+   "comment": "]"
+  },
+  "107": {
+   "idx": 107,
+   "type": "BOOL",
+   "name": "bCapResult16",
+   "value": "false",
+   "comment": "]"
+  },
+  "108": {
+   "idx": 108,
+   "type": "BOOL",
+   "name": "ZMJC1WC",
+   "value": "false",
+   "comment": "正面检测完成]"
+  },
+  "109": {
+   "idx": 109,
+   "type": "BOOL",
+   "name": "ZMJEJC1WC",
+   "value": "false",
+   "comment": "正极耳面检测完成]"
+  },
+  "110": {
+   "idx": 110,
+   "type": "BOOL",
+   "name": "FMJC1WC",
+   "value": "false",
+   "comment": "反面检测完成]"
+  },
+  "111": {
+   "idx": 111,
+   "type": "BOOL",
+   "name": "FMJEJC1WC",
+   "value": "false",
+   "comment": "]"
+  },
+  "112": {
+   "idx": 112,
+   "type": "BOOL",
+   "name": "ct1",
+   "value": "false",
+   "comment": "正面电池1存图]"
+  },
+  "113": {
+   "idx": 113,
+   "type": "BOOL",
+   "name": "ct2",
+   "value": "false",
+   "comment": "反面电池1存图]"
+  },
+  "114": {
+   "idx": 114,
+   "type": "BOOL",
+   "name": "JCapAResult",
+   "value": "true",
+   "comment": "有无电池]"
+  },
+  "115": {
+   "idx": 115,
+   "type": "BOOL",
+   "name": "JCapBResult",
+   "value": "true",
+   "comment": "有无电池]"
+  },
+  "116": {
+   "idx": 116,
+   "type": "INT",
+   "name": "qq",
+   "value": "1",
+   "comment": "]"
+  },
+  "117": {
+   "idx": 117,
+   "type": "BOOL",
+   "name": "bZAD",
+   "value": "false",
+   "comment": "正面凹点数量]"
+  },
+  "118": {
+   "idx": 118,
+   "type": "BOOL",
+   "name": "bZTD",
+   "value": "false",
+   "comment": "正面凸点]"
+  },
+  "119": {
+   "idx": 119,
+   "type": "BOOL",
+   "name": "bZYS",
+   "value": "false",
+   "comment": "正面压伤]"
+  },
+  "121": {
+   "idx": 121,
+   "type": "BOOL",
+   "name": "bZHH",
+   "value": "false",
+   "comment": "正面划痕]"
+  },
+  "122": {
+   "idx": 122,
+   "type": "BOOL",
+   "name": "bZPS",
+   "value": "false",
+   "comment": "正面破损]"
+  },
+  "123": {
+   "idx": 123,
+   "type": "BOOL",
+   "name": "bZZW",
+   "value": "false",
+   "comment": "正面脏污]"
+  },
+  "124": {
+   "idx": 124,
+   "type": "BOOL",
+   "name": "bZBJAX",
+   "value": "false",
+   "comment": "正面边角凹陷]"
+  },
+  "125": {
+   "idx": 125,
+   "type": "BOOL",
+   "name": "bZJEATD",
+   "value": "false",
+   "comment": "正面极耳凹凸点]"
+  },
+  "126": {
+   "idx": 126,
+   "type": "BOOL",
+   "name": "bZJEHH",
+   "value": "false",
+   "comment": "正面极耳漏铜]"
+  },
+  "127": {
+   "idx": 127,
+   "type": "BOOL",
+   "name": "bZJEZW",
+   "value": "false",
+   "comment": "正面极耳脏污]"
+  },
+  "128": {
+   "idx": 128,
+   "type": "BOOL",
+   "name": "bZJEZZ",
+   "value": "false",
+   "comment": "正面极耳褶皱]"
+  },
+  "129": {
+   "idx": 129,
+   "type": "BOOL",
+   "name": "bZFlag1",
+   "value": "false",
+   "comment": "正面存储数据标志位1]"
+  },
+  "130": {
+   "idx": 130,
+   "type": "BOOL",
+   "name": "bZFlag2",
+   "value": "false",
+   "comment": "正面存储数据标准位2]"
+  },
+  "131": {
+   "idx": 131,
+   "type": "BOOL",
+   "name": "bZFlag3",
+   "value": "false",
+   "comment": "正面存储数据标准位3]"
+  },
+  "132": {
+   "idx": 132,
+   "type": "BOOL",
+   "name": "bFAD",
+   "value": "false",
+   "comment": "反面凹点]"
+  },
+  "133": {
+   "idx": 133,
+   "type": "BOOL",
+   "name": "bFTD",
+   "value": "false",
+   "comment": "反面凸点]"
+  },
+  "134": {
+   "idx": 134,
+   "type": "BOOL",
+   "name": "bFYS",
+   "value": "false",
+   "comment": "反面压伤]"
+  },
+  "135": {
+   "idx": 135,
+   "type": "BOOL",
+   "name": "bFAX",
+   "value": "false",
+   "comment": "反面贯穿]"
+  },
+  "136": {
+   "idx": 136,
+   "type": "BOOL",
+   "name": "bFHH",
+   "value": "false",
+   "comment": "反面划痕]"
+  },
+  "137": {
+   "idx": 137,
+   "type": "BOOL",
+   "name": "bFPS",
+   "value": "false",
+   "comment": "反面破损]"
+  },
+  "138": {
+   "idx": 138,
+   "type": "BOOL",
+   "name": "bFZW",
+   "value": "false",
+   "comment": "反面脏污]"
+  },
+  "139": {
+   "idx": 139,
+   "type": "BOOL",
+   "name": "bFBJAX",
+   "value": "false",
+   "comment": "反面边角凹陷]"
+  },
+  "140": {
+   "idx": 140,
+   "type": "BOOL",
+   "name": "bFJEATD",
+   "value": "false",
+   "comment": "反面极耳凹凸点]"
+  },
+  "141": {
+   "idx": 141,
+   "type": "BOOL",
+   "name": "bFJEZW",
+   "value": "false",
+   "comment": "反面极耳脏污]"
+  },
+  "142": {
+   "idx": 142,
+   "type": "BOOL",
+   "name": "bFJEHH",
+   "value": "false",
+   "comment": "反面极漏铜痕]"
+  },
+  "143": {
+   "idx": 143,
+   "type": "BOOL",
+   "name": "bFJEZZ",
+   "value": "false",
+   "comment": "反面极耳褶皱]"
+  },
+  "144": {
+   "idx": 144,
+   "type": "BOOL",
+   "name": "bFFlag1",
+   "value": "false",
+   "comment": "反面存储数据标准位1]"
+  },
+  "145": {
+   "idx": 145,
+   "type": "BOOL",
+   "name": "bFFlag2",
+   "value": "false",
+   "comment": "反面存储数据标志位2]"
+  },
+  "146": {
+   "idx": 146,
+   "type": "BOOL",
+   "name": "bFFlag3",
+   "value": "true",
+   "comment": "反面存储数据标准位3]"
+  },
+  "147": {
+   "idx": 147,
+   "type": "STRING",
+   "name": "strCellCode5",
+   "value": "",
+   "comment": "电芯1查询条码]"
+  },
+  "148": {
+   "idx": 148,
+   "type": "STRING",
+   "name": "strCellCode6",
+   "value": "",
+   "comment": "电芯2查询条码]"
+  },
+  "149": {
+   "idx": 149,
+   "type": "BOOL",
+   "name": "bZZZ",
+   "value": "false",
+   "comment": "正面褶皱]"
+  },
+  "150": {
+   "idx": 150,
+   "type": "BOOL",
+   "name": "bFZZ",
+   "value": "false",
+   "comment": "反面褶皱]"
+  },
+  "151": {
+   "idx": 151,
+   "type": "BOOL",
+   "name": "bFFlag4",
+   "value": "false",
+   "comment": "反面存储数据标准位4]"
+  },
+  "152": {
+   "idx": 152,
+   "type": "BOOL",
+   "name": "bZGC",
+   "value": "false",
+   "comment": "正面贯穿]"
+  },
+  "153": {
+   "idx": 153,
+   "type": "INT",
+   "name": "bZpsResult",
+   "value": "0",
+   "comment": "正面破损结果]"
+  },
+  "154": {
+   "idx": 154,
+   "type": "INT",
+   "name": "bZzzResult",
+   "value": "0",
+   "comment": "褶皱结果]"
+  },
+  "155": {
+   "idx": 155,
+   "type": "INT",
+   "name": "bZzwResult",
+   "value": "0",
+   "comment": "脏污结果]"
+  },
+  "158": {
+   "idx": 158,
+   "type": "INT",
+   "name": "bFpsResult",
+   "value": "0",
+   "comment": "反面破损结果]"
+  },
+  "159": {
+   "idx": 159,
+   "type": "INT",
+   "name": "bZJltResult",
+   "value": "0",
+   "comment": "极耳露铜结果]"
+  },
+  "160": {
+   "idx": 160,
+   "type": "INT",
+   "name": "bZJzzResult",
+   "value": "0",
+   "comment": "极耳褶皱结果]"
+  },
+  "161": {
+   "idx": 161,
+   "type": "INT",
+   "name": "bFzzResult",
+   "value": "0",
+   "comment": "褶皱结果]"
+  },
+  "162": {
+   "idx": 162,
+   "type": "INT",
+   "name": "bFzwResult",
+   "value": "0",
+   "comment": "脏污结果]"
+  },
+  "163": {
+   "idx": 163,
+   "type": "INT",
+   "name": "bFJltResult",
+   "value": "0",
+   "comment": "极耳露铜结果]"
+  },
+  "164": {
+   "idx": 164,
+   "type": "INT",
+   "name": "bFJzzResult",
+   "value": "0",
+   "comment": "极耳褶皱结果]"
+  },
+  "165": {
+   "idx": 165,
+   "type": "INT",
+   "name": "nZOK",
+   "value": "0",
+   "comment": "正面OK计数]"
+  },
+  "166": {
+   "idx": 166,
+   "type": "INT",
+   "name": "nZWL",
+   "value": "0",
+   "comment": "无料]"
+  },
+  "167": {
+   "idx": 167,
+   "type": "INT",
+   "name": "nZTM",
+   "value": "0",
+   "comment": "条码]"
+  },
+  "168": {
+   "idx": 168,
+   "type": "INT",
+   "name": "nZAD",
+   "value": "0",
+   "comment": "凹点]"
+  },
+  "169": {
+   "idx": 169,
+   "type": "INT",
+   "name": "nZTD",
+   "value": "0",
+   "comment": "凸点]"
+  },
+  "170": {
+   "idx": 170,
+   "type": "INT",
+   "name": "nZYS",
+   "value": "0",
+   "comment": "压伤]"
+  },
+  "171": {
+   "idx": 171,
+   "type": "INT",
+   "name": "nZGC",
+   "value": "0",
+   "comment": "贯穿]"
+  },
+  "172": {
+   "idx": 172,
+   "type": "INT",
+   "name": "nZHH",
+   "value": "0",
+   "comment": "划痕]"
+  },
+  "173": {
+   "idx": 173,
+   "type": "INT",
+   "name": "nZPS",
+   "value": "0",
+   "comment": "破损]"
+  },
+  "174": {
+   "idx": 174,
+   "type": "INT",
+   "name": "nZZZ",
+   "value": "0",
+   "comment": "褶皱]"
+  },
+  "175": {
+   "idx": 175,
+   "type": "INT",
+   "name": "nZZW",
+   "value": "0",
+   "comment": "脏污]"
+  },
+  "176": {
+   "idx": 176,
+   "type": "INT",
+   "name": "nZJLT",
+   "value": "0",
+   "comment": "极耳漏铜]"
+  },
+  "177": {
+   "idx": 177,
+   "type": "INT",
+   "name": "nZJZZ",
+   "value": "0",
+   "comment": "极耳褶皱]"
+  },
+  "178": {
+   "idx": 178,
+   "type": "INT",
+   "name": "nFOK",
+   "value": "0",
+   "comment": "反面OK计数]"
+  },
+  "179": {
+   "idx": 179,
+   "type": "INT",
+   "name": "nFWL",
+   "value": "0",
+   "comment": "无料]"
+  },
+  "180": {
+   "idx": 180,
+   "type": "INT",
+   "name": "nFTM",
+   "value": "0",
+   "comment": "条码]"
+  },
+  "181": {
+   "idx": 181,
+   "type": "INT",
+   "name": "nFAD",
+   "value": "0",
+   "comment": "凹点]"
+  },
+  "182": {
+   "idx": 182,
+   "type": "INT",
+   "name": "nFTD",
+   "value": "0",
+   "comment": "凸点]"
+  },
+  "183": {
+   "idx": 183,
+   "type": "INT",
+   "name": "nFYS",
+   "value": "0",
+   "comment": "压伤]"
+  },
+  "184": {
+   "idx": 184,
+   "type": "INT",
+   "name": "nFGC",
+   "value": "0",
+   "comment": "贯穿]"
+  },
+  "185": {
+   "idx": 185,
+   "type": "INT",
+   "name": "nFHH",
+   "value": "0",
+   "comment": "划痕]"
+  },
+  "186": {
+   "idx": 186,
+   "type": "INT",
+   "name": "nFPS",
+   "value": "0",
+   "comment": "破损]"
+  },
+  "187": {
+   "idx": 187,
+   "type": "INT",
+   "name": "nFZZ",
+   "value": "0",
+   "comment": "褶皱]"
+  },
+  "188": {
+   "idx": 188,
+   "type": "INT",
+   "name": "nFZW",
+   "value": "0",
+   "comment": "脏污]"
+  },
+  "189": {
+   "idx": 189,
+   "type": "INT",
+   "name": "nFJLT",
+   "value": "0",
+   "comment": "极耳漏铜]"
+  },
+  "190": {
+   "idx": 190,
+   "type": "INT",
+   "name": "nFJZZ",
+   "value": "0",
+   "comment": "极耳褶皱]"
+  },
+  "191": {
+   "idx": 191,
+   "type": "INT",
+   "name": "nZNG",
+   "value": "0",
+   "comment": "正面NG计数]"
+  },
+  "192": {
+   "idx": 192,
+   "type": "INT",
+   "name": "nFNG",
+   "value": "0",
+   "comment": "反面NG计数]"
+  },
+  "193": {
+   "idx": 193,
+   "type": "INT",
+   "name": "nZZS",
+   "value": "0",
+   "comment": "正面总数]"
+  },
+  "194": {
+   "idx": 194,
+   "type": "INT",
+   "name": "nFZS",
+   "value": "0",
+   "comment": "反面总数]"
+  },
+  "195": {
+   "idx": 195,
+   "type": "INT",
+   "name": "nZEWM",
+   "value": "0",
+   "comment": "二维码]"
+  },
+  "196": {
+   "idx": 196,
+   "type": "INT",
+   "name": "nFEWM",
+   "value": "0",
+   "comment": "二维码]"
+  },
+  "198": {
+   "idx": 198,
+   "type": "INT",
+   "name": "Dataem",
+   "value": "0",
+   "comment": "数据清空]"
+  },
+  "199": {
+   "idx": 199,
+   "type": "INT",
+   "name": "dADMaxnum",
+   "value": "10",
+   "comment": "凹点数量上限]"
+  },
+  "200": {
+   "idx": 200,
+   "type": "INT",
+   "name": "dTDMaxnum",
+   "value": "10",
+   "comment": "凸点数量上限]"
+  },
+  "201": {
+   "idx": 201,
+   "type": "INT",
+   "name": "dZZMaxnum",
+   "value": "15",
+   "comment": "褶皱数量上限]"
+  },
+  "202": {
+   "idx": 202,
+   "type": "DOUBLE",
+   "name": "dADMaxupp",
+   "value": "3.000",
+   "comment": "凹点面积上限]"
+  },
+  "203": {
+   "idx": 203,
+   "type": "DOUBLE",
+   "name": "dTDMaxupp",
+   "value": "1.500",
+   "comment": "凸点面积上限]"
+  },
+  "204": {
+   "idx": 204,
+   "type": "DOUBLE",
+   "name": "dYSMaxupp",
+   "value": "5.000",
+   "comment": "压伤面积上限]"
+  },
+  "205": {
+   "idx": 205,
+   "type": "DOUBLE",
+   "name": "dGCMaxupp",
+   "value": "7.000",
+   "comment": "贯穿面积上限]"
+  },
+  "206": {
+   "idx": 206,
+   "type": "DOUBLE",
+   "name": "dHHCMaxupp",
+   "value": "20.000",
+   "comment": "划痕长度上限]"
+  },
+  "207": {
+   "idx": 207,
+   "type": "DOUBLE",
+   "name": "dHHKMaxupp",
+   "value": "2.500",
+   "comment": "划痕宽度上限]"
+  },
+  "208": {
+   "idx": 208,
+   "type": "DOUBLE",
+   "name": "dPSMaxupp",
+   "value": "5.000",
+   "comment": "破损面积上限]"
+  },
+  "209": {
+   "idx": 209,
+   "type": "DOUBLE",
+   "name": "dZZCMaxupp",
+   "value": "15.000",
+   "comment": "褶皱长度上限]"
+  },
+  "210": {
+   "idx": 210,
+   "type": "DOUBLE",
+   "name": "dZZKMaxupp",
+   "value": "3.000",
+   "comment": "褶皱宽度上限]"
+  },
+  "211": {
+   "idx": 211,
+   "type": "DOUBLE",
+   "name": "dZWMaxupp",
+   "value": "20.000",
+   "comment": "脏污面积上限]"
+  },
+  "212": {
+   "idx": 212,
+   "type": "DOUBLE",
+   "name": "dJELTMaxupp",
+   "value": "20.000",
+   "comment": "极耳露铜面积上限]"
+  },
+  "213": {
+   "idx": 213,
+   "type": "DOUBLE",
+   "name": "dJEZZMaxupp",
+   "value": "15.000",
+   "comment": "极耳褶皱面积上限]"
+  },
+  "214": {
+   "idx": 214,
+   "type": "BOOL",
+   "name": "ct3",
+   "value": "false",
+   "comment": "正面电池2存图]"
+  },
+  "215": {
+   "idx": 215,
+   "type": "BOOL",
+   "name": "ct4",
+   "value": "false",
+   "comment": "反面电池2存图]"
+  },
+  "216": {
+   "idx": 216,
+   "type": "STRING",
+   "name": "sPath",
+   "value": "E:/L4数据/",
+   "comment": "机台生产数据]"
+  },
+  "217": {
+   "idx": 217,
+   "type": "INT",
+   "name": "Zcomplete",
+   "value": "0",
+   "comment": "正面数据统计置位]"
+  },
+  "218": {
+   "idx": 218,
+   "type": "INT",
+   "name": "Fcomplete",
+   "value": "0",
+   "comment": "反面数据统计置位]"
+  },
+  "219": {
+   "idx": 219,
+   "type": "INT",
+   "name": "Dataem1",
+   "value": "0",
+   "comment": "数据清空]"
+  },
+  "220": {
+   "idx": 220,
+   "type": "STRING",
+   "name": "sPath1",
+   "value": "E:/L4数据/",
+   "comment": "机台电芯数据]"
+  },
+  "223": {
+   "idx": 223,
+   "type": "DOUBLE",
+   "name": "dbtcMaxupp",
+   "value": "599",
+   "comment": "本体长上限]"
+  },
+  "224": {
+   "idx": 224,
+   "type": "DOUBLE",
+   "name": "dbtcMaxlow",
+   "value": "597",
+   "comment": "本体长下限]"
+  },
+  "225": {
+   "idx": 225,
+   "type": "DOUBLE",
+   "name": "djejMaxupp",
+   "value": "2.7",
+   "comment": "极耳胶外露上限]"
+  },
+  "226": {
+   "idx": 226,
+   "type": "DOUBLE",
+   "name": "djejMaxlow",
+   "value": "0.2",
+   "comment": "极耳胶外露下限]"
+  },
+  "227": {
+   "idx": 227,
+   "type": "STRING",
+   "name": "Dztype1",
+   "value": "",
+   "comment": "正面电池一缺陷类型]"
+  },
+  "228": {
+   "idx": 228,
+   "type": "STRING",
+   "name": "Dztype2",
+   "value": "",
+   "comment": "正面电池二缺陷类型]"
+  },
+  "229": {
+   "idx": 229,
+   "type": "STRING",
+   "name": "Dftype1",
+   "value": "",
+   "comment": "反面电池一缺陷类型]"
+  },
+  "230": {
+   "idx": 230,
+   "type": "STRING",
+   "name": "Dftype2",
+   "value": "",
+   "comment": "反面电池二缺陷类型]"
+  },
+  "231": {
+   "idx": 231,
+   "type": "STRING",
+   "name": "Dzjetype",
+   "value": "",
+   "comment": "正面极耳缺陷类型]"
+  },
+  "232": {
+   "idx": 232,
+   "type": "STRING",
+   "name": "Dfjetype",
+   "value": "",
+   "comment": "反面极耳缺陷类型]"
+  },
+  "233": {
+   "idx": 233,
+   "type": "INT",
+   "name": "NZMJE",
+   "value": "0",
+   "comment": "正面极耳褶皱信号]"
+  },
+  "234": {
+   "idx": 234,
+   "type": "INT",
+   "name": "NFMJE",
+   "value": "0",
+   "comment": "反面极耳褶皱信号]"
+  },
+  "235": {
+   "idx": 235,
+   "type": "INT",
+   "name": "NZMJE1",
+   "value": "0",
+   "comment": "正面极耳褶皱信号1]"
+  },
+  "236": {
+   "idx": 236,
+   "type": "INT",
+   "name": "NFMJE1",
+   "value": "0",
+   "comment": "反面极耳褶皱信号1]"
+  },
+  "238": {
+   "idx": 238,
+   "type": "BOOL",
+   "name": "DZJ",
+   "value": "true",
+   "comment": "开启褶皱判定]"
+  },
+  "239": {
+   "idx": 239,
+   "type": "DOUBLE",
+   "name": "djFZMaxupp",
+   "value": "100.000",
+   "comment": "极耳翻折上限]"
+  },
+  "240": {
+   "idx": 240,
+   "type": "INT",
+   "name": "bZJzwResult",
+   "value": "0",
+   "comment": "极耳脏污结果]"
+  },
+  "241": {
+   "idx": 241,
+   "type": "INT",
+   "name": "bZJfzResult",
+   "value": "0",
+   "comment": "极耳翻折结果]"
+  },
+  "242": {
+   "idx": 242,
+   "type": "INT",
+   "name": "bFJzwResult",
+   "value": "0",
+   "comment": "极耳脏污结果]"
+  },
+  "243": {
+   "idx": 243,
+   "type": "INT",
+   "name": "bFJfzResult",
+   "value": "0",
+   "comment": "极耳翻折结果]"
+  },
+  "244": {
+   "idx": 244,
+   "type": "DOUBLE",
+   "name": "djZWMaxupp",
+   "value": "40.000",
+   "comment": "极耳脏污上限]"
+  },
+  "245": {
+   "idx": 245,
+   "type": "INT",
+   "name": "nZJZW",
+   "value": "0",
+   "comment": "极耳脏污]"
+  },
+  "246": {
+   "idx": 246,
+   "type": "INT",
+   "name": "nZJFZ",
+   "value": "0",
+   "comment": "极耳翻折]"
+  },
+  "247": {
+   "idx": 247,
+   "type": "INT",
+   "name": "nFJZW",
+   "value": "0",
+   "comment": "极耳脏污]"
+  },
+  "248": {
+   "idx": 248,
+   "type": "INT",
+   "name": "nFJFZ",
+   "value": "0",
+   "comment": "极耳翻折]"
+  },
+  "249": {
+   "idx": 249,
+   "type": "DOUBLE",
+   "name": "dZYMaxupp",
+   "value": "1.5",
+   "comment": "针眼面积上限]"
+  },
+  "250": {
+   "idx": 250,
+   "type": "INT",
+   "name": "nZZY",
+   "value": "0",
+   "comment": "针眼计数]"
+  },
+  "251": {
+   "idx": 251,
+   "type": "INT",
+   "name": "nFZY",
+   "value": "0",
+   "comment": "针眼]"
+  },
+  "252": {
+   "idx": 252,
+   "type": "INT",
+   "name": "bFzyResult",
+   "value": "0",
+   "comment": "针眼结果]"
+  },
+  "253": {
+   "idx": 253,
+   "type": "INT",
+   "name": "bZzyResult",
+   "value": "0",
+   "comment": "]"
+  },
+  "254": {
+   "idx": 254,
+   "type": "DOUBLE",
+   "name": "dADHDMaxlow",
+   "value": "100.000",
+   "comment": "凹点灰度值上限]"
+  },
+  "255": {
+   "idx": 255,
+   "type": "DOUBLE",
+   "name": "dTDHDMaxlow",
+   "value": "200.000",
+   "comment": "凸点灰度值上限]"
+  },
+  "256": {
+   "idx": 256,
+   "type": "DOUBLE",
+   "name": "dHHHDMaxlow",
+   "value": "138",
+   "comment": "划痕灰度值下限]"
+  },
+  "257": {
+   "idx": 257,
+   "type": "DOUBLE",
+   "name": "dLJZWMaxlow",
+   "value": "165",
+   "comment": "铝极脏污灰度值下限]"
+  },
+  "258": {
+   "idx": 258,
+   "type": "DOUBLE",
+   "name": "dLJLTMaxlow",
+   "value": "10",
+   "comment": "铝极露铜灰度值下限]"
+  },
+  "259": {
+   "idx": 259,
+   "type": "DOUBLE",
+   "name": "dTJLZWMaxlow",
+   "value": "10",
+   "comment": "铜极露铜灰度值下限]"
+  },
+  "260": {
+   "idx": 260,
+   "type": "DOUBLE",
+   "name": "dTJLTMaxlow",
+   "value": "10",
+   "comment": "铜极露铜灰度值下限]"
+  },
+  "261": {
+   "idx": 261,
+   "type": "DOUBLE",
+   "name": "dHHCMaxupp1",
+   "value": "20",
+   "comment": "划痕长度上限1]"
+  },
+  "262": {
+   "idx": 262,
+   "type": "DOUBLE",
+   "name": "dHHHDMaxlow1",
+   "value": "100",
+   "comment": "划痕1灰度值下限]"
+  },
+  "266": {
+   "idx": 266,
+   "type": "INT",
+   "name": "dBJ1",
+   "value": "4",
+   "comment": "报警标志位1]"
+  },
+  "268": {
+   "idx": 268,
+   "type": "INT",
+   "name": "dBJ2",
+   "value": "4",
+   "comment": "报警标志位2]"
+  },
+  "269": {
+   "idx": 269,
+   "type": "INT",
+   "name": "dBJ3",
+   "value": "4",
+   "comment": "报警标志位3]"
+  },
+  "270": {
+   "idx": 270,
+   "type": "INT",
+   "name": "dBJ4",
+   "value": "4",
+   "comment": "报警标志位4]"
+  },
+  "273": {
+   "idx": 273,
+   "type": "INT",
+   "name": "dZMreset1",
+   "value": "1",
+   "comment": "正面NG次数]"
+  },
+  "274": {
+   "idx": 274,
+   "type": "INT",
+   "name": "dFMreset1",
+   "value": "1",
+   "comment": "反面NG次数]"
+  },
+  "277": {
+   "idx": 277,
+   "type": "INT",
+   "name": "dBJ5",
+   "value": "3",
+   "comment": ""
+  },
+  "278": {
+   "idx": 278,
+   "type": "INT",
+   "name": "dBJ6",
+   "value": "3",
+   "comment": "]"
+  },
+  "279": {
+   "idx": 279,
+   "type": "INT",
+   "name": "dBJ7",
+   "value": "3",
+   "comment": "]"
+  },
+  "280": {
+   "idx": 280,
+   "type": "INT",
+   "name": "dBJ8",
+   "value": "3",
+   "comment": "]"
+  },
+  "281": {
+   "idx": 281,
+   "type": "INT",
+   "name": "dZMreset2",
+   "value": "2",
+   "comment": "]"
+  },
+  "282": {
+   "idx": 282,
+   "type": "INT",
+   "name": "dFMreset2",
+   "value": "1",
+   "comment": "]"
+  },
+  "283": {
+   "idx": 283,
+   "type": "INT",
+   "name": "dBJZMaxupp1",
+   "value": "0",
+   "comment": "连续正面NG次数]"
+  },
+  "284": {
+   "idx": 284,
+   "type": "INT",
+   "name": "dBJFMaxupp1",
+   "value": "0",
+   "comment": "连续反面NG次数]"
+  },
+  "285": {
+   "idx": 285,
+   "type": "INT",
+   "name": "dBJZMaxupp2",
+   "value": "0",
+   "comment": "]"
+  },
+  "286": {
+   "idx": 286,
+   "type": "INT",
+   "name": "dBJFMaxupp2",
+   "value": "0",
+   "comment": "]"
+  },
+  "287": {
+   "idx": 287,
+   "type": "INT",
+   "name": "ZMstatus",
+   "value": "0",
+   "comment": "正面_报警]"
+  },
+  "288": {
+   "idx": 288,
+   "type": "INT",
+   "name": "FMstatus",
+   "value": "0",
+   "comment": "]"
+  },
+  "289": {
+   "idx": 289,
+   "type": "INT",
+   "name": "ZMcot",
+   "value": "0",
+   "comment": "]"
+  },
+  "290": {
+   "idx": 290,
+   "type": "INT",
+   "name": "FMcot",
+   "value": "0",
+   "comment": "]"
+  },
+  "291": {
+   "idx": 291,
+   "type": "BOOL",
+   "name": "zfbj",
+   "value": "false",
+   "comment": "报警开启]"
+  },
+  "292": {
+   "idx": 292,
+   "type": "STRING",
+   "name": "STRING1",
+   "value": "E:/SaveImage/",
+   "comment": "存图位置]"
+  },
+  "293": {
+   "idx": 293,
+   "type": "INT",
+   "name": "ceshi1",
+   "value": "0",
+   "comment": "]"
+  },
+  "294": {
+   "idx": 294,
+   "type": "INT",
+   "name": "ceshi2",
+   "value": "0",
+   "comment": "]"
+  },
+  "297": {
+   "idx": 297,
+   "type": "STRING",
+   "name": "ZhengCode",
+   "value": "",
+   "comment": "]"
+  },
+  "298": {
+   "idx": 298,
+   "type": "STRING",
+   "name": "FanCode",
+   "value": "",
+   "comment": "]"
+  },
+  "299": {
+   "idx": 299,
+   "type": "BOOL",
+   "name": "bFMlcs",
+   "value": "false",
+   "comment": "b反面流程锁，防止反面极耳运行结束后，让大面不进入B电池]"
+  },
+  "300": {
+   "idx": 300,
+   "type": "BOOL",
+   "name": "bZMlcs",
+   "value": "false",
+   "comment": "a流程锁]"
+  },
+  "301": {
+   "idx": 301,
+   "type": "DOUBLE",
+   "name": "ZBMaxup",
+   "value": "50.000",
+   "comment": "折边上限]"
+  }
+ },
+ "by_name": {
+  "bTriggerFlag1": 0,
+  "bTriggerFlag2": 1,
+  "bCapResult1": 4,
+  "bCapResult2": 5,
+  "bCapResult3": 6,
+  "bCapResult4": 7,
+  "bOppCellFlag1": 19,
+  "bOppCellFlag2": 20,
+  "bFroCellFlag1": 21,
+  "bFroCellFlag2": 22,
+  "bCapFlag1": 23,
+  "bCapFlag2": 24,
+  "strCellCode1": 27,
+  "strCellCode2": 28,
+  "strCellCode3": 29,
+  "strCellCode4": 30,
+  "nCapResult1": 31,
+  "nCapResult2": 32,
+  "nCapResult3": 33,
+  "nCapResult4": 34,
+  "bSendFlag1": 53,
+  "bSendFlag2": 54,
+  "bCap1ResultA": 55,
+  "bCap1ResultB": 56,
+  "bCap2ResultA": 57,
+  "bCap2ResultB": 58,
+  "bCap1FinishFlag": 59,
+  "bCap2FinishFlag": 60,
+  "HhGLOBALNG2": 62,
+  "HhGLOBALNG1": 65,
+  "HhGLOBALAJGZM": 66,
+  "HhGLOBALBJGZM": 67,
+  "HhGLOBALAJGFM": 68,
+  "HhGLOBALBJGFM": 69,
+  "Zmhs": 70,
+  "Fmhs": 71,
+  "QRjg": 72,
+  "zm": 73,
+  "bCapResult5": 74,
+  "bCapResult6": 75,
+  "bCapResult7": 76,
+  "bCapResult8": 77,
+  "bFroCellFlag5": 82,
+  "bFroCellFlag6": 83,
+  "bFroCellFlag7": 84,
+  "bFroCellFlag8": 85,
+  "bCap1Result1": 86,
+  "bCap1Result2": 87,
+  "bCap1Result3": 88,
+  "bCap1Result4": 89,
+  "bCapResult9": 100,
+  "bCapResult10": 101,
+  "bCapResult11": 102,
+  "bCapResult12": 103,
+  "bCapResult13": 104,
+  "bCapResult14": 105,
+  "bCapResult15": 106,
+  "bCapResult16": 107,
+  "ZMJC1WC": 108,
+  "ZMJEJC1WC": 109,
+  "FMJC1WC": 110,
+  "FMJEJC1WC": 111,
+  "ct1": 112,
+  "ct2": 113,
+  "JCapAResult": 114,
+  "JCapBResult": 115,
+  "qq": 116,
+  "bZAD": 117,
+  "bZTD": 118,
+  "bZYS": 119,
+  "bZHH": 121,
+  "bZPS": 122,
+  "bZZW": 123,
+  "bZBJAX": 124,
+  "bZJEATD": 125,
+  "bZJEHH": 126,
+  "bZJEZW": 127,
+  "bZJEZZ": 128,
+  "bZFlag1": 129,
+  "bZFlag2": 130,
+  "bZFlag3": 131,
+  "bFAD": 132,
+  "bFTD": 133,
+  "bFYS": 134,
+  "bFAX": 135,
+  "bFHH": 136,
+  "bFPS": 137,
+  "bFZW": 138,
+  "bFBJAX": 139,
+  "bFJEATD": 140,
+  "bFJEZW": 141,
+  "bFJEHH": 142,
+  "bFJEZZ": 143,
+  "bFFlag1": 144,
+  "bFFlag2": 145,
+  "bFFlag3": 146,
+  "strCellCode5": 147,
+  "strCellCode6": 148,
+  "bZZZ": 149,
+  "bFZZ": 150,
+  "bFFlag4": 151,
+  "bZGC": 152,
+  "bZpsResult": 153,
+  "bZzzResult": 154,
+  "bZzwResult": 155,
+  "bFpsResult": 158,
+  "bZJltResult": 159,
+  "bZJzzResult": 160,
+  "bFzzResult": 161,
+  "bFzwResult": 162,
+  "bFJltResult": 163,
+  "bFJzzResult": 164,
+  "nZOK": 165,
+  "nZWL": 166,
+  "nZTM": 167,
+  "nZAD": 168,
+  "nZTD": 169,
+  "nZYS": 170,
+  "nZGC": 171,
+  "nZHH": 172,
+  "nZPS": 173,
+  "nZZZ": 174,
+  "nZZW": 175,
+  "nZJLT": 176,
+  "nZJZZ": 177,
+  "nFOK": 178,
+  "nFWL": 179,
+  "nFTM": 180,
+  "nFAD": 181,
+  "nFTD": 182,
+  "nFYS": 183,
+  "nFGC": 184,
+  "nFHH": 185,
+  "nFPS": 186,
+  "nFZZ": 187,
+  "nFZW": 188,
+  "nFJLT": 189,
+  "nFJZZ": 190,
+  "nZNG": 191,
+  "nFNG": 192,
+  "nZZS": 193,
+  "nFZS": 194,
+  "nZEWM": 195,
+  "nFEWM": 196,
+  "Dataem": 198,
+  "dADMaxnum": 199,
+  "dTDMaxnum": 200,
+  "dZZMaxnum": 201,
+  "dADMaxupp": 202,
+  "dTDMaxupp": 203,
+  "dYSMaxupp": 204,
+  "dGCMaxupp": 205,
+  "dHHCMaxupp": 206,
+  "dHHKMaxupp": 207,
+  "dPSMaxupp": 208,
+  "dZZCMaxupp": 209,
+  "dZZKMaxupp": 210,
+  "dZWMaxupp": 211,
+  "dJELTMaxupp": 212,
+  "dJEZZMaxupp": 213,
+  "ct3": 214,
+  "ct4": 215,
+  "sPath": 216,
+  "Zcomplete": 217,
+  "Fcomplete": 218,
+  "Dataem1": 219,
+  "sPath1": 220,
+  "dbtcMaxupp": 223,
+  "dbtcMaxlow": 224,
+  "djejMaxupp": 225,
+  "djejMaxlow": 226,
+  "Dztype1": 227,
+  "Dztype2": 228,
+  "Dftype1": 229,
+  "Dftype2": 230,
+  "Dzjetype": 231,
+  "Dfjetype": 232,
+  "NZMJE": 233,
+  "NFMJE": 234,
+  "NZMJE1": 235,
+  "NFMJE1": 236,
+  "DZJ": 238,
+  "djFZMaxupp": 239,
+  "bZJzwResult": 240,
+  "bZJfzResult": 241,
+  "bFJzwResult": 242,
+  "bFJfzResult": 243,
+  "djZWMaxupp": 244,
+  "nZJZW": 245,
+  "nZJFZ": 246,
+  "nFJZW": 247,
+  "nFJFZ": 248,
+  "dZYMaxupp": 249,
+  "nZZY": 250,
+  "nFZY": 251,
+  "bFzyResult": 252,
+  "bZzyResult": 253,
+  "dADHDMaxlow": 254,
+  "dTDHDMaxlow": 255,
+  "dHHHDMaxlow": 256,
+  "dLJZWMaxlow": 257,
+  "dLJLTMaxlow": 258,
+  "dTJLZWMaxlow": 259,
+  "dTJLTMaxlow": 260,
+  "dHHCMaxupp1": 261,
+  "dHHHDMaxlow1": 262,
+  "dBJ1": 266,
+  "dBJ2": 268,
+  "dBJ3": 269,
+  "dBJ4": 270,
+  "dZMreset1": 273,
+  "dFMreset1": 274,
+  "dBJ5": 277,
+  "dBJ6": 278,
+  "dBJ7": 279,
+  "dBJ8": 280,
+  "dZMreset2": 281,
+  "dFMreset2": 282,
+  "dBJZMaxupp1": 283,
+  "dBJFMaxupp1": 284,
+  "dBJZMaxupp2": 285,
+  "dBJFMaxupp2": 286,
+  "ZMstatus": 287,
+  "FMstatus": 288,
+  "ZMcot": 289,
+  "FMcot": 290,
+  "zfbj": 291,
+  "STRING1": 292,
+  "ceshi1": 293,
+  "ceshi2": 294,
+  "ZhengCode": 297,
+  "FanCode": 298,
+  "bFMlcs": 299,
+  "bZMlcs": 300,
+  "ZBMaxup": 301
+ }
+}

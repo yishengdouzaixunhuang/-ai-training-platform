@@ -1,4 +1,5 @@
-﻿"""Image crop tool - sliding window + ROI Crop, batch support."""
+"""Image crop tool - sliding window + ROI Crop, batch support."""
+from core.imgio import imread_u, imwrite_u
 import os, cv2, json
 import numpy as np
 from PyQt5.QtWidgets import (
@@ -315,7 +316,7 @@ class CropToolDialog(QDialog):
 
         total = 0
         for path in self._files:
-            img = cv2.imread(path)
+            img = imread_u(path)
             if img is None:
                 continue
             h, w = img.shape[:2]
@@ -323,7 +324,7 @@ class CropToolDialog(QDialog):
             crop = img[ry:ry2, rx:rx2]
             base = os.path.splitext(os.path.basename(path))[0]
             out_name = f"{base}_roi_{rx}_{ry}_{rw}x{rh}.png"
-            cv2.imwrite(os.path.join(self._output_dir, out_name), crop)
+            imwrite_u(os.path.join(self._output_dir, out_name), crop)
             total += 1
 
         # If ROI was drawn on the preview image, save ROI params as JSON for reproducibility

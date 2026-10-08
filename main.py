@@ -66,6 +66,9 @@ def main():
 
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
+    # 滚轮守卫：数字框/下拉框不再被滚轮改值，滚轮改为滚动外层面板
+    from ui.wheel_guard import install as _install_wheel_guard
+    _install_wheel_guard(app)
 
     icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "resources", "app_icon.ico")
     if os.path.exists(icon_path):
@@ -214,6 +217,26 @@ def main():
         QSplitter::handle:hover { background-color: #00E5FF; }
         QFrame[frameShape="4"], QFrame[frameShape="5"] { color: #22304A; }
     """)
+
+    # ===== 主题：基础表登记下来，然后按用户上次选择应用（深色/浅色）=====
+    from ui.themes import set_base_qss, apply_theme
+    set_base_qss(app.styleSheet())
+    try:
+        import json as _json, os as _os
+        _ui = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), ".ui_settings.json")
+        _th = (_json.load(open(_ui, encoding="utf-8")).get("theme", "dark")
+               if _os.path.exists(_ui) else "dark")
+    except Exception:
+        _th = "dark"
+    apply_theme(app, _th)
+    # ⚠️ 清扫必须等**主窗口构造完**再跑：main 这里调 apply_theme 时一个控件都还没有，
+    #    那一轮清扫等于空转（已踩：启动日志里一条 swept 都没有）。
+    #    用 singleShot(0) 排到事件循环第一拍，那时 UI 已经全部建好。
+    from PyQt5.QtCore import QTimer as _QTimer
+    from ui.themes import sweep_inline_styles as _sweep
+    _QTimer.singleShot(0, lambda: _sweep(app, restore=False))
+    _QTimer.singleShot(1200, lambda: _sweep(app, restore=False))   # 兜底：晚建的控件
+
     
     sys.excepthook = _write_crash
     window = MainWindow()

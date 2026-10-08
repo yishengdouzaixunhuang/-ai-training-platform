@@ -79,3 +79,5 @@ project.json.backup
 
 # Git helper scripts (local only)
 git_commit_push.bat
+# Crash logs
+crash_log.txt

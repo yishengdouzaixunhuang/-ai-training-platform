@@ -13,7 +13,7 @@ from PyQt5.QtWidgets import (
     QWidget, QLabel, QPushButton, QComboBox, QSpinBox, QDoubleSpinBox, QProgressBar, QGroupBox,
     QListWidget, QSlider, QDialog, QFormLayout, QDialogButtonBox,
     QLineEdit, QCheckBox, QTableWidget, QTableWidgetItem, QHeaderView, QGridLayout,
-    QStackedWidget, QApplication
+    QStackedWidget, QApplication, QScrollArea, QSizePolicy
 )
 from PyQt5.QtGui import QFont, QColor, QImage, QPixmap, QPainter, QLinearGradient, QKeySequence, QCursor
 from PyQt5.QtCore import Qt, pyqtSignal, QTimer
@@ -44,6 +44,34 @@ from ui.global_hotkey import register_global_hotkey, unregister_global_hotkey, W
 import ctypes
 from ctypes import wintypes
 print("main_window imports OK")
+
+
+class ShrinkStack(QStackedWidget):
+    """只按**当前子页**报告尺寸的 QStackedWidget。
+
+    原生 QStackedWidget 的 sizeHint/minimumSizeHint 取的是「所有子页里最大的那个」。
+    训练栈里各子页高度差极大（语义分割 ~200px、分类 ~900px），套进 QScrollArea 后
+    它会把**每一个**子页都撑到最大高度 —— 页内那个 addStretch() 于是吃掉几百像素，
+    表现就是「Start Training 和 Epochs 之间夹着一大片空白」（用户截图反馈）。
+
+    这里改成只跟随 currentWidget()：换页后由调用方 updateGeometry() 重新量高。
+    """
+
+    def _cur(self):
+        try:
+            return self.currentWidget()
+        except Exception:
+            return None
+
+    def sizeHint(self):
+        w = self._cur()
+        return w.sizeHint() if w is not None else super().sizeHint()
+
+    def minimumSizeHint(self):
+        w = self._cur()
+        return w.minimumSizeHint() if w is not None else super().minimumSizeHint()
+
+
 class LossCurveWindow(QWidget):
     """Independent Loss/Accuracy curve window for classification training.
 
@@ -106,21 +134,103 @@ class LossCurveWindow(QWidget):
 class TrainSettingsDialog(QDialog):
     SETTINGS_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "AI_Training_Platform", ".train_settings.json")
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, project_dir=None):
         super().__init__(parent)
         self.setWindowTitle("Training Settings")
         layout = QFormLayout(self)
         saved = self._load()
+        # ── 三视图检测 ──
+        # 三视图工程要用 9 通道训练器，它只支持 unet / lraspp / deeplabv3 / fcn；
+        # 单图工程继续用平台原有列表（含 r101 / mobilenet 等变体）。
+        # 两边模型名不通用，所以必须按工程类型切换列表，否则选错就崩。
+        self._is_mv = False
+        self._mv_tile = 0
+        mv_info = ""
+        if project_dir:
+            try:
+                from training.multiview_gui import is_multiview_project, multiview_stats
+                if is_multiview_project(project_dir):
+                    self._is_mv = True
+                    k, m, t, nv, nch = multiview_stats(project_dir)
+                    self._mv_tile = int(t or 0)
+                    mv_info = (f"✓ 多视图工程（{nv} 视图 / {nch} 通道）：{k} 组 / {m} 组有掩膜"
+                               + (f" / 切片 {t}px" if t else ""))
+            except Exception as e:
+                mv_info = f"（三视图检测失败：{type(e).__name__}: {e}）"
+        if mv_info:
+            lab = QLabel(f"<b style='color:#00E5FF'>{mv_info}</b>")
+            lab.setWordWrap(True)
+            layout.addRow(lab)
         self.epochs_spin = QSpinBox(); self.epochs_spin.setRange(1, 2000); self.epochs_spin.setValue(saved.get("epochs", 200))
         self.batch_spin = QSpinBox(); self.batch_spin.setRange(1, 64); self.batch_spin.setValue(saved.get("batch_size", 8))
-        self.model_combo = QComboBox(); self.model_combo.addItems(["deeplabv3", "deeplabv3_r101", "deeplabv3_mobilenet", "fcn", "fcn_r101", "lraspp"])
-        idx = self.model_combo.findText(saved.get("model", "deeplabv3")); self.model_combo.setCurrentIndex(max(0, idx))
+        self.model_combo = QComboBox()
+        models = (["unet", "lraspp", "deeplabv3", "fcn"] if self._is_mv else
+                  ["deeplabv3", "deeplabv3_r101", "deeplabv3_mobilenet", "fcn", "fcn_r101", "lraspp"])
+        self.model_combo.addItems(models)
+        dflt = "unet" if self._is_mv else "deeplabv3"
+        idx = self.model_combo.findText(saved.get("model", dflt)); self.model_combo.setCurrentIndex(max(0, idx))
+        if self._is_mv:
+            self.model_combo.setToolTip("三视图推荐 unet：全分辨率跳连，救 <16px 小缺陷（实测 5 个尺寸档赢 4 个）")
         self.size_combo = QComboBox(); self.size_combo.addItems(["256", "512", "768", "1024"])
-        idx2 = self.size_combo.findText(str(saved.get("image_size", 512))); self.size_combo.setCurrentIndex(max(0, idx2))
+        if self._is_mv and self._mv_tile:
+            # 切片工程的训练尺寸就是切片尺寸，直接锁定：
+            # 放大只是浪费算力，缩小会把小缺陷一起抹掉（本项目核心问题就是 <16px 缺陷）
+            self.size_combo.addItem(str(self._mv_tile))
+            self.size_combo.setCurrentText(str(self._mv_tile))
+            self.size_combo.setEnabled(False)
+            self.size_combo.setToolTip(f"切片工程固定为 {self._mv_tile}px 原分辨率训练")
+        else:
+            idx2 = self.size_combo.findText(str(saved.get("image_size", 512))); self.size_combo.setCurrentIndex(max(0, idx2))
         layout.addRow("Epochs:", self.epochs_spin)
         layout.addRow("Batch Size:", self.batch_spin)
         layout.addRow("Model:", self.model_combo)
         layout.addRow("Image Size:", self.size_combo)
+        # ── U-Net 容量参数（仅三视图工程显示）──
+        if self._is_mv:
+            self.unet_base_spin = QSpinBox(); self.unet_base_spin.setRange(8, 64); self.unet_base_spin.setSingleStep(8)
+            self.unet_base_spin.setValue(saved.get("unet_base", 16))
+            self.unet_base_spin.setToolTip("首层通道数：16≈2.0M 参数（快）/ 32≈7.9M 参数（容量更大，小目标更稳）")
+            self.unet_depth_spin = QSpinBox(); self.unet_depth_spin.setRange(2, 6)
+            self.unet_depth_spin.setValue(saved.get("unet_depth", 4))
+            layout.addRow("U-Net Base:", self.unet_base_spin)
+            layout.addRow("U-Net Depth:", self.unet_depth_spin)
+        else:
+            self.unet_base_spin = None
+            self.unet_depth_spin = None
+        # ── 分块训练（对齐友商 iSense：分块 / 滑窗大小 / 步长(%)）──
+        #    大图（本项目 3860×1480）**以前被整图 resize 到 512 宽**，中位 234px 的 Atd
+        #    缩完只剩 ~4px、127px 的 Zw 剩 ~2px —— 缺陷在数据加载阶段就被抹掉了。
+        #    勾上「分块」后改成在**原分辨率**上按滑窗裁剪，缺陷像素一个不丢。
+        self._is_mv = bool(getattr(self, "_is_mv", False))
+        self.tile_check = QCheckBox("分块（滑窗裁剪，不缩放整图）")
+        self.tile_check.setChecked(bool(saved.get("tile", self._is_mv)))
+        self.tile_check.setToolTip("大图必须分块：整图缩放会把小缺陷缩没")
+        layout.addRow(self.tile_check)
+        # ⚠️ 勾上「分块」后 Image Size 就不再决定训练输入了（那是「滑窗大小」的事），
+        #    它只剩"验证时整图缩放到多大"这一个作用。留着可编辑会让人以为改它有用 ——
+        #    所以勾选时置灰 + 改提示，避免"两个参数含义重叠、改一个不生效"。
+        def _sync_size_enabled(_checked=None):
+            on = bool(self.tile_check.isChecked())
+            self.size_combo.setEnabled(not on)
+            self.size_combo.setToolTip(
+                "已开分块：训练输入由「滑窗大小」决定，这里只影响验证/整图推理的缩放"
+                if on else "训练输入尺寸（未开分块时 = 整图缩放到这个尺寸）")
+        self.tile_check.toggled.connect(_sync_size_enabled)
+        _sync_size_enabled()
+        self.tile_spin = QSpinBox(); self.tile_spin.setRange(64, 1024); self.tile_spin.setSingleStep(64)
+        self.tile_spin.setValue(int(saved.get("tile_size", 256)))
+        layout.addRow("滑窗大小:", self.tile_spin)
+        self.stride_spin = QSpinBox(); self.stride_spin.setRange(10, 100); self.stride_spin.setSingleStep(5)
+        self.stride_spin.setValue(int(saved.get("tile_stride", 75)))
+        self.stride_spin.setSuffix(" %")
+        self.stride_spin.setToolTip("步长(%)：75 = 25% 重叠。越小覆盖越全，块数按平方增长")
+        layout.addRow("步长(%):", self.stride_spin)
+        self.tile_mode_combo = QComboBox()
+        self.tile_mode_combo.addItems(["滑窗遍历（覆盖全）", "缺陷居中+负样本（省算力）"])
+        self.tile_mode_combo.setCurrentIndex(0 if saved.get("tile_mode", "slide") == "slide" else 1)
+        self.tile_mode_combo.setToolTip("滑窗遍历：友商口径，覆盖无死角但 98% 是背景块\n"
+                                        "缺陷居中+负样本：只抽缺陷居中块+定量背景块，省约 10 倍算力")
+        layout.addRow("取样方式:", self.tile_mode_combo)
         self.kfold_spin = QSpinBox(); self.kfold_spin.setRange(1, 10); self.kfold_spin.setValue(saved.get("k_folds", 1))
         self.kfold_spin.setToolTip("1=no cross-validation, 5=5-fold CV")
         layout.addRow("K-Fold CV:", self.kfold_spin)
@@ -159,6 +269,14 @@ class TrainSettingsDialog(QDialog):
             "k_folds": self.kfold_spin.value(),
             "loss": self.loss_combo.currentText(),
             "resume": self.resume_check.isChecked(),
+            "is_multiview": bool(getattr(self, "_is_mv", False)),
+            # 分块训练（滑窗大小 / 步长% / 取样方式）
+            "tile": bool(self.tile_check.isChecked()),
+            "tile_size": int(self.tile_spin.value()),
+            "tile_stride": int(self.stride_spin.value()),
+            "tile_mode": "slide" if self.tile_mode_combo.currentIndex() == 0 else "defect",
+            "unet_base": self.unet_base_spin.value() if self.unet_base_spin else 16,
+            "unet_depth": self.unet_depth_spin.value() if self.unet_depth_spin else 4,
         }
 
     def _save_and_accept(self):
@@ -170,6 +288,8 @@ class TrainSettingsDialog(QDialog):
             "k_folds": self.kfold_spin.value(),
             "loss": self.loss_combo.currentText(),
             "resume": self.resume_check.isChecked(),
+            "unet_base": self.unet_base_spin.value() if self.unet_base_spin else 16,
+            "unet_depth": self.unet_depth_spin.value() if self.unet_depth_spin else 4,
         }
         try:
             os.makedirs(os.path.dirname(self.SETTINGS_FILE), exist_ok=True)
@@ -316,6 +436,7 @@ class MainWindow(QMainWindow):
         tm.addAction("Image Crop Tool...", self._open_crop_tool)
         tm.addAction("Image Resize Tool...", self._open_resize_tool)
         tm.addAction("Heatmap Region Analyzer...", self._open_heatmap_analyzer)
+        tm.addAction("分类阈值调优 (过杀/漏检)...", self._open_threshold_panel)
         tm.addSeparator()
         tm.addAction("Flow Editor...", self._open_flow_editor)
         sm = mb.addMenu("Settings(&S)")
@@ -327,25 +448,157 @@ class MainWindow(QMainWindow):
         vm.addSeparator()
         vm.addAction("Toggle Detection Mode	Ctrl+D", self._toggle_detection_mode)
         vm.addAction("Refresh Projects", self._refresh_projects)
-        im = mb.addMenu("Image Mgmt")
-        im.addAction("Import Images...", self._import_images)
-        am = mb.addMenu("Annotation Mgmt")
-        am.addAction("Manage Classes...", self._manage_classes)
-        am.addAction("Import JSON...", self._import_json)
-        am.addAction("Batch Import JSON...", self._batch_import_json)
-        am.addAction("Remove Tiny Annotations (<10k px)...", self._clean_tiny_ann)
-        am.addAction("Export JSON...", self._export_json)
-        am.addSeparator()
-        am.addAction("Export Annotations", self._export_annotations)
-        mm = mb.addMenu("Model Mgmt")
-        mm.addAction("Manage Train/Val/Test Split...", self._manage_split)
-        mm.addAction("Start Seg Training...", self._start_training)
-        mm.addAction("Start Det Training", self._start_det_training)
-        mm.addAction("Start Cls Training", self._start_cls_training)
-        mm.addAction("Run Inference", self._start_inference)
-        mm.addAction("Batch Inference (All Images)...", self._batch_inference)
+        # 主题（深色/浅色）：勾选框指示器在深色下容易看不见，给个可切换的主题
+        tm = vm.addMenu("主题 / Theme")
+        for _label, _key in (("深色（默认）", "dark"), ("浅色", "light")):
+            act = tm.addAction(_label)
+            act.setCheckable(True)
+            act.setChecked(self._load_ui_setting("theme", "dark") == _key)
+            act.triggered.connect(lambda _c, k=_key: self._set_theme(k))
+        # ⚠️ Image Mgmt / Annotation Mgmt / Model Mgmt 三个英文菜单**已删除**：
+        #    它们和右侧「图像/标注/模型管理」模块完全重叠，而且同名不同内容
+        #    （菜单里的 Model Mgmt 管的是训练/推理，右侧模块管的是模型文件），
+        #    同一动作两个入口迟早出现"改了一处、另一处行为不同"。
+        #    其中原先**只有菜单能点**的四项已补进右侧模块：
+        #      导入图片…            -> 图像管理 / 输出与工程
+        #      导出 JSON / 导出标注 / 清理碎标注 -> 标注管理 / 标注操作
+        #      批量推理（全部图片）…  -> 模型管理 / 模型列表
         hm = mb.addMenu("Help(&H)")
+        # 参照友商「帮助」：日志 / 使用说明 / 开发文档 / 示例工程 / 快捷键提示
+        hm.addAction("日志面板\tCtrl+L", self._toggle_log_panel)
+        hm.addAction("使用说明", self._open_user_guide)
+        hm.addAction("开发文档", self._open_dev_docs)
+        hx = hm.addMenu("示例工程")
+        hx.addAction("生成三视图示例工程…", self._create_example_project)
+        hx.addAction("打开文档目录", lambda: self._open_dir(os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "..", "docs")))
+        hm.addAction("快捷键提示\tF1", self._show_shortcuts)
+        hm.addSeparator()
         hm.addAction("About(&A)", self._about)
+
+    # ────────── 帮助 ──────────
+
+    def _open_doc(self, filename):
+        """用系统默认程序打开 docs/ 下的文档（缺失时给可用替代并写日志）。"""
+        base = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "docs")
+        path = os.path.normpath(os.path.join(base, filename))
+        if not os.path.exists(path):
+            alt = os.path.normpath(os.path.join(base, "架构文档_算子流重构路线.md"))
+            self.log(f"[帮助] 找不到 {filename}，改开 {os.path.basename(alt)}")
+            path = alt
+        try:
+            os.startfile(path)
+            self.log(f"[帮助] 已打开 {os.path.basename(path)}")
+        except Exception as e:
+            self.log(f"[帮助] 打开文档失败: {e}")
+
+    def _open_user_guide(self):
+        self._open_doc("使用说明.md")
+
+    def _open_dev_docs(self):
+        self._open_doc("开发文档.md")
+
+    def _show_shortcuts(self):
+        """快捷键提示（只列代码里真实存在的，不写没实现的）。"""
+        rows = [
+            ("预览 / 标注", "Ctrl+Space", "显示或隐藏**缺陷类别**叠加层"),
+            ("", "Ctrl+Alt（或 Ctrl+Alt+I）", "显示或隐藏**忽略区**（__ignore__）"),
+            ("", "Space", "显示或隐藏**预测结果**"),
+            ("", "Ctrl+Z / Ctrl+Y", "撤销 / 重做"),
+            ("", "Ctrl+S", "保存当前标注（编辑时也会自动保存）"),
+            ("", "B / L / R / C / O / P", "画笔 / 直线 / 矩形 / 圆 / 椭圆 / 多边形"),
+            ("", "E / I / A / H", "橡皮 / 忽略区 / SAM / 平移"),
+            ("", "1 ~ 9", "切换当前类别"),
+            ("", "Enter / Esc / Backspace", "多边形：闭合 / 取消 / 退一个点"),
+            ("界面", "Ctrl+L", "日志面板显隐"),
+            ("", "Ctrl+[ / Ctrl+]", "左栏 / 右栏显隐"),
+            ("", "Ctrl+D", "切换检测模式"),
+            ("", "Ctrl+A", "图片列表全选（列表右键里也能选）"),
+            ("", "F1", "本提示"),
+        ]
+        html = ("<table cellspacing='0' cellpadding='4'>"
+                "<tr><th align='left'>范围</th><th align='left'>快捷键</th>"
+                "<th align='left'>说明</th></tr>")
+        for scope, keys, desc in rows:
+            html += (f"<tr><td style='color:#8A93A6'>{scope}</td>"
+                     f"<td><b>{keys}</b></td><td>{desc.replace('**','')}</td></tr>")
+        html += "</table>"
+        box = QMessageBox(self)
+        box.setWindowTitle("快捷键提示")
+        box.setTextFormat(Qt.RichText)
+        box.setText(html)
+        box.exec_()
+
+    def _create_example_project(self):
+        """生成一个小的三视图示例工程（合成图+JSON+掩膜），用来试功能/给新人练手。
+
+        为什么要"生成"而不是"放一个现成目录"：示例工程里是合成图，
+        可以随代码一起演进；也不用往用户工程目录里塞几十兆真实图片。
+        """
+        try:
+            name = "示例工程_三视图分割"
+            pd = os.path.join(str(self.pm.workspace), name)
+            os.makedirs(os.path.join(pd, "images"), exist_ok=True)
+            os.makedirs(os.path.join(pd, "annotations"), exist_ok=True)
+            os.makedirs(os.path.join(pd, "models"), exist_ok=True)
+            os.makedirs(os.path.join(pd, "outputs"), exist_ok=True)
+            classes = ["background", "Zw", "Ys", "Zz", "Hh", "Atd"]
+            with open(os.path.join(pd, "project.json"), "w", encoding="utf-8") as f:
+                json.dump({"name": name, "task_type": "语义分割", "classes": classes,
+                           "views": ["te_0", "te_1", "te_2"], "view_count": 3,
+                           "in_channels": 9,
+                           "view_names": {"te_0": "漫反射", "te_1": "形状图1", "te_2": "形状图2"},
+                           "class_cn": {"background": "背景", "Zw": "脏污", "Ys": "压伤",
+                                        "Zz": "褶皱", "Hh": "划痕", "Atd": "凹凸点"}},
+                          f, indent=2, ensure_ascii=False)
+            import numpy as _np
+            from PIL import Image as _Img
+            H, W = 480, 640
+            rng = _np.random.default_rng(7)
+            for gi in range(3):
+                key = "示例电芯%02d" % (gi + 1)
+                # 三视图：同一块区域、不同"成像"
+                base = _np.full((H, W), 45, _np.uint8)
+                base = _np.clip(base + rng.normal(0, 4, (H, W)), 0, 255).astype(_np.uint8)
+                shapes, mask = [], _np.zeros((H, W), _np.uint8)
+                # 一个压伤(Ys=2) + 一个脏污(Zw=1)
+                for cid, (cx, cy, w, h) in ((2, (180 + 40 * gi, 160, 26, 14)),
+                                            (1, (420, 300 + 20 * gi, 34, 22))):
+                    shapes.append({"label": classes[cid], "shape_type": "polygon",
+                                   "points": [[cx - w // 2, cy - h // 2], [cx + w // 2, cy - h // 2],
+                                              [cx + w // 2, cy + h // 2], [cx - w // 2, cy + h // 2]],
+                                   "flags": {}, "group_id": None})
+                    mask[cy - h // 2:cy + h // 2, cx - w // 2:cx + w // 2] = cid
+                # 忽略区
+                shapes.append({"label": "__ignore__", "shape_type": "polygon",
+                               "points": [[0, H - 60], [W, H - 60], [W, H], [0, H]],
+                               "flags": {}, "group_id": None})
+                mask[H - 60:, :] = 255
+                for vi, v in enumerate(("te_0", "te_1", "te_2")):
+                    img = base.copy()
+                    if vi == 1:
+                        img = _np.clip(255 - img.astype(_np.int16), 0, 255).astype(_np.uint8)
+                    elif vi == 2:
+                        img = (img // 2 + 20).astype(_np.uint8)
+                    img = _np.stack([img] * 3, axis=2)
+                    img[mask == 2] = (img[mask == 2] * 0.6 + _np.array([90, 90, 0]) * 0.4)
+                    f = os.path.join(pd, "images", f"{key}_{v}.jpg")
+                    _Img.fromarray(img).save(f, quality=92)
+                    with open(os.path.join(pd, "images", f"{key}_{v}.json"), "w", encoding="utf-8") as jf:
+                        json.dump({"version": "5.3.1", "flags": {}, "imageData": None,
+                                   "imagePath": f"{key}_{v}.jpg", "imageWidth": W, "imageHeight": H,
+                                   "imageSet": "Train", "shapes": shapes}, jf, ensure_ascii=False)
+                _Img.fromarray(mask, mode="L").save(
+                    os.path.join(pd, "annotations", f"{key}_te_0_mask.png"))
+            self._refresh_projects()
+            self.log(f"[示例工程] 已生成 {pd}")
+            QMessageBox.information(self, "示例工程",
+                                    f"示例工程已生成：\n{pd}\n\n"
+                                    "含 3 组三视图 + 标注 JSON + 掩膜（Zw/Ys + 忽略区）。\n"
+                                    "左栏工程列表里双击即可打开。")
+        except Exception as e:
+            self.log(f"[示例工程] 生成失败: {type(e).__name__}: {e}")
+            QMessageBox.warning(self, "示例工程", f"生成失败: {e}")
 
     def _create_left_panel(self):
         p = QWidget(); outer_layout = QVBoxLayout(p); outer_layout.setContentsMargins(2, 2, 2, 2)
@@ -383,53 +636,29 @@ class MainWindow(QMainWindow):
             self._proj_toggle_btn.setText("\u25b6" if not v else "\u25bc")
         self._proj_toggle_btn.clicked.connect(_toggle_proj)
 
-        # ==== MIDDLE: Accordion (three mutually exclusive panels) ====
+        # ==== MIDDLE: 图片列表（原来 Result / Annotation / Image List 三块手风琴，
+        #      Result 与 Annotation 两张表已挪到右侧「标注」页 Class 表下面
+        #      —— 那里本来就空着一大片，而图片列表正需要高度。这里只留图片列表。 ====
         sep = QFrame(); sep.setFrameShape(QFrame.HLine); sep.setFrameShadow(QFrame.Sunken)
         outer_layout.addWidget(sep)
 
-        # Accordion header buttons
+        # Header（只作标题/计数，不再切换页面）
         ah_layout = QHBoxLayout(); ah_layout.setContentsMargins(0, 0, 0, 0); ah_layout.setSpacing(1)
         self._accordion_btns = []
-        self._accordion_headers = []
-        for i, (label, key) in enumerate([
-            ("Result", "res"), ("Annotation", "ann"), ("Image List", "imglist")
-        ]):
-            btn = QPushButton(f"{label} (0)")
-            btn.setCheckable(True); btn.setFixedHeight(22)
-            btn.setStyleSheet(
-                "QPushButton { font-size: 10px; padding: 1px 6px; border: 1px solid #2A3A5C; border-radius: 2px; color: #D6E4FF; }"
-                "QPushButton:checked { background-color: #0E3A52; color: #00E5FF; border-color: #00E5FF; font-weight: bold; }"
-            )
-            btn.clicked.connect(lambda checked, i=i: self._switch_accordion(i))
-            ah_layout.addWidget(btn)
-            self._accordion_btns.append(btn)
-            self._accordion_headers.append((label, key))
+        self._accordion_headers = [("Image List", "imglist")]
+        btn = QPushButton("Image List (0)")
+        btn.setFixedHeight(22)
+        btn.setStyleSheet(
+            "QPushButton { font-size: 10px; padding: 1px 6px; border: 1px solid #2A3A5C; border-radius: 2px; color: #D6E4FF; }"
+        )
+        ah_layout.addWidget(btn)
+        self._accordion_btns.append(btn)
         ah_layout.addStretch()
         outer_layout.addLayout(ah_layout)
 
         # Accordion content: QStackedWidget (fills all remaining space)
         self._accordion_stack = QStackedWidget()
         outer_layout.addWidget(self._accordion_stack, 1)  # stretch=1
-
-        # -- Page 0: Result Blocks --
-        res_page = QWidget(); res_layout = QVBoxLayout(res_page); res_layout.setContentsMargins(0, 2, 0, 0)
-        self.stats_table = QTableWidget()
-        self.stats_table.setColumnCount(8)
-        self.stats_table.verticalHeader().setDefaultSectionSize(24)
-        self.stats_table.setEditTriggers(QTableWidget.NoEditTriggers)
-        self.stats_table.setAlternatingRowColors(True)
-        res_layout.addWidget(self.stats_table)
-        self._accordion_stack.addWidget(res_page)  # 0
-
-        # -- Page 1: Annotation Blocks --
-        ann_page = QWidget(); ann_layout = QVBoxLayout(ann_page); ann_layout.setContentsMargins(0, 2, 0, 0)
-        self.ann_table = QTableWidget()
-        self.ann_table.setColumnCount(8)
-        self.ann_table.verticalHeader().setDefaultSectionSize(24)
-        self.ann_table.setEditTriggers(QTableWidget.NoEditTriggers)
-        self.ann_table.setAlternatingRowColors(True)
-        ann_layout.addWidget(self.ann_table)
-        self._accordion_stack.addWidget(ann_page)  # 1
 
         # -- Page 2: Image List --
         imglist_page = QWidget(); il = QVBoxLayout(imglist_page); il.setContentsMargins(0, 2, 0, 0); il.setSpacing(1)
@@ -441,12 +670,25 @@ class MainWindow(QMainWindow):
         self.search_input.textChanged.connect(self._filter_images)
         ft.addWidget(self.search_input)
         self.split_filter = QComboBox()
-        self.split_filter.addItems(["All Sets", "Train Only", "Val Only", "Test Only"])
+        # 对标友商 iSense 的筛选下拉：除数据集外，还要能按"是否标注 / 是否有结果"筛。
+        # 后半段这几项在 _filter_images 里实现。
+        self.split_filter.addItems(["All Sets", "Train Only", "Val Only", "Test Only",
+                                    "Annotated Only", "Unannotated Only",
+                                    "Has Result", "No Result"])
+        self.split_filter.setToolTip("筛选：数据集 / 已标注 / 未标注 / 有结果 / 无结果")
         self.split_filter.currentIndexChanged.connect(lambda: self._filter_images(self.search_input.text()))
         ft.addWidget(self.split_filter)
         self.annotated_check = QCheckBox("Annotated")
         self.annotated_check.toggled.connect(lambda: self._filter_images(self.search_input.text()))
         ft.addWidget(self.annotated_check)
+        # 标注名字筛选（对标友商下拉里的「标注名字」）：选一个类别，只看含该类的图。
+        # 选项在 _filter_images 里按工程类别懒同步，不必到处挂钩子。
+        self.label_filter = QComboBox()
+        self.label_filter.addItem("All Labels")
+        self.label_filter.setToolTip("只看含指定标注类别的图片")
+        self.label_filter.currentIndexChanged.connect(
+            lambda: self._filter_images(self.search_input.text()))
+        ft.addWidget(self.label_filter)
         self.recent_check = QCheckBox("Recent")
         self.recent_check.setToolTip("Sort by annotation date")
         self.recent_check.toggled.connect(lambda: self._filter_images(self.search_input.text()))
@@ -472,9 +714,12 @@ class MainWindow(QMainWindow):
         self.image_list_widget.horizontalHeader().setStretchLastSection(True)
         self.image_list_widget.setSelectionBehavior(QTableWidget.SelectRows)
         self.image_list_widget.setSelectionMode(QTableWidget.ExtendedSelection)
-        self.image_list_widget.setStyleSheet(
-            "QTableWidget::item:selected { background-color: #0E3A52; color: #00E5FF; }\n"
-            "QTableWidget::item:selected:!active { background-color: #0E3A52; color: #00E5FF; }")
+        # ⚠️ 选中态配色**不能写死在这里**：这段内联样式优先级高于全局主题表，
+        #    浅色主题下会变成"深蓝底 + 青色字"，而「标注/结果」两列的文字颜色是
+        #    代码里按类别色单独 setForeground 过的（内联前景色又压过 QSS 的 color）
+        #    -> 深色类别字压在深蓝选中底上 = **整行看不见**（用户实测反馈）。
+        #    现在改成 objectName 交给主题表管：深色给深底青字，浅色给浅底深字。
+        self.image_list_widget.setObjectName("imageList")
         self.image_list_widget.setEditTriggers(QTableWidget.NoEditTriggers)
         self.image_list_widget.setAlternatingRowColors(True)
         self.image_list_widget.verticalHeader().setVisible(False)
@@ -498,8 +743,15 @@ class MainWindow(QMainWindow):
         pag_bar.addStretch()
         pag_bar.addWidget(QLabel("Per page:"))
         self.page_size_combo = QComboBox()
-        self.page_size_combo.addItems(["50", "100", "200"]); self.page_size_combo.setCurrentText("50")
+        # "全部" = 不分页，一次列出所有图片（滑块会随数量变短），方便直接全选。
+        # 对标友商 iSense：列表不分页，一眼能看全并 Ctrl+A。
+        self.page_size_combo.addItems(["50", "100", "200", "500", "全部"])
+        self.page_size_combo.setCurrentText("全部")
+        self.page_size_combo.setToolTip("每页显示数量；选「全部」不分页，便于全选（图片很多时会略慢）")
         self.page_size_combo.currentTextChanged.connect(self._on_page_size_changed)
+        # 注意：上面是先 setCurrentText 再 connect，所以这里必须手动同步初值，
+        # 否则下拉显示"全部"而 _page_size 还是 50，行为与界面不一致。
+        self._page_size = 10 ** 9
         pag_bar.addWidget(self.page_size_combo)
         self.page_prev_btn = QPushButton("\u25c0"); self.page_prev_btn.setFixedWidth(30)
         self.page_prev_btn.clicked.connect(lambda: self._go_to_page(self._current_page - 1))
@@ -510,10 +762,10 @@ class MainWindow(QMainWindow):
         pag_bar.addWidget(self.page_next_btn); pag_bar.addStretch()
         il.addLayout(pag_bar)
         self.list_status = QLabel(""); il.addWidget(self.list_status)
-        self._accordion_stack.addWidget(imglist_page)  # 2
+        self._accordion_stack.addWidget(imglist_page)  # 0（唯一一页）
 
         # Default: show Image List
-        self._switch_accordion(2)
+        self._switch_accordion(0)
 
         # ==== BOTTOM: New Project (fixed) ====
         sep2 = QFrame(); sep2.setFrameShape(QFrame.HLine); sep2.setFrameShadow(QFrame.Sunken)
@@ -524,18 +776,45 @@ class MainWindow(QMainWindow):
         return p
 
     def _switch_accordion(self, idx):
-        """Switch accordion to panel idx and update button states."""
+        """左侧现在只有图片列表一页，保底切到 0（保留函数以兼容旧调用点）。"""
+        idx = 0 if idx >= len(self._accordion_btns) else idx
         for i, btn in enumerate(self._accordion_btns):
             btn.setChecked(i == idx)
         self._accordion_stack.setCurrentIndex(idx)
 
     def _update_accordion_counts(self, result_count=None, ann_count=None, img_count=None):
-        """Update accordion header counts."""
-        counts = [result_count, ann_count, img_count]
-        for i, btn in enumerate(self._accordion_btns):
-            if counts[i] is not None:
-                label, _ = self._accordion_headers[i]
-                btn.setText(f"{label} ({counts[i]})")
+        """更新计数标签：左侧「Image List (n)」+ 右侧「Result (n) / Annotation (n)」。
+
+        函数名沿用旧的（调用点在 _filter_images 里），但它现在同时管两处 ——
+        计数只有一个来源，界面在两处显示。
+        """
+        if img_count is not None and self._accordion_btns:
+            self._accordion_btns[0].setText(f"Image List ({img_count})")
+        if result_count is not None or ann_count is not None:
+            self._update_block_counts(result_count, ann_count)
+
+    def _update_block_counts(self, result_count=None, ann_count=None):
+        """右侧「标注」页里 Class / Annotation / Result 三个小标题的计数。
+
+        用 dict 按键取控件，不用列表下标 —— 分段顺序变过两次，
+        下标写死最容易悄悄把两个数字对调（这类错不会报错，只会显示错）。
+        """
+        lb = getattr(self, "_block_labels", None)
+        if not lb:
+            return
+        if ann_count is not None and "ann" in lb:
+            lb["ann"].setText(f"Annotation ({ann_count})")
+        if result_count is not None and "res" in lb:
+            lb["res"].setText(f"Result ({result_count})")
+
+    def _update_class_count_label(self, n=None):
+        """「Class (n)」小标题的计数（n 为空时按 _cached_classes 算）。"""
+        lb = getattr(self, "_block_labels", None)
+        if not lb or "cls" not in lb:
+            return
+        if n is None:
+            n = len(getattr(self, "_cached_classes", None) or [])
+        lb["cls"].setText(f"Class ({n})")
 
     def _create_center_panel(self):
         outer = QSplitter(Qt.Vertical)
@@ -543,13 +822,17 @@ class MainWindow(QMainWindow):
         cc = QWidget(); cl = QVBoxLayout(cc); cl.setContentsMargins(0, 0, 0, 0)
         self.image_count_label = QLabel(""); self.image_count_label.setVisible(False)
 
-        # Stacked widget: index 0 = AnnotationCanvas, index 1 = MixedViewer
+        # Stacked widget: index 0 = MultiViewPreview(内含 AnnotationCanvas), index 1 = MixedViewer
         self._viewer_stack = QStackedWidget()
         self.canvas = AnnotationCanvas()
         self.canvas.status_message.connect(self.statusBar().showMessage)
         self.mixed_viewer = MixedViewer()
+        # index 0 换成"多视图预览容器"：它内部第 0 格就是上面的 canvas，
+        # 单图模式下只显示 canvas，外观与改动前完全一致（不引入回归）。
+        from ui.multiview_preview import MultiViewPreview
+        self.mv_preview = MultiViewPreview(self.canvas)
 
-        self._viewer_stack.addWidget(self.canvas)       # index 0
+        self._viewer_stack.addWidget(self.mv_preview)    # index 0
         self._viewer_stack.addWidget(self.mixed_viewer)  # index 1
 
         self._version_refresh_timer = QTimer()
@@ -622,7 +905,23 @@ class MainWindow(QMainWindow):
 
         # Panel 0: Annotation Tools
         panel_annot = QWidget(); al = QVBoxLayout(panel_annot); al.setContentsMargins(4, 2, 2, 2)
-        al.addWidget(QLabel("<b>Class:</b>"))
+        # ── 三张表：Class（类别）/ Annotation（标注块）/ Result（结果块） ──
+        #    原来 Class 表独立在 stack 里、两张块表在另一个 splitter 里 —— 三段之间
+        #    只有一段有分隔条。现在**合成一个三段 QSplitter**：每两段之间都有可拖的
+        #    分隔条，三张表的高度都能自己调，也彻底没有"Class 表下面一大片空白"。
+        #    表格对象本身没换（还是 self.class_list / self.stats_table / self.ann_table），
+        #    所有刷新逻辑一行都不用改。
+        al.addSpacing(6)
+        self._panel_split = QSplitter(Qt.Vertical)
+        self._panel_split.setChildrenCollapsible(False)   # 不许拖到 0 高度（拉回来很烦）
+        self._panel_split.setHandleWidth(4)
+        self._block_labels = {}
+
+        # 第 1 段：Class（类别表）
+        cls_box = QWidget(); cl_layout = QVBoxLayout(cls_box)
+        cl_layout.setContentsMargins(0, 0, 0, 0); cl_layout.setSpacing(1)
+        self._block_labels["cls"] = self._make_block_header("Class (0)")
+        cl_layout.addWidget(self._block_labels["cls"])
         self.class_list = ClassTableView()
         self.class_list.currentRowChanged.connect(self._on_class_changed)
         self.class_list.add_requested.connect(self._add_class)
@@ -632,9 +931,45 @@ class MainWindow(QMainWindow):
         self.class_list.move_up_requested.connect(lambda: self._move_class(-1))
         self.class_list.move_down_requested.connect(lambda: self._move_class(1))
         self.class_list.rename_requested.connect(self._rename_class)
-        al.addWidget(self.class_list)
-        al.addStretch()
-        self._right_stack.addWidget(panel_annot)  # 0
+        cl_layout.addWidget(self.class_list, 1)
+        self._panel_split.addWidget(cls_box)
+
+        # 第 2 段：Annotation（标注块）—— 用户要求：标注表在上
+        ann_box = QWidget(); ann_layout = QVBoxLayout(ann_box)
+        ann_layout.setContentsMargins(0, 0, 0, 0); ann_layout.setSpacing(1)
+        self._block_labels["ann"] = self._make_block_header("Annotation (0)")
+        ann_layout.addWidget(self._block_labels["ann"])
+        self.ann_table = QTableWidget()
+        self.ann_table.setColumnCount(8)
+        self.ann_table.verticalHeader().setDefaultSectionSize(24)
+        self.ann_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.ann_table.setAlternatingRowColors(True)
+        ann_layout.addWidget(self.ann_table, 1)
+        self._panel_split.addWidget(ann_box)
+
+        # 第 3 段：Result（预测/结果块）—— 结果表在下
+        res_box = QWidget(); res_layout = QVBoxLayout(res_box)
+        res_layout.setContentsMargins(0, 0, 0, 0); res_layout.setSpacing(1)
+        self._block_labels["res"] = self._make_block_header("Result (0)")
+        res_layout.addWidget(self._block_labels["res"])
+        self.stats_table = QTableWidget()
+        self.stats_table.setColumnCount(8)
+        self.stats_table.verticalHeader().setDefaultSectionSize(24)
+        self.stats_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.stats_table.setAlternatingRowColors(True)
+        res_layout.addWidget(self.stats_table, 1)
+        self._panel_split.addWidget(res_box)
+
+        # 多出来的高度按 0 : 1 : 2 分给 Result（类别表只有几行，结果表可能几百行）
+        self._panel_split.setStretchFactor(0, 0)
+        self._panel_split.setStretchFactor(1, 1)
+        self._panel_split.setStretchFactor(2, 2)
+        self._panel_split.setSizes([230, 160, 380])
+        al.addWidget(self._panel_split, 1)         # 占满「标注管理」里这一块
+        # 注意：**不要再往 _right_stack 里加这个 panel** ——
+        # 右侧页面统一在函数末尾按"4 个模块"组装（参照友商右栏）。
+        # 这里若残留一行 addWidget，模块页的下标就会整体后移、页签指错页，
+        # 而且错得很安静（点了没反应/跳到别的页），不会报错。
 
         # Panel 1: Version History
         panel_ver = QWidget(); vl = QVBoxLayout(panel_ver); vl.setContentsMargins(4, 2, 2, 2)
@@ -647,7 +982,7 @@ class MainWindow(QMainWindow):
         vbl.addWidget(QPushButton("Restore", clicked=self._slot_restore_version))
         self.version_count_label = QLabel("0 versions"); vbl.addWidget(self.version_count_label)
         vl.addLayout(vbl)
-        self._right_stack.addWidget(panel_ver)  # 1
+        # 同上：panel_ver 由末尾的模块组装挂进「模型管理」
 
         # Panel 2: Inference
         panel_infer = QWidget(); il = QVBoxLayout(panel_infer); il.setContentsMargins(4, 2, 2, 2)
@@ -676,7 +1011,14 @@ class MainWindow(QMainWindow):
         self.btn_infer_stop = QPushButton("Stop"); self.btn_infer_stop.clicked.connect(self._stop_inference)
         self.btn_infer_stop.setEnabled(False); hil.addWidget(self.btn_infer_stop)
         self.infer_result_label = QLabel(""); hil.addWidget(self.infer_result_label)
-        il.addLayout(hil); il.addStretch()
+        il.addLayout(hil)
+
+        # 推理参数（对标友商 iSense）：按类别过滤连通域 + 全局后处理。
+        # 放在推理控件下面、同一个滚动区里，改完即存到 <工程>/inference_params.json。
+        from ui.infer_params import InferParamsPanel
+        self.infer_params = InferParamsPanel()
+        il.addWidget(self.infer_params)
+        il.addStretch()
 
         # Panel 3: Training
         panel_train = QWidget(); tl = QVBoxLayout(panel_train); tl.setContentsMargins(4, 2, 2, 2)
@@ -693,7 +1035,8 @@ class MainWindow(QMainWindow):
         self.btn_train_stop.setEnabled(False)
         btns.addWidget(self.btn_train_stop)
         tl.addLayout(btns)
-        tl.addStretch()
+        # 参数表紧跟按钮，stretch 挪到最底部 —— 否则 Start Training 与 Epochs 之间
+        # 会夹一大片空白（见 ShrinkStack 的说明）
         fl = QFormLayout()
         self.epochs_spin = QSpinBox(); self.epochs_spin.setRange(1, 5000); self.epochs_spin.setValue(200)
         fl.addRow("Epochs:", self.epochs_spin)
@@ -705,6 +1048,7 @@ class MainWindow(QMainWindow):
         self.resume_check = QCheckBox("Resume from last")
         fl.addRow("", self.resume_check)
         tl.addLayout(fl)
+        tl.addStretch()
 
         # Panel 4: Detection Tools
         panel_det = QWidget(); dl = QVBoxLayout(panel_det); dl.setContentsMargins(4, 2, 2, 2)
@@ -731,7 +1075,6 @@ class MainWindow(QMainWindow):
         self.det_train_status = QLabel("Ready"); dtl.addWidget(self.det_train_status)
         self.btn_det_train_stop = QPushButton("Stop"); self.btn_det_train_stop.clicked.connect(self._stop_training)
         self.btn_det_train_stop.setEnabled(False); dtl.addWidget(self.btn_det_train_stop)
-        dtl.addStretch()
         dfl = QFormLayout()
         self.det_model_combo = QComboBox()
         self.det_model_combo.addItems(["yolov8n", "yolov8s", "yolov8m", "yolov8l", "yolov8x"])
@@ -1071,23 +1414,21 @@ class MainWindow(QMainWindow):
         augl.addStretch()
 
         # ===== Inference group (auto-switch by project type) =====
-        panel_infer_group = QWidget(); igl = QVBoxLayout(panel_infer_group); igl.setContentsMargins(4, 2, 2, 2)
+        # ===== Inference 段（按项目类型自动切换子页）=====
+        #    标题与内容分开：标题留在滚动区**外面**（滚动时不会跟着滚没），
+        #    只有内容区滚动。两段拼装见下面「Training + Inference 合并面板」。
         self._infer_title = QLabel("推理 · 语义分割")
         self._infer_title.setStyleSheet("font-weight: bold; color: #00E5FF;")
-        igl.addWidget(self._infer_title)
-        self._infer_stack = QStackedWidget()
+        self._infer_stack = ShrinkStack()
         self._infer_stack.addWidget(panel_infer)      # 0: seg / det (shared)
         self._infer_stack.addWidget(panel_cls_infer)  # 1: classification
         self._infer_stack.addWidget(panel_ocr)        # 2: OCR
         self._infer_stack.addWidget(panel_ocv)        # 3: OCV
-        igl.addWidget(self._infer_stack)
 
-        # ===== Training group (auto-switch by project type) =====
-        panel_train_group = QWidget(); tgl = QVBoxLayout(panel_train_group); tgl.setContentsMargins(4, 2, 2, 2)
+        # ===== Training 段（按项目类型自动切换子页）=====
         self._train_title = QLabel("训练 · 语义分割")
         self._train_title.setStyleSheet("font-weight: bold; color: #FF2A6D;")
-        tgl.addWidget(self._train_title)
-        self._train_stack = QStackedWidget()
+        self._train_stack = ShrinkStack()
         self._train_stack.addWidget(panel_train)      # 0: segmentation
         self._train_stack.addWidget(panel_det_train)  # 1: detection
         self._train_stack.addWidget(panel_cls_train)  # 2: classification
@@ -1096,49 +1437,500 @@ class MainWindow(QMainWindow):
         na_label.setWordWrap(True); na_label.setStyleSheet("color: #8A93A6;")
         nal.addWidget(na_label); nal.addStretch()
         self._train_stack.addWidget(panel_train_na)   # 3: no training flow (OCR/OCV)
-        tgl.addWidget(self._train_stack)
 
-        self._right_stack.addWidget(panel_annot)        # 0: annotation
-        self._right_stack.addWidget(panel_ver)          # 1: version
-        self._right_stack.addWidget(panel_train_group)  # 2: training
-        self._right_stack.addWidget(panel_infer_group)  # 3: inference
-        self._right_stack.addWidget(panel_det)          # 4: detection tools
-        self._right_stack.addWidget(panel_hm)           # 5: height map
-        self._right_stack.addWidget(panel_aug)          # 6: augmentation
+        # 换子页后要重新量高：ShrinkStack 只按当前页报告尺寸，
+        # 不 updateGeometry 的话滚动区仍按旧页的高度留白。
+        for _st in (self._train_stack, self._infer_stack):
+            _st.currentChanged.connect(self._on_ti_stack_page_changed)
+
+        # ===== Training + Inference 合并面板（用户要求：训练与推理整合成一个面板）=====
+        #    为什么内容区都套一层 QScrollArea：QStackedWidget 的 minimumSizeHint 是
+        #    "所有子页里最大的那个"（实测训练 991px、推理 546px）。直接塞进 splitter
+        #    会把这个虚高的下界当成硬约束 —— 面板整体超高、底部控件被裁掉且**没有滚动条**。
+        #    套一层滚动区后下界降到几十像素，两段都能自由压缩，够不着的内容滚动查看。
+        #
+        #    高度分配：**按内容实际高度自动分配**（`_fit_ti_split`），不再固定 65/35 ——
+        #    固定比例会把"内容只有一百多像素的训练段"撑成一大片空白（用户实测截图反馈）。
+        panel_ti = QWidget(); til = QVBoxLayout(panel_ti)
+        til.setContentsMargins(0, 0, 0, 0); til.setSpacing(2)
+        self._ti_split = QSplitter(Qt.Vertical)
+        self._ti_split.setChildrenCollapsible(False)
+        self._ti_split.setHandleWidth(4)
+        self._ti_split.addWidget(self._make_ti_section(self._train_title, self._train_stack))
+        self._ti_split.addWidget(self._make_ti_section(self._infer_title, self._infer_stack))
+        self._ti_split.setSizes([150, 640])
+        til.addWidget(self._ti_split)
+
+        # ===== 右侧 4 个模块（参照友商 iSense 右栏：参数管理 / 标注管理 / 模型管理 / 图像管理）=====
+        #    友商的右栏不是"一堆并列工具页"，而是**4 个模块**，每个模块里竖着若干**区块**
+        #    （区块 = 左侧一条彩色竖条 + 标题 + 内容），区块可折叠、各按内容占高。
+        #    这样既没有"某一块撑出大片空白"，也不用靠比例分配高度 —— 不看的折叠起来就行。
+        # 「高度图参数」只对**有 TIF/高度图**的工程有意义（混合分类、3D 高度图），
+        # 普通三视图工程里它永远是 "No height map loaded"，白占一块地方（用户要求去掉）。
+        self._hm_section = self._make_section_box("高度图参数", [panel_hm])
+        page_params = self._make_module_page([
+            ("训练参数", [self._train_title, self._train_stack]),
+            ("增强参数", [panel_aug]),
+            self._hm_section,          # 仅在"有高度图/TIF"或混合分类工程里显示
+
+            ("推理参数", [self._infer_title, self._infer_stack]),
+        ])
+        # 「标注操作」区块已按用户要求去掉（导出/清理那几个动作挪到图片列表右键菜单，
+        # 那里本来就有"批量导入 JSON"，放一起更顺）。_make_annotation_ops_section 保留备用。
+        #
+        # 「检测工具」是**目标检测工程专属**的（语义分割里那些画框工具全是死的），
+        # 所以先建好、由 _set_task() 按任务类型显隐，而不是所有工程都摆着。
+        self._det_section = self._make_section_box("检测工具", [panel_det])
+        page_annot = self._make_module_page([
+            self._panel_split,                     # 类别 / 标注统计 / 结果 三个区块（自带标题+计数）
+            self._det_section,
+        ])
+        page_model = self._make_module_page([
+            ("模型列表", [self._make_model_list_section()]),
+            ("版本历史", [panel_ver]),
+        ])
+        page_image = self._make_module_page([
+            ("图像信息", [self._make_image_info_section()]),
+            ("数据集划分", [self._make_split_section()]),
+            ("输出与工程", [self._make_project_ops_section()]),
+        ])
+
+        for _page in (page_params, page_annot, page_model, page_image):
+            self._right_stack.addWidget(_page)
+        self._right_tab_index = {"params": 0, "annot": 1, "model": 2, "image": 3}
         content_layout.addWidget(self._right_stack)
 
-        # ===== Vertical tab bar =====
-        tab_bar = QWidget(); tab_bar.setFixedWidth(52)
+        # ===== 右侧竖排页签（参照友商：文字**竖向排列**，4 块均分撑满整条竖栏）=====
+        tab_bar = QWidget(); tab_bar.setFixedWidth(40)
         tab_layout = QVBoxLayout(tab_bar); tab_layout.setContentsMargins(1, 2, 1, 2); tab_layout.setSpacing(2)
 
         self._right_tabs = QButtonGroup(self); self._right_tabs.setExclusive(True)
+        # 参照友商 iSense 右栏的 4 个模块（原来是 6 个并列工具页）
         tab_defs = [
-            ("标注", "标注工具", 0),
-            ("版本", "版本历史", 1),
-            ("训练", "训练（按项目类型自动切换）", 2),
-            ("推理", "推理（按项目类型自动切换）", 3),
-            ("检测", "检测工具", 4),
-            ("高度", "高度图", 5),
-            ("增强", "数据增强（全局）", 6),
+            ("参数管理", "训练参数 / 增强参数 / 高度图参数 / 推理参数", "params"),
+            ("标注管理", "类别 / 标注统计 / 结果 / 检测工具", "annot"),
+            ("模型管理", "模型列表 / 版本历史", "model"),
+            ("图像管理", "图像信息 / 数据集划分 / 输出与工程", "image"),
         ]
-        for icon_text, tooltip, idx in tab_defs:
-            btn = QPushButton(icon_text)
-            btn.setCheckable(True); btn.setFixedSize(46, 32)
-            btn.setToolTip(tooltip)
-            btn.setStyleSheet("QPushButton { font-size: 11px; font-weight: bold; padding: 1px; color: #D6E4FF; } QPushButton:checked { background-color: #0E3A52; color: #00E5FF; border: 1px solid #00E5FF; border-radius: 3px; }")
-            btn.clicked.connect(lambda checked, i=idx: self._right_stack.setCurrentIndex(i))
+        self._right_tab_btns = {}
+        for icon_text, tooltip, key in tab_defs:
+            idx = self._right_tab_index[key]
+            # 竖排：一个字一行。横排 4 个字塞进 40px 宽会溢出到按钮外面（用户截图就是那样）
+            btn = QPushButton("\n".join(icon_text))
+            btn.setCheckable(True)
+            btn.setToolTip(tooltip + f"（{icon_text}）")
+            btn.setMinimumHeight(56)
+            # 高度策略 Expanding + 布局 stretch=1 -> 4 块**均分并撑满**整条竖栏
+            btn.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+            btn.setStyleSheet(
+                "QPushButton { font-size: 12px; font-weight: bold; color: #D6E4FF;"
+                " padding: 2px 0; border: 1px solid transparent; border-radius: 3px; }"
+                "QPushButton:hover { border-color: #2A3A5C; }"
+                "QPushButton:checked { background-color: #0E3A52; color: #00E5FF;"
+                " border: 1px solid #00E5FF; }"
+            )
+            btn.clicked.connect(lambda checked, k=key: self.show_right_tab(k))
             self._right_tabs.addButton(btn, idx)
-            tab_layout.addWidget(btn)
-        tab_layout.addStretch()
+            self._right_tab_btns[key] = btn
+            tab_layout.addWidget(btn, 1)          # ← stretch=1：均分竖栏高度
         content_layout.addWidget(tab_bar)
 
         outer_layout.addLayout(content_layout)
 
-        # Default: show Annotation Tools
-        self._right_stack.setCurrentIndex(0)
-        self._right_tabs.button(0).setChecked(True)
+        # Default: 打开工程后默认落在「标注管理」
+        self.show_right_tab("annot")
 
         return p
+
+    # ────────── 右侧模块/区块（参照友商右栏）──────────
+
+    def _make_section_box(self, title, widgets):
+        """一个**区块**：左侧彩色竖条 + 标题（点标题折叠）+ 内容。
+
+        区块各按内容占高，所以不会出现"某一块撑出大片空白"；
+        不看的直接折叠，比拖分隔条省事。
+        """
+        box = QWidget()
+        lay = QVBoxLayout(box); lay.setContentsMargins(0, 0, 0, 0); lay.setSpacing(0)
+        head = QPushButton("▍" + title)
+        head.setCheckable(True); head.setChecked(True)
+        head.setCursor(Qt.PointingHandCursor)
+        head.setToolTip("点击折叠 / 展开")
+        head.setStyleSheet(
+            "QPushButton { text-align:left; font-size:11px; font-weight:bold; color:#00E5FF;"
+            " background:#101828; border:none; border-left:3px solid #00E5FF; padding:3px 6px; }"
+            "QPushButton:checked { color:#00E5FF; }"
+            "QPushButton:!checked { color:#8A93A6; border-left:3px solid #2A3A5C; }"
+        )
+        lay.addWidget(head)
+        body = QWidget(); bl = QVBoxLayout(body)
+        bl.setContentsMargins(7, 4, 2, 6); bl.setSpacing(3)
+        for w in (widgets or []):
+            if w is not None:
+                bl.addWidget(w)
+        body.setVisible(True)
+        lay.addWidget(body)
+        head.toggled.connect(body.setVisible)
+        box._head = head
+        box._body = body
+        return box
+
+    def _make_module_page(self, items):
+        """一个**模块页** = 可滚动的竖排区块；items 里可以是区块元组 (标题, [控件])
+        或已经拼好的控件（原样放进去，例如标注管理那三张自带标题的表）。"""
+        sa = QScrollArea()
+        sa.setWidgetResizable(True)
+        sa.setFrameShape(QFrame.NoFrame)
+        inner = QWidget(); v = QVBoxLayout(inner)
+        v.setContentsMargins(2, 2, 2, 2); v.setSpacing(3)
+        for it in items:
+            if isinstance(it, tuple):
+                title, widgets = it
+                v.addWidget(self._make_section_box(title, widgets))
+            elif it is not None:
+                v.addWidget(it)
+        v.addStretch()
+        sa.setWidget(inner)
+        return sa
+
+    # ────────── 模型管理 / 图像管理 里的几个小区块 ──────────
+
+    def _make_model_list_section(self):
+        """模型列表：扫 models/*.pth（名称 / 类别数 / 大小 / 时间），双击即选为推理模型。"""
+        w = QWidget(); v = QVBoxLayout(w); v.setContentsMargins(0, 0, 0, 0); v.setSpacing(2)
+        bar = QHBoxLayout(); bar.setSpacing(3)
+        self.model_list_table = QTableWidget()
+        self.model_list_table.setColumnCount(4)
+        self.model_list_table.setHorizontalHeaderLabels(["模型", "类别", "大小", "时间"])
+        self.model_list_table.verticalHeader().setDefaultSectionSize(20)
+        self.model_list_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.model_list_table.setAlternatingRowColors(True)
+        self.model_list_table.setMaximumHeight(140)
+        self.model_list_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.model_list_table.itemDoubleClicked.connect(self._on_model_row_activated)
+        btn = QPushButton("刷新"); btn.setFixedWidth(46)
+        btn.clicked.connect(self._refresh_model_list)
+        b_batch = QPushButton("批量推理（全部图片）…")
+        b_batch.setToolTip("对工程内所有图片跑一遍推理，结果写到 outputs/")
+        b_batch.clicked.connect(self._batch_inference)
+        bar.addWidget(b_batch); bar.addWidget(QLabel("双击设为推理模型"))
+        bar.addStretch(); bar.addWidget(btn)
+        v.addWidget(self.model_list_table); v.addLayout(bar)
+        return w
+
+    def _refresh_model_list(self, force=True):
+        """重新扫描 <工程>/models 下的模型文件。
+
+        ⚡ 带指纹缓存：目录内容（文件名+大小+时间）没变就直接返回。
+        这个函数会被 `_refresh_image_info`（切图/保存后都会跑）调用，
+        没有缓存的话每次切图都要 stat 一遍模型目录 —— 有模型时还要读几百 MB。
+        """
+        tbl = getattr(self, "model_list_table", None)
+        if tbl is None:
+            return
+        import glob
+        rows = []
+        pd = self._project_dir
+        if pd:
+            for pat in ("*.pth", "*.pt", os.path.join("multiview", "*.pth"),
+                        os.path.join("detection", "*.pt"), os.path.join("classification", "*.pth")):
+                for p in glob.glob(os.path.join(pd, "models", pat)):
+                    try:
+                        st = os.stat(p)
+                        rows.append((os.path.basename(p), "", "%.1f MB" % (st.st_size / 1024 / 1024),
+                                     time.strftime("%m-%d %H:%M", time.localtime(st.st_mtime))))
+                    except Exception:
+                        continue
+        rows.sort(key=lambda r: r[3], reverse=True)
+        sig = tuple((r[0], r[2], r[3]) for r in rows)
+        if not force and sig == getattr(self, "_model_list_sig", None):
+            return
+        self._model_list_sig = sig
+        tbl.setRowCount(len(rows))
+        for i, r in enumerate(rows):
+            for j, val in enumerate(r):
+                it = QTableWidgetItem(val)
+                it.setTextAlignment(Qt.AlignCenter)
+                tbl.setItem(i, j, it)
+
+    def _on_model_row_activated(self, item):
+        """双击模型列表某行 -> 把它设为推理用的模型文件。"""
+        try:
+            name = self.model_list_table.item(item.row(), 0).text()
+        except Exception:
+            return
+        idx = self.model_combo.findText(name)
+        if idx < 0:
+            self.model_combo.addItem(name); idx = self.model_combo.count() - 1
+        self.model_combo.setCurrentIndex(idx)
+        self.log(f"[模型] 推理将使用 {name}")
+        self.show_right_tab("params")
+
+    def _make_image_info_section(self):
+        """图像信息：当前图的路径/尺寸/标注块数（导航时自动刷新）。"""
+        w = QWidget(); v = QVBoxLayout(w); v.setContentsMargins(0, 0, 0, 0); v.setSpacing(2)
+        self.img_info_name = QLabel("—"); self.img_info_name.setWordWrap(True)
+        self.img_info_name.setStyleSheet("color:#D6E4FF; font-size:11px;")
+        self.img_info_size = QLabel("—"); self.img_info_size.setStyleSheet("color:#8A93A6; font-size:11px;")
+        self.img_info_ann = QLabel("—"); self.img_info_ann.setStyleSheet("color:#8A93A6; font-size:11px;")
+        for lb in (self.img_info_name, self.img_info_size, self.img_info_ann):
+            v.addWidget(lb)
+        return w
+
+    def _make_split_section(self):
+        """数据集划分：训练/测试/验证 的数量 + 一键打开划分管理。"""
+        w = QWidget(); v = QVBoxLayout(w); v.setContentsMargins(0, 0, 0, 0); v.setSpacing(2)
+        self.split_count_label = QLabel("—")
+        self.split_count_label.setStyleSheet("color:#D6E4FF; font-size:11px;")
+        v.addWidget(self.split_count_label)
+        btn = QPushButton("管理划分…"); btn.clicked.connect(self._manage_split)
+        v.addWidget(btn)
+        return w
+
+    def _make_project_ops_section(self):
+        """输出与工程：打开工程目录 / 输出目录，并显示输出文件数。"""
+        w = QWidget(); v = QVBoxLayout(w); v.setContentsMargins(0, 0, 0, 0); v.setSpacing(2)
+        self.out_count_label = QLabel("—")
+        self.out_count_label.setStyleSheet("color:#8A93A6; font-size:11px;")
+        v.addWidget(self.out_count_label)
+        h = QHBoxLayout(); h.setSpacing(3)
+        b0 = QPushButton("导入图片…"); b0.setToolTip("与左侧图片列表右键的加图相同")
+        b0.clicked.connect(self._import_images)
+        b1 = QPushButton("工程目录"); b1.clicked.connect(lambda: self._open_dir(self._project_dir))
+        b2 = QPushButton("输出目录"); b2.clicked.connect(
+            lambda: self._open_dir(os.path.join(self._project_dir or "", "outputs")))
+        h.addWidget(b0); h.addWidget(b1); h.addWidget(b2)
+        v.addLayout(h)
+        return w
+
+    def _make_annotation_ops_section(self):
+        """标注操作：导出/清理 这些原先**只有英文菜单能点**的动作，补进「标注管理」。
+
+        补入口 → 验证能点通 → 才敢把菜单里那三条冗余菜单删掉。
+        """
+        w = QWidget(); v = QVBoxLayout(w); v.setContentsMargins(0, 0, 0, 0); v.setSpacing(2)
+        r1 = QHBoxLayout(); r1.setSpacing(3)
+        b1 = QPushButton("导出 JSON…"); b1.clicked.connect(self._export_json)
+        b2 = QPushButton("导出标注"); b2.clicked.connect(self._export_annotations)
+        r1.addWidget(b1); r1.addWidget(b2)
+        r2 = QHBoxLayout(); r2.setSpacing(3)
+        b3 = QPushButton("清理碎标注(<10k px)…"); b3.setToolTip("把面积小于 1 万像素的标注块整块删掉")
+        b3.clicked.connect(self._clean_tiny_ann)
+        b4 = QPushButton("批量导入 JSON…"); b4.clicked.connect(self._batch_import_json)
+        r2.addWidget(b3); r2.addWidget(b4)
+        v.addLayout(r1); v.addLayout(r2)
+        return w
+
+    def _open_dir(self, path):
+        if path and os.path.isdir(path):
+            try:
+                os.startfile(path)
+            except Exception as e:
+                self.log(f"打开目录失败: {e}")
+        else:
+            self.log("目录不存在（先打开工程）")
+
+    def _refresh_image_info(self):
+        """刷新「图像管理」里的三个小区块（导航/保存后调用）。双击模型也会走这里）。"""
+        try:
+            path = getattr(self.canvas, "current_image_path", "") or ""
+            if path:
+                self.img_info_name.setText(os.path.basename(path))
+                sz = getattr(self.canvas.image, "size", None)
+                self.img_info_size.setText(("尺寸 %dx%d" % (sz[0], sz[1])) if sz else "尺寸 —")
+                m = getattr(self.canvas, "mask", None)
+                if m is not None:
+                    import numpy as _np
+                    n = len([u for u in _np.unique(m).tolist() if u not in (0, 255)])
+                    self.img_info_ann.setText("标注块：%d 类" % n)
+                else:
+                    self.img_info_ann.setText("标注块：无掩膜")
+            else:
+                self.img_info_name.setText("—"); self.img_info_size.setText("—"); self.img_info_ann.setText("—")
+        except Exception:
+            pass
+        try:
+            pd = self._project_dir
+            if not pd:
+                self.split_count_label.setText("—"); self.out_count_label.setText("—"); return
+            sp = os.path.join(pd, "train_test_split.json")
+            tr = te = va = 0
+            if os.path.exists(sp):
+                with open(sp, "r", encoding="utf-8") as f:
+                    d = json.load(f)
+                for v in d.values():
+                    if v == "test": te += 1
+                    elif v == "val": va += 1
+                    else: tr += 1
+            self.split_count_label.setText("训练 %d / 测试 %d / 验证 %d" % (tr, te, va))
+            od = os.path.join(pd, "outputs")
+            n_out = 0
+            if os.path.isdir(od):
+                for _r, _d, fs in os.walk(od):
+                    n_out += len(fs)
+            self.out_count_label.setText("输出文件：%d 个" % n_out)
+        except Exception:
+            pass
+        self._refresh_model_list(force=False)   # 指纹没变就直接返回（切图/保存后也会走到这里）
+
+    def _make_ti_section(self, title, stack):
+        """拼一段「训练」或「推理」：标题固定，只有内容滚动。"""
+        box = QWidget(); lay = QVBoxLayout(box)
+        lay.setContentsMargins(4, 2, 2, 2); lay.setSpacing(2)
+        lay.addWidget(title)
+        sa = QScrollArea()
+        sa.setWidgetResizable(True)
+        sa.setFrameShape(QFrame.NoFrame)
+        sa.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        sa.setWidget(stack)
+        sa.setMinimumHeight(90)
+        lay.addWidget(sa, 1)
+        return box
+
+    def _ti_section_need(self, i):
+        """第 i 段内容实际需要多高（标题 + **当前子页**）。
+
+        ⚠️ 不能用 `QStackedWidget.sizeHint()`：它是"所有子页里最大的那个"
+        （实测训练栈 991px，而当前可见页只要 150px 左右），拿它算会得出完全离谱的高度。
+        """
+        sp = getattr(self, "_ti_split", None)
+        if sp is None or i >= sp.count():
+            return 90
+        box = sp.widget(i)
+        lay = box.layout()
+        h = 0
+        for j in range(lay.count()):
+            w = lay.itemAt(j).widget()
+            if w is None:
+                continue
+            if isinstance(w, QScrollArea):
+                inner = w.widget()
+                cur = inner.currentWidget() if isinstance(inner, QStackedWidget) else None
+                h += (cur.sizeHint().height() if cur is not None else inner.sizeHint().height())
+            else:
+                h += w.sizeHint().height()
+        m = lay.contentsMargins()
+        h += m.top() + m.bottom() + max(0, lay.count() - 1) * lay.spacing()
+        return max(90, int(h) + 8)
+
+    def _fit_ti_split(self):
+        """按两段内容的实际高度分配高度 —— 别让"内容很少的那段"占着一大片空白。
+
+        规则：
+          · 两段内容都装得下 -> 第一段（训练）只拿它需要的高度，**剩下的全给第二段（推理）**；
+            多余空白落在整个面板最下面，看起来是"表单尾巴"，而不是夹在中间的大洞。
+          · 装不下 -> 按内容比例分配，两段各自滚动。
+        面板刚显示时高度还是 0，这里会自己重试几次（不是轮询，最多 5 次就停）。
+        """
+        sp = getattr(self, "_ti_split", None)
+        if sp is None or sp.count() != 2:
+            return
+        try:
+            avail = sp.height()
+            if avail < 80:
+                tries = getattr(self, "_ti_fit_tries", 0) + 1
+                self._ti_fit_tries = tries
+                if tries <= 5:
+                    QTimer.singleShot(80, self._fit_ti_split)
+                return
+            self._ti_fit_tries = 0
+            need = [self._ti_section_need(0), self._ti_section_need(1)]
+            if sum(need) <= avail:
+                sizes = [need[0], avail - need[0]]
+            else:
+                k = avail / float(sum(need))
+                sizes = [max(90, int(need[0] * k)), max(90, int(need[1] * k))]
+            if list(sizes) != list(sp.sizes()):
+                sp.setSizes(sizes)
+        except Exception:
+            pass
+
+    def _on_ti_stack_page_changed(self, _idx=0):
+        """训练/推理栈换子页后重新量高。
+
+        ShrinkStack 只按 currentWidget() 报告尺寸，但 QScrollArea 的
+        widgetResizable 只在它自己 resize 时重排内部 widget —— 光调
+        updateGeometry() 不够：从"高页"切到"矮页"时会缩不回去，
+        页内 stretch 又把空白吃掉，等于老问题复发（实测 991px 卡住不退）。
+        """
+        for st in (getattr(self, "_train_stack", None), getattr(self, "_infer_stack", None)):
+            if st is not None:
+                st.updateGeometry()
+        QTimer.singleShot(0, self._refit_ti_viewports)
+
+    @staticmethod
+    def _stack_scroll(st):
+        """找到栈所在的 QScrollArea。
+
+        ⚠️ 不能直接取 `st.parentWidget()`：QScrollArea.setWidget() 把 widget 挂在
+        **viewport** 下面，parentWidget() 拿到的是 viewport，不是 QScrollArea 本身
+        （第一版就是这么写错的，结果 resize 分支永远不执行）。
+        """
+        w = st.parentWidget()
+        while w is not None and not isinstance(w, QScrollArea):
+            w = w.parentWidget()
+        return w
+
+    def _refit_ti_viewports(self):
+        """按当前子页把栈重新撑到正确高度，并把两段的分割比例重新算一遍。"""
+        self._fit_ti_split()
+        # QSplitter 的几何要下一轮事件循环才落到控件上，所以量 viewport 得再延后一拍
+        # （早一拍量到的是旧尺寸，会把这轮 resize 直接废掉 —— 实测"矮页"缩不回去）
+        QTimer.singleShot(0, self._apply_ti_viewport_sizes)
+
+    def _apply_ti_viewport_sizes(self):
+        """按**当前子页**的实际需要，显式给两个栈定高、定宽。
+
+        为什么要 setFixedHeight 这么霸道：QStackedLayout 的 minimumSize() 取的是
+        "所有子页里最大的那个"（实测 649x991），Qt 会拿它当硬约束 —— 从高页切到矮页时
+        直接把控件钉在 991 上缩不回去（实测切到占位页后卡在 1031px），页内空白照旧。
+        我们自己按当前页的 sizeHint 定高，就绕开了这个缓存；超高时滚动条照常出现。
+        """
+        for st in (getattr(self, "_train_stack", None), getattr(self, "_infer_stack", None)):
+            if st is None:
+                continue
+            sa = self._stack_scroll(st)
+            if sa is None:
+                continue
+            vp = sa.viewport().size()
+            if vp.width() <= 0:
+                continue
+            need = max(1, st.sizeHint().height())
+            if st.minimumHeight() != need or st.maximumHeight() != need:
+                st.setFixedHeight(need)
+            if st.width() != vp.width():
+                st.resize(vp.width(), need)
+            st.updateGeometry()
+
+    def show_right_tab(self, key):
+        """按**名字**切右侧页签（"annot"/"ver"/"train"/"det"/"hm"/"aug"）。
+
+        不用写死下标：页签合并过一次（训练+推理），下标一改就得满文件找 setCurrentIndex，
+        漏一处就是"点了没反应"或"跳到别的页"，且不报错。
+        """
+        idx = getattr(self, "_right_tab_index", {}).get(key)
+        if idx is None:
+            return
+        self._right_stack.setCurrentIndex(idx)
+        btn = self._right_tabs.button(idx)
+        if btn is not None:
+            btn.setChecked(True)
+        if key == "train":
+            # 页签刚可见时才量得到真实高度，所以延后一拍再按内容分配高度
+            QTimer.singleShot(0, self._refit_ti_viewports)
+
+    def _make_block_header(self, text):
+        """块表的小标题（只作标题、不可点 —— 免得看着像按钮却点不动）。
+
+        ⚠️ 这个方法是**在 _create_right_panel 之后**定义的，不要为了"就近"把它挪进
+        函数中间：那样会把函数后半段（Version/Inference/Training 等面板和 `return p`）
+        变成它的不可达函数体，`_create_right_panel` 直接返回 None，
+        外面 addWidget(None) 表现为 **0xC0000005 访问违例崩溃**，
+        而 py_compile 完全查不出来（已踩过，靠 faulthandler 定位）。
+        """
+        lb = QLabel(text)
+        lb.setStyleSheet("color:#00E5FF; font-size:10px; font-weight:bold; padding:0 2px;")
+        return lb
 
     # ============ 全局数据增强（增强参数面板，所有训练任务共用） ============
     def _init_augment_panel(self):
@@ -1237,8 +2029,7 @@ class MainWindow(QMainWindow):
         # Auto-switch to HM tab on first height map detection
         if not getattr(self, "_hm_tab_auto_shown", False):
             self._hm_tab_auto_shown = True
-            self._right_stack.setCurrentIndex(5)
-            self._right_tabs.button(5).setChecked(True)
+            self.show_right_tab("params")       # 高度图参数在「参数管理」模块里
         vmin, vmax = canvas._get_height_auto_range()
         self.hm_status.setText(f"Height map: {canvas._height_image.size[0]}x{canvas._height_image.size[1]}")
         self.hm_data_range.setText(f"Data range: [{vmin:.4f}, {vmax:.4f}] mm")
@@ -1330,6 +2121,14 @@ class MainWindow(QMainWindow):
         self.infer_status.setText(f"Inferring... {cur}/{total}")
 
     # ============ Project Management ============
+    def _set_theme(self, name):
+        """切换主题（深色/浅色）并记住选择。"""
+        from ui.themes import apply_theme
+        from PyQt5.QtWidgets import QApplication
+        apply_theme(QApplication.instance(), name)
+        self._save_ui_setting("theme", name)
+        self.log(f"[主题] 已切换到 {name}（下次启动保持）")
+
     def _refresh_projects(self):
         projects = self.pm.list_projects()
         now = datetime.now().timestamp()
@@ -1398,6 +2197,39 @@ class MainWindow(QMainWindow):
         task_combo = QComboBox()
         task_combo.addItems(["语义分割", "目标检测", "图像分类", "混合分类", "OCR文字识别", "OCV字符质检"])
         form.addRow("Task Type:", task_combo)
+        # ── 输入类型（视图数）──
+        # 只有语义分割需要：单张 = 3 通道，三视图 = 9 通道（漫反射/形状图1/形状图2）。
+        # 声明写进 project.json 后，训练端自动识别，不必靠扫文件名去猜。
+        _VIEW_PRESETS = [
+            (["te_0"], {"te_0": "图像"},
+             "任意文件名。训练按单张 3 通道处理。"),
+            (["te_0", "te_1"], {"te_0": "视图1", "te_1": "视图2"},
+             "命名约定：xxx_te_0.jpg / xxx_te_1.jpg（掩膜只需标 te_0 一张，多视图共用）"),
+            (["te_0", "te_1", "te_2"],
+             {"te_0": "漫反射", "te_1": "形状图1", "te_2": "形状图2"},
+             "命名约定：xxx_te_0.jpg(漫反射) / xxx_te_1.jpg(形状图1) / xxx_te_2.jpg(形状图2)；"
+             "掩膜只需标 te_0 一张，三视图共用。"),
+        ]
+        view_combo = QComboBox()
+        view_combo.addItems(["单张图像（1 视图 / 3 通道）",
+                             "双视图（2 视图 / 6 通道）",
+                             "三视图（3 视图 / 9 通道）"])
+        view_combo.setCurrentIndex(2)   # 默认三视图：本项目主场景
+        form.addRow("Input Type:", view_combo)
+        view_hint = QLabel("")
+        view_hint.setWordWrap(True)
+        view_hint.setStyleSheet("color:#00E5FF;")
+        form.addRow("", view_hint)
+
+        def _sync_view_rows():
+            is_seg = (task_combo.currentText() == "语义分割")
+            for w in (view_combo, view_hint, form.labelForField(view_combo)):
+                if w is not None:
+                    w.setVisible(is_seg)
+            view_hint.setText(_VIEW_PRESETS[view_combo.currentIndex()][2] if is_seg else "")
+        task_combo.currentIndexChanged.connect(_sync_view_rows)
+        view_combo.currentIndexChanged.connect(_sync_view_rows)
+        _sync_view_rows()
         # Directory chooser
         dir_row = QHBoxLayout()
         dir_edit = QLineEdit()
@@ -1425,7 +2257,18 @@ class MainWindow(QMainWindow):
         try:
             task_type = task_combo.currentText()
             parent_dir = dir_edit.text().strip() or None
-            self.pm.create_project(name, task_type, parent_dir=parent_dir)
+            # 仅语义分割且选了多视图时才声明；单张保持与既有工程完全一致
+            mv_views, mv_names = None, None
+            if task_type == "语义分割":
+                vs, vn, _ = _VIEW_PRESETS[view_combo.currentIndex()]
+                if len(vs) > 1:
+                    mv_views, mv_names = vs, vn
+            self.pm.create_project(name, task_type, parent_dir=parent_dir,
+                                   views=mv_views, view_names=mv_names)
+            if mv_views:
+                self.log(f"工程 {name} 已声明为 {len(mv_views)} 视图（{3 * len(mv_views)} 通道）："
+                         + " / ".join(f"{v}({mv_names[v]})" for v in mv_views))
+                self.log("图片命名需符合：" + " ".join(f"xxx_{v}.jpg" for v in mv_views))
             # For mixed classification, show paired image loader first
             if task_type == "混合分类":
                 dlg2 = MixedAddImagesDialog(self)
@@ -1513,8 +2356,7 @@ class MainWindow(QMainWindow):
             # Default to the annotation panel on the right after opening a project
             # (task switching above may have moved it to inference/training).
             if hasattr(self, "_right_tabs"):
-                self._right_stack.setCurrentIndex(0)
-                self._right_tabs.button(0).setChecked(True)
+                self.show_right_tab("annot")
 
             self._load_image_list_async()
             self.log(f"Opened: {name}")
@@ -1545,12 +2387,15 @@ class MainWindow(QMainWindow):
         self.log("Project closed")
         self.setWindowTitle(f"{APP_NAME} v{APP_VERSION}")
 
-    def _show_task_panel(self, outer_idx, infer_idx=None, train_idx=None):
-        """Switch the right-panel tab and sync infer/train sub-stack."""
-        self._right_stack.setCurrentIndex(outer_idx)
-        btn = self._right_tabs.button(outer_idx)
-        if btn is not None:
-            btn.setChecked(True)
+    def _show_task_panel(self, infer_idx=None, train_idx=None, prefer=None):
+        """切到「训练/推理」合并面板，并同步两个子栈。
+
+        合并前这里是 `_show_task_panel(outer_idx, ...)`，调用点还要按"有没有模型"
+        在 2（训练）/3（推理）之间挑页签。现在两段在同一个面板里同时可见，
+        不需要再挑页签；高度也改成**按内容自动分配**（`_fit_ti_split`），
+        所以 `prefer` 只作为兼容参数保留、不再决定比例。
+        """
+        self.show_right_tab("params")           # 训练/推理参数都在「参数管理」模块里
         if infer_idx is not None and hasattr(self, "_infer_stack"):
             self._infer_stack.setCurrentIndex(infer_idx)
         if train_idx is not None and hasattr(self, "_train_stack"):
@@ -1571,7 +2416,45 @@ class MainWindow(QMainWindow):
                     or os.path.exists(os.path.join(project_dir, "models", "last_model.pth")))
         return False
 
+    def _project_has_height(self):
+        """工程里有没有高度图（TIF/TIFF）。混合分类工程一定要显示高度图参数。"""
+        try:
+            if getattr(self, "_mixed_cls_mode", False):
+                return True
+            pd = self._project_dir
+            if not pd:
+                return False
+            img_dir = os.path.join(pd, "images")
+            if os.path.isdir(img_dir):
+                for fn in os.listdir(img_dir):
+                    if fn.lower().endswith((".tif", ".tiff")):
+                        return True
+        except Exception:
+            pass
+        return False
+
+    def _update_hm_section_visibility(self):
+        """按工程实际情况显隐「高度图参数」区块（只在状态变化时才动控件）。"""
+        try:
+            sec = getattr(self, "_hm_section", None)
+            if sec is None:
+                return
+            want = bool(self._project_has_height())
+            if want != getattr(self, "_hm_section_visible", None):
+                self._hm_section_visible = want
+                sec.setVisible(want)
+        except Exception:
+            pass
+
     def _set_task(self, task):
+        # 「检测工具」只对目标检测工程有意义：语义分割/分类/OCR 工程里那些
+        # HBB/OBB 画框按钮点了也没用，不该占位置（用户要求）。
+        try:
+            if hasattr(self, "_det_section"):
+                self._det_section.setVisible(task == "detection")
+        except Exception:
+            pass
+        self._update_hm_section_visibility()
         """Switch between segmentation and detection task modes."""
         # Annotation toolbar (rect/circle/ellipse brush tools) is segmentation-only
         self.annotation_toolbar.setVisible(task == "segmentation")
@@ -1602,10 +2485,8 @@ class MainWindow(QMainWindow):
             self._sync_det_toolbar()
             self._infer_title.setText("推理 · 目标检测")
             self._train_title.setText("训练 · 目标检测")
-            if self._task_model_exists("detection"):
-                self._show_task_panel(3, infer_idx=0, train_idx=1)
-            else:
-                self._show_task_panel(2, infer_idx=0, train_idx=1)
+            self._show_task_panel(infer_idx=0, train_idx=1,
+                                  prefer="infer" if self._task_model_exists("detection") else "train")
         elif task == "classification":
             self._detection_mode = False
             self._cls_mode = True
@@ -1624,10 +2505,8 @@ class MainWindow(QMainWindow):
             self._restore_confusion_matrix()
             self._infer_title.setText("推理 · 图像分类")
             self._train_title.setText("训练 · 图像分类")
-            if self._task_model_exists("classification"):
-                self._show_task_panel(3, infer_idx=1, train_idx=2)
-            else:
-                self._show_task_panel(2, infer_idx=1, train_idx=2)
+            self._show_task_panel(infer_idx=1, train_idx=2,
+                                  prefer="infer" if self._task_model_exists("classification") else "train")
         elif task == "mixed_classification":
             self._detection_mode = False
             self._cls_mode = True
@@ -1647,10 +2526,8 @@ class MainWindow(QMainWindow):
             self._restore_confusion_matrix()
             self._infer_title.setText("推理 · 混合分类")
             self._train_title.setText("训练 · 混合分类")
-            if self._task_model_exists("mixed_classification"):
-                self._show_task_panel(3, infer_idx=1, train_idx=2)
-            else:
-                self._show_task_panel(2, infer_idx=1, train_idx=2)
+            self._show_task_panel(infer_idx=1, train_idx=2,
+                                  prefer="infer" if self._task_model_exists("mixed_classification") else "train")
         elif task == "ocr":
             self._detection_mode = False
             self._cls_mode = False
@@ -1663,7 +2540,9 @@ class MainWindow(QMainWindow):
             self.canvas.update()
             self._infer_title.setText("推理 · OCR 文字识别")
             self._train_title.setText("训练 · OCR（无训练流程）")
-            self._show_task_panel(3, infer_idx=2, train_idx=3)
+            # OCR/OCV 没有训练流程（train_idx=3 是"无训练流程"提示页），
+            # 所以合并面板里当然重点给推理段
+            self._show_task_panel(infer_idx=2, train_idx=3, prefer="infer")
         elif task == "ocv":
             self._detection_mode = False
             self._cls_mode = False
@@ -1675,7 +2554,7 @@ class MainWindow(QMainWindow):
             self.canvas.update()
             self._infer_title.setText("推理 · OCV 字符质检")
             self._train_title.setText("训练 · OCV（无训练流程）")
-            self._show_task_panel(3, infer_idx=3, train_idx=3)
+            self._show_task_panel(infer_idx=3, train_idx=3, prefer="infer")
         else:
             self._detection_mode = False
             self._cls_mode = False
@@ -1689,10 +2568,8 @@ class MainWindow(QMainWindow):
             self.canvas.update()
             self._infer_title.setText("推理 · 语义分割")
             self._train_title.setText("训练 · 语义分割")
-            if self._task_model_exists("segmentation"):
-                self._show_task_panel(3, infer_idx=0, train_idx=0)
-            else:
-                self._show_task_panel(2, infer_idx=0, train_idx=0)
+            self._show_task_panel(infer_idx=0, train_idx=0,
+                                  prefer="infer" if self._task_model_exists("segmentation") else "train")
 
     def _load_classification_labels(self):
         """Load classification labels from class_labels.json."""
@@ -1731,6 +2608,15 @@ class MainWindow(QMainWindow):
     def _import_images(self):
         if not self.current_project:
             return QMessageBox.information(self, "Hint", "Please open a project first")
+        proj_dir = str(self.pm.get_project_dir(self.current_project["name"]))
+        # 多视图工程走专用对话框（每视图一个槽位 + 绑定图片组 + 预览），
+        # 单图工程保持原有"选文件即导入"的流程不变。
+        try:
+            from training.multiview_gui import is_multiview_project
+            if is_multiview_project(proj_dir):
+                return self._import_images_multiview(proj_dir)
+        except Exception as e:
+            self.log(f"多视图检测失败，按单图流程处理: {type(e).__name__}: {e}")
         files, _ = QFileDialog.getOpenFileNames(
             self, "Import Images", "",
             "Images (*.png *.jpg *.jpeg *.bmp *.tif *.tiff)")
@@ -1758,6 +2644,54 @@ class MainWindow(QMainWindow):
                 self._load_image_list_async()
             threading.Thread(target=copy_files, daemon=True).start()
 
+    def _import_images_multiview(self, proj_dir):
+        """多视图加图：每个视图一个槽位，按 _te_N 后缀绑定成组后整组导入。
+
+        注意：**不创建空白 JSON**。平台的 SegmentationDataset 优先读同名的 LabelMe JSON，
+        若生成空白 JSON 会把真正的掩膜 PNG 遮蔽掉（全变背景），标注就白做了。
+        """
+        from training.multiview_gui import project_views
+        from ui.multiview_add_dialog import MultiViewAddDialog
+        views, vnames = project_views(proj_dir)
+        dlg = MultiViewAddDialog(self, views=views, view_names=vnames)
+        if dlg.exec_() != QDialog.Accepted:
+            self.log("已取消加图")
+            return
+        views, per_view = dlg.get_view_paths()
+        n = min((len(x) for x in per_view), default=0)
+        if n == 0:
+            return QMessageBox.warning(self, "提示", "没有可导入的图片组")
+        for info in dlg.dropped_info():
+            self.log(f"未成组已剔除：{info}（缺少配对的其它视图）")
+        img_dir = os.path.join(proj_dir, "images")
+        os.makedirs(img_dir, exist_ok=True)
+        total = n * len(views)
+        self.log(f"导入多视图图片：{n} 组 × {len(views)} 视图（{'/'.join(views)}）= {total} 张")
+
+        def copy_files():
+            done, skip = 0, 0
+            for i in range(n):
+                for vi in range(len(views)):
+                    src = per_view[vi][i]
+                    dst = os.path.join(img_dir, os.path.basename(src))
+                    if os.path.exists(dst):
+                        skip += 1
+                    else:
+                        try:
+                            shutil.copy2(src, dst)
+                        except Exception as e:
+                            self.log(f"复制失败 {os.path.basename(src)}: {e}")
+                    done += 1
+                    if done % 100 == 0:
+                        self.log(f"导入进度 {done}/{total}")
+            self.log(f"导入完成：{n} 组 × {len(views)} 视图 = {total} 张"
+                     + (f"（已存在跳过 {skip} 张）" if skip else ""))
+            self.log("下一步：在右侧图像列表点开任一 _te_0 图，用标注工具画掩膜并 Save"
+                     "（掩膜多视图共用，只需标 te_0 一张）")
+            self._load_image_list_async()
+
+        threading.Thread(target=copy_files, daemon=True).start()
+
     def _load_image_list_async(self):
         if not self.current_project:
             return
@@ -1782,6 +2716,13 @@ class MainWindow(QMainWindow):
         self._suppress_cell_change = True
         self._filter_images("")
         self._suppress_cell_change = False
+        # 多视图信息在_这里_打日志（不能在 _filter_images 里打，会重入崩溃）
+        if getattr(self, "_mv_mode_list", False):
+            _meta = getattr(self, "_mv_view_meta", []) or []
+            self.log(f"多视图列表：{getattr(self, '_mv_group_count', 0)} 组 × {len(_meta)} 视图"
+                     f"（{'/'.join(v for v, _ in _meta)}），已按组成行")
+        elif getattr(self, "_mv_list_note", ""):
+            self.log(f"多视图识别/分组失败，按单图列表显示：{self._mv_list_note}")
         # Keep detection annotation state created by _set_task("detection")
         # for detection projects. The async image-list scan must not reset it,
         # otherwise the det overlay/BoxManager lose their loaded boxes and
@@ -1871,6 +2812,24 @@ class MainWindow(QMainWindow):
         text_lower = text.lower().strip()
         sf_text = self.split_filter.currentText()
         annotated_only = self.annotated_check.isChecked()
+        # 标注名字筛选：选项跟随工程类别（懒同步）
+        lf_text = ""
+        try:
+            classes = [c for c in (getattr(self, "_cached_classes", []) or [])
+                       if c and str(c).lower() != "background"]
+            want = ["All Labels"] + classes
+            cur = [self.label_filter.itemText(i) for i in range(self.label_filter.count())]
+            if want != cur:
+                prev = self.label_filter.currentText()
+                self.label_filter.blockSignals(True)
+                self.label_filter.clear()
+                self.label_filter.addItems(want)
+                idx = self.label_filter.findText(prev)
+                self.label_filter.setCurrentIndex(max(0, idx))
+                self.label_filter.blockSignals(False)
+            lf_text = self.label_filter.currentText()
+        except Exception:
+            lf_text = ""
         # Load prediction counts + IoU scores from outputs dir (triggered async by _populate_image_list)
         # Ensure fallback dicts exist
         if not hasattr(self, "_pred_count"):
@@ -1922,10 +2881,55 @@ class MainWindow(QMainWindow):
                 _paired.append((gp, hp))
             _image_sources = _paired
 
+        # Multi-view: group the N view files of one cell into a single row
+        # （照 _mixed 的配对模式做：一行 = 一颗电芯，名称列显示 N 行文件名）
+        # ⚠️ 这段运行在"_filter_images"这个会被频繁重建的热路径上，
+        #    绝对不能在这里调 self.log() —— 日志面板会触发重入，
+        #    递归撑爆 C 栈直接 0xC0000409 崩溃（已踩过）。信息先存属性，外面再打。
+        _mv = False
+        _mv_views = []
+        _mv_names = {}
+        _mv_err = ""
+        if self.current_project:
+            try:
+                from training.multiview_gui import is_multiview_project, project_views
+                _mvdir = str(self.pm.get_project_dir(self.current_project["name"]))
+                if is_multiview_project(_mvdir):
+                    _mv_views, _mv_names = project_views(_mvdir)
+                    _mv = len(_mv_views) > 1
+            except Exception as e:
+                _mv_err = f"{type(e).__name__}: {e}"
+                _mv = False
+        self._mv_mode_list = _mv
+        self._mv_view_meta = [(v, (_mv_names or {}).get(v, v)) for v in _mv_views] if _mv else []
+        self._mv_list_note = _mv_err
+        if _mv:
+            try:
+                _maps = {v: {} for v in _mv_views}
+                for p in self._all_images:
+                    _stem = os.path.splitext(os.path.basename(p))[0]
+                    for v in _mv_views:
+                        if _stem.endswith("_" + v):
+                            _maps[v][_stem[: -(len(v) + 1)]] = p
+                            break
+                # 只保留 N 个视图都齐的组（缺视图无法成样本）
+                _keys = sorted(set.intersection(*[set(m) for m in _maps.values()])) if _maps else []
+                _image_sources = [tuple(_maps[v][k] for v in _mv_views) for k in _keys]
+                self._mv_group_count = len(_keys)
+            except Exception as e:
+                self._mv_list_note = f"分组失败: {type(e).__name__}: {e}"
+                self._mv_group_count = 0
+                _mv = False
+                self._mv_mode_list = False
+                _image_sources = self._all_images
+
         for _img_entry in _image_sources:
             if _mixed:
                 path = _img_entry[0]
                 height_path = _img_entry[1]
+            elif _mv:
+                path = _img_entry[0]
+                height_path = ""
             else:
                 path = _img_entry
                 height_path = ""
@@ -1993,6 +2997,9 @@ class MainWindow(QMainWindow):
                 label_match = any(text_lower in lbl.lower() for lbl in shape_labels)
                 if not label_match:
                     continue
+            # 标注名字下拉：只看含该标注类别的图片
+            if lf_text and lf_text != "All Labels" and lf_text not in shape_labels:
+                continue
 
             if annotated_only and not has_ann:
                 continue
@@ -2039,6 +3046,14 @@ class MainWindow(QMainWindow):
                 continue
             if sf_text == "Test Only" and split_status != " [Test]":
                 continue
+            # 以下两项对标友商筛选下拉（标注状态）
+            if sf_text == "Annotated Only" and not has_ann:
+                continue
+            if sf_text == "Unannotated Only" and has_ann:
+                continue
+            # 注意：Has Result / No Result 放到下面 pred_cnt 算完之后再判 ——
+            # pred_cnt 在本轮后面才赋值，写在这里会读到**上一轮的旧值**，
+            # 不报错但筛选结果是错的（静默错误，比崩溃更难发现）。
 
             # Image dimensions (cached)
             img_w, img_h = 0, 0
@@ -2058,6 +3073,11 @@ class MainWindow(QMainWindow):
 
             # Prediction count / classification result
             pred_cnt = getattr(self, "_pred_count", {}).get(base, 0)
+            # 结果筛选必须放在 pred_cnt 赋值**之后**（见上面注释）
+            if sf_text == "Has Result" and not pred_cnt:
+                continue
+            if sf_text == "No Result" and pred_cnt:
+                continue
             cls_text = ""
             ocr_text = ""
             ocr_score = ""
@@ -2098,6 +3118,9 @@ class MainWindow(QMainWindow):
                 'pred_cnt': pred_cnt,
                 'height_path': height_path,
                 'height_fname': os.path.basename(height_path) if height_path else "",
+                # 多视图：这一组的所有视图文件（第 0 个是主标注视图）
+                'view_paths': list(_img_entry) if _mv else [],
+                'view_fnames': [os.path.basename(x) for x in _img_entry] if _mv else [],
             })
 
             if split_status == " [Train]":
@@ -2146,6 +3169,7 @@ class MainWindow(QMainWindow):
         self._update_selection_count()
 
         # Update accordion header counts
+        self._update_hm_section_visibility()      # 列表扫完后才能确知有没有 TIF
         self._update_accordion_counts(
             result_count=total_shapes,
             ann_count=total_annotated,
@@ -2172,6 +3196,8 @@ class MainWindow(QMainWindow):
             global_idx = start + i
             if getattr(self, "_mixed_cls_mode", False) and data.get('height_fname'):
                 name_text = data['fname'] + '\n' + data['height_fname']
+            elif data.get('view_fnames'):
+                name_text = '\n'.join(data['view_fnames'])     # 多视图：N 行文件名
             else:
                 name_text = data['fname']
             items_data = [
@@ -2194,6 +3220,8 @@ class MainWindow(QMainWindow):
             # 默认整行白色；「标注」「结果」两列的类别名用 Class 表对应的类别颜色
             if getattr(self, "_mixed_cls_mode", False) and data.get('height_fname'):
                 self.image_list_widget.setRowHeight(row, 40)
+            elif data.get('view_fnames'):
+                self.image_list_widget.setRowHeight(row, 16 * len(data['view_fnames']) + 10)
             for col in range(8):
                 item = self.image_list_widget.item(row, col)
                 if item:
@@ -2207,8 +3235,23 @@ class MainWindow(QMainWindow):
                 if data.get('cls_text'):
                     self._apply_class_color(row, 5, data['cls_text'], labels)
 
+        # 自适应「图片名」列宽：长文件名/多视图多行文件名不再被截断，
+        # 用户不需要手动拖列宽（多视图下这一列有 N 行文件名，尤其容易挤爆）。
+        try:
+            hdr = self.image_list_widget.horizontalHeader()
+            self.image_list_widget.resizeColumnToContents(1)
+            w = self.image_list_widget.columnWidth(1)
+            lo = 180 if getattr(self, "_mv_mode_list", False) else 130
+            self.image_list_widget.setColumnWidth(1, int(max(lo, min(w + 18, 520))))
+            hdr.setSectionResizeMode(1, QHeaderView.Interactive)   # 仍可手动调
+        except Exception:
+            pass
+
         # Update pagination controls
-        self.page_info_label.setText(f"Page {self._current_page + 1}/{total_pages}")
+        if getattr(self, "_page_size", 50) >= 10 ** 8:
+            self.page_info_label.setText(f"全部 {total}")
+        else:
+            self.page_info_label.setText(f"Page {self._current_page + 1}/{total_pages}")
         self.page_prev_btn.setEnabled(self._current_page > 0)
         self.page_next_btn.setEnabled(self._current_page < total_pages - 1)
 
@@ -2246,11 +3289,15 @@ class MainWindow(QMainWindow):
         self._render_page()
 
     def _on_page_size_changed(self, text):
-        """Handle page size change."""
-        try:
-            self._page_size = int(text)
-        except ValueError:
-            self._page_size = 50
+        """Handle page size change. 「全部」= 不分页。"""
+        t = (text or "").strip()
+        if t in ("全部", "All", "all", "所有"):
+            self._page_size = 10 ** 9          # 不分页：一次渲染全部
+        else:
+            try:
+                self._page_size = max(1, int(t))
+            except ValueError:
+                self._page_size = 50
         self._current_page = 0
         self._render_page()
 
@@ -2394,7 +3441,7 @@ class MainWindow(QMainWindow):
             return
 
         # --- Segmentation mode (original) ---
-        headers = ["序号", "类别", "分数", "面积", "周长", "半径", "平均灰度", "交并比"]
+        headers = ["序号", "类别", "分数", "面积", "宽度", "高度", "周长", "半径", "平均灰度", "交并比"]
         self.stats_table.setColumnCount(len(headers))
         self.stats_table.setHorizontalHeaderLabels(headers)
         for i in range(len(headers)):
@@ -2408,48 +3455,80 @@ class MainWindow(QMainWindow):
             return
         pred_classes = getattr(self.canvas, "_pred_classes", None)
 
+        import cv2 as _cv2
         import numpy as _np
         img_gray = getattr(self.canvas, "_cached_gray", None)
 
+        # ⚠️ 现在**按连通域逐行**（以前是"一个类别一行"把整类像素合并统计）：
+        #    推理参数里的"排序 / 最大检测个数"是按**块**定义的，一个类别一行的表
+        #    根本体现不出来；友商的结果表也是逐块的。宽度/高度两列同时给出，
+        #    方便直接对照推理参数里的宽度/高度区间。
         rows = []
-        for cid in sorted(set(_np.unique(arr)) - {0, 255}):
-            region = (arr == cid)
-            area = int(region.sum())
-            # Perimeter: approximate via contour arc length
-            import cv2
-            binary = region.astype(_np.uint8) * 255
-            contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            perimeter = sum(int(cv2.arcLength(c, True)) for c in contours)
-            radius = int(_np.sqrt(area / _np.pi))
-            # Avg gray
-            avg_gray = 0.0
-            if img_gray is not None and img_gray.shape[:2] == region.shape[:2]:
-                try:
-                    avg_gray = float(img_gray[region].mean())
-                except IndexError:
-                    avg_gray = 0.0
-            # IoU: best-matching annotation class
-            iou_val = 0.0
-            if mask is not None and mask.shape == arr.shape:
-                best = 0.0
-                for ac in set(_np.unique(mask)) - {0, 255}:
-                    ann_region = (mask == ac)
-                    inter = (region & ann_region).sum()
-                    uni = (region | ann_region).sum()
-                    if uni > 0:
-                        ciou = inter / uni
-                        if ciou > best:
-                            best = ciou
-                iou_val = best
-            # Class name
-            cls_name = (pred_classes[int(cid)] if pred_classes and int(cid) < len(pred_classes) else f"Class{int(cid)}")
-            # Score: IoU*100 as approximate confidence
-            score = "%.1f%%" % (iou_val * 100)
-            rows.append((cls_name, score, str(area), str(perimeter), str(radius), "%.1f" % avg_gray, "%.3f" % iou_val))
+        for cid in sorted(set(_np.unique(arr).tolist()) - {0, 255}):
+            cls_name = (pred_classes[int(cid)] if pred_classes and int(cid) < len(pred_classes)
+                        else "Class%d" % int(cid))
+            binary = (arr == cid).astype(_np.uint8)
+            n_lab, lab, stats, _cents = _cv2.connectedComponentsWithStats(binary, 8)
+            for i in range(1, n_lab):
+                x, y, bw, bh, area = (int(v) for v in stats[i])
+                if area <= 0:
+                    continue
+                region = (lab == i)
+                cnts, _ = _cv2.findContours((region.astype(_np.uint8) * 255),
+                                            _cv2.RETR_EXTERNAL, _cv2.CHAIN_APPROX_SIMPLE)
+                perimeter = sum(int(_cv2.arcLength(c, True)) for c in cnts)
+                radius = int(_np.sqrt(area / _np.pi))
+                avg_gray = 0.0
+                if img_gray is not None and img_gray.shape[:2] == region.shape[:2]:
+                    try:
+                        avg_gray = float(img_gray[region].mean())
+                    except IndexError:
+                        avg_gray = 0.0
+                # IoU: 与标注里"最匹配的那个类"求交并比
+                iou_val = 0.0
+                if mask is not None and mask.shape == arr.shape:
+                    best = 0.0
+                    for ac in set(_np.unique(mask).tolist()) - {0, 255}:
+                        ann_region = (mask == ac)
+                        inter = (region & ann_region).sum()
+                        uni = (region | ann_region).sum()
+                        if uni > 0:
+                            ciou = inter / uni
+                            if ciou > best:
+                                best = ciou
+                    iou_val = best
+                # 分数：优先用**模型置信度**（概率图里该块的平均值），
+                # 没有概率图时退回"与标注的 IoU"（并在表头体现不出来，只能靠数值判断）
+                prob_mean = None
+                prob_map = getattr(self.canvas, "_pred_prob", None)
+                if prob_map is not None and getattr(prob_map, "shape", None) == region.shape:
+                    try:
+                        prob_mean = float(prob_map[region].mean())
+                    except Exception:
+                        prob_mean = None
+                rows.append((cls_name, iou_val, area, bw, bh, perimeter, radius, avg_gray,
+                             iou_val, prob_mean))
+
+        # 排序：跟随推理参数面板里的"排序"（默认面积降序）
+        try:
+            how = ((self.infer_params.current_params() or {}).get("global") or {}).get("sort", "面积降序")
+        except Exception:
+            how = "面积降序"
+        if how == "面积升序":
+            rows.sort(key=lambda r: r[2])
+        elif how == "分数降序":
+            rows.sort(key=lambda r: -r[1])
+        elif how == "宽度降序":
+            rows.sort(key=lambda r: -r[3])
+        elif how != "无":
+            rows.sort(key=lambda r: -r[2])
 
         self.stats_table.setRowCount(len(rows))
-        for i, (cls_name, score, area, perim, rad, gray, iou) in enumerate(rows):
-            items = [str(i+1), cls_name, score, area, perim, rad, gray, iou]
+        for i, r in enumerate(rows):
+            (cls_name, sc, area, bw, bh, perim, rad, gray, iou, prob_mean) = r
+            sc_txt = ("%.1f%%" % (prob_mean * 100)) if prob_mean is not None else ("%.1f%%" % (sc * 100))
+            items = [str(i + 1), cls_name, sc_txt, str(area), str(bw), str(bh),
+                     str(perim), str(rad), "%.1f" % gray, "%.3f" % iou]
             for j, val in enumerate(items):
                 item = QTableWidgetItem(val)
                 item.setTextAlignment(Qt.AlignCenter)
@@ -2598,6 +3677,21 @@ class MainWindow(QMainWindow):
                 else:
                     self.canvas.load_image(path)
                     self._viewer_stack.setCurrentIndex(0)
+                    # 多视图：把这一组的其余视图并排显示（默认 N*1 横排）
+                    _vp = []
+                    if hasattr(self, "_filtered_data") and self._filtered_data:
+                        _gi = (getattr(self, "_current_page", 0) * getattr(self, "_page_size", 50) + idx)
+                        if 0 <= _gi < len(self._filtered_data):
+                            _vp = self._filtered_data[_gi].get("view_paths") or []
+                    if len(_vp) > 1:
+                        _meta = getattr(self, "_mv_view_meta", []) or []
+                        _items = []
+                        for _k, _p in enumerate(_vp):
+                            _nm = _meta[_k][1] if _k < len(_meta) else os.path.basename(_p)
+                            _items.append((_p, _nm))
+                        self.mv_preview.set_views(_items)
+                    else:
+                        self.mv_preview.clear_views()
                     # Keep heatmap display state when switching images
                     if getattr(self.canvas, "_show_heatmap", False):
                         self._auto_load_heatmap_for_current()
@@ -2652,7 +3746,137 @@ class MainWindow(QMainWindow):
 
         action4 = menu.addAction("Open JSON Location")
         action4.triggered.connect(lambda: self._open_json_location(selected_rows, project_dir))
+        menu.addSeparator()
+        # 全选（列表已默认不分页，全选后可一次性批量操作/批量导入 JSON）
+        act_all = menu.addAction("Select All (全选)")
+        act_all.setShortcut(QKeySequence.SelectAll)
+        act_all.triggered.connect(self.image_list_widget.selectAll)
+        menu.addSeparator()
+        # 第 5 项：把选中的这批图片的 JSON 从外部目录批量导进来
+        # （多视图工程会连同该组的 N 个视图 JSON 一起导，命名可带 _te_N 后缀）
+        action5 = menu.addAction("Import JSON for Selected...")
+        action5.setToolTip("从指定文件夹导入这批选中图片的 JSON 标注（按文件名匹配）")
+        action5.triggered.connect(lambda: self._import_json_for_selected(selected_rows, project_dir))
+        # 导出/清理：原来在「标注操作」区块里（该区块已去掉），改挂到这里 ——
+        # 这几个都是"对这批图做点什么"，和上面的导入 JSON 是同一类操作。
+        menu.addSeparator()
+        a_exp = menu.addAction("导出 JSON...")
+        a_exp.triggered.connect(self._export_json)
+        a_exp2 = menu.addAction("导出标注")
+        a_exp2.triggered.connect(self._export_annotations)
+        a_tiny = menu.addAction("清理碎标注 (<10k px)...")
+        a_tiny.setToolTip("把面积小于 1 万像素的标注块整块删掉")
+        a_tiny.triggered.connect(self._clean_tiny_ann)
+        # 删除 / 撤销：破坏性操作单独一组放最后，避免误点。
+        # 删除走 core.file_ops（移到工程外备份目录 → 可撤销；索引同步清理）。
+        menu.addSeparator()
+        from core import file_ops as _fo
+        try:
+            n_bak = len(_fo.list_backups(project_dir))
+        except Exception:
+            n_bak = 0
+        act_del = menu.addAction("🗑  删除选中图片…")
+        act_del.setToolTip("删除选中图片（多视图按**整组**）：图片 + 标注 JSON + 掩膜一起移走，"
+                           "并同步清理 train_test_split / class_labels / tile_index")
+        act_del.triggered.connect(lambda: self._delete_selected_images(selected_rows, project_dir))
+        act_undo = menu.addAction("↩  撤销上次删除" + (f"（可撤销 {n_bak} 次）" if n_bak else ""))
+        act_undo.setEnabled(n_bak > 0)
+        act_undo.setToolTip("把最近一次删除的文件与索引还原回去" if n_bak else "没有可撤销的删除记录")
+        act_undo.triggered.connect(lambda: self._undo_last_delete(project_dir))
         menu.exec_(self.image_list_widget.viewport().mapToGlobal(pos))
+
+    # ---------- 删除 / 撤销（见 core/file_ops.py） ----------
+
+    def _row_bases(self, selected_rows):
+        """把选中的行号解析成 base 名（多视图行的 base 可能是任一视图）。"""
+        out = []
+        for r in sorted(selected_rows):
+            item = self.image_list_widget.item(r, 0)
+            p = item.data(Qt.UserRole) if item else None
+            if p:
+                out.append(os.path.splitext(os.path.basename(p))[0])
+        return out
+
+    def _delete_selected_images(self, selected_rows, project_dir):
+        """删除选中行（多视图整组）：文件 → 索引 → 刷新，可撤销。"""
+        from core import file_ops as fo
+        bases = self._row_bases(selected_rows)
+        if not bases:
+            return
+        tgt = fo.collect_targets(project_dir, bases)
+        if not tgt["files"]:
+            QMessageBox.information(self, "删除", "选中项没有可删除的文件（可能已删除）。")
+            return
+        preview = "\n".join("  • " + os.path.relpath(p, project_dir) for p in tgt["files"][:5])
+        more = len(tgt["files"]) - 5
+        if more > 0:
+            preview += f"\n  … 还有 {more} 个"
+        msg = (f"将删除以下文件：\n\n{preview}\n\n"
+               f"共 {len(tgt['files'])} 个文件（{len(tgt['groups'])} 组 / {len(tgt['bases'])} 个视图）。\n"
+               f"图片、标注 JSON、掩膜会一起移走，划分与类别索引同步清理。\n"
+               f"删除后可右键「撤销上次删除」还原。")
+        if QMessageBox.question(self, "确认删除", msg,
+                                QMessageBox.Yes | QMessageBox.No,
+                                QMessageBox.No) != QMessageBox.Yes:
+            return
+        rep = fo.delete_data(project_dir, bases, log=self.log)
+        self._refresh_after_delete(rep)
+        if rep.failed:
+            QMessageBox.warning(
+                self, "部分文件未能删除",
+                "有 %d 个文件删除失败（可能正被推理/训练占用）：\n%s" % (
+                    len(rep.failed),
+                    "\n".join(f"  • {p}（{e}）" for p, e in rep.failed[:5])))
+
+    def _undo_last_delete(self, project_dir):
+        """撤销最近一次删除（文件 + 索引一起还原）。"""
+        from core import file_ops as fo
+        if not fo.list_backups(project_dir):
+            QMessageBox.information(self, "撤销", "没有可撤销的删除记录。")
+            return
+        if QMessageBox.question(self, "撤销上次删除",
+                                "将还原最近一次删除的文件与索引，继续？",
+                                QMessageBox.Yes | QMessageBox.No,
+                                QMessageBox.Yes) != QMessageBox.Yes:
+            return
+        r = fo.undo_last(project_dir, log=self.log)
+        try:
+            self._pred_count_cache_key = None
+        except Exception:
+            pass
+        self._refresh_after_annotation_import()
+        QMessageBox.information(self, "撤销", "已还原 %d 个文件。" % r.get("restored", 0))
+
+    def _refresh_after_delete(self, rep=None):
+        """删除后刷新：图片列表 / 画布 / Class 表 / 统计。
+
+        复用 `_refresh_after_annotation_import()`（导入 JSON 用的就是那套刷新），
+        额外做两件删除专有的事：清 per-image 缓存、当前图被删时切到下一张。
+        """
+        deleted = set(getattr(rep, "bases", []) or [])
+        try:
+            self._pred_count_cache_key = None
+            for attr in ("_pred_count", "_infer_times"):
+                d = getattr(self, attr, None)
+                if isinstance(d, dict):
+                    for k in list(d.keys()):
+                        kb = os.path.splitext(os.path.basename(str(k)))[0]
+                        if kb in deleted:
+                            d.pop(k, None)
+        except Exception as e:
+            self.log(f"清理删除缓存失败: {type(e).__name__}: {e}")
+        try:
+            cur = getattr(self.canvas, "current_image_path", None)
+            if cur and not os.path.exists(cur):
+                for r in range(self.image_list_widget.rowCount()):
+                    it = self.image_list_widget.item(r, 0)
+                    p = it.data(Qt.UserRole) if it else None
+                    if p and os.path.exists(p):
+                        self.canvas.load_image(p)
+                        break
+        except Exception as e:
+            self.log(f"删除后切换当前图失败: {type(e).__name__}: {e}")
+        self._refresh_after_annotation_import()
 
     def _set_selected_split(self, selected_rows, split_key, project_dir, split_map):
         from training.dataset import save_train_test_split
@@ -2667,6 +3891,171 @@ class MainWindow(QMainWindow):
         self._filter_images(self.search_input.text())
         self._refresh_class_ui()
         self.log(f"Set {len(selected_rows)} image(s) to {split_key}")
+
+    def _import_json_for_selected(self, selected_rows, project_dir):
+        """把选中图片（多视图则含该组全部视图）的 JSON 从外部目录批量导入。
+
+        匹配规则：按**文件名**（不含扩展名）匹配，目录递归查找。
+        落地位置：与图片同目录（images/<base>.json），这是平台约定，
+        标注编辑器与训练数据集都按这个位置读取。
+        """
+        img_dir = os.path.join(project_dir, "images")
+        if not os.path.isdir(img_dir):
+            return QMessageBox.warning(self, "Warning", "No images directory found")
+        last = getattr(self, "_last_json_import_dir", "") or ""
+        folder = QFileDialog.getExistingDirectory(self, "选择 JSON 所在文件夹", last)
+        if not folder:
+            return
+        self._last_json_import_dir = folder
+
+        # 收集目标 base 名（多视图：该组的每个视图各要一个 JSON）
+        targets = []
+        for r in sorted(selected_rows):
+            gi = self._current_page * self._page_size + r
+            d = self._filtered_data[gi] if hasattr(self, "_filtered_data") and 0 <= gi < len(self._filtered_data) else None
+            if not d:
+                continue
+            vps = d.get("view_paths") or []
+            if vps:
+                targets += [os.path.splitext(os.path.basename(p))[0] for p in vps]
+            elif d.get("base"):
+                targets.append(d["base"])
+        if not targets:
+            return QMessageBox.information(self, "Hint", "没有可导入的图片")
+        targets = list(dict.fromkeys(targets))     # 去重保序
+
+        # 索引外部目录里的 JSON（递归，按文件名匹配）
+        src = {}
+        try:
+            for root, _dirs, files in os.walk(folder):
+                for fn in files:
+                    if fn.lower().endswith(".json"):
+                        src.setdefault(os.path.splitext(fn)[0], os.path.join(root, fn))
+        except Exception as e:
+            return QMessageBox.warning(self, "Error", f"扫描目录失败: {e}")
+
+        self.log(f"导入 JSON：选中 {len(selected_rows)} 行 / 需要 {len(targets)} 个标注文件，"
+                 f"来源 {folder}")
+        self.log(f"  该目录下共找到 {len(src)} 个 JSON")
+
+        copied, missing = 0, []
+        for base in targets:
+            sp = src.get(base)
+            if not sp:
+                missing.append(base)
+                continue
+            dst = os.path.join(img_dir, base + ".json")
+            try:
+                shutil.copy2(sp, dst)
+                copied += 1
+            except Exception as e:
+                self.log(f"  复制失败 {base}: {e}")
+                missing.append(base)
+
+        self.log(f"导入完成：成功 {copied} 个" + (f"，未找到 {len(missing)} 个" if missing else ""))
+        if missing:
+            self.log("  未找到的（前 5 个）：" + "、".join(missing[:5]))
+            QMessageBox.information(
+                self, "导入结果",
+                f"成功导入 {copied} 个 JSON。\n\n有 {len(missing)} 个在所选目录里没找到同名文件：\n"
+                + "、".join(missing[:5]) + ("..." if len(missing) > 5 else ""))
+        else:
+            QMessageBox.information(self, "导入结果", f"成功导入 {copied} 个 JSON。")
+        # 导入的 JSON 里可能有工程还没登记的类别 —— 类别表的真源就是这些 JSON，
+        # 必须先补类别表，再刷新列表/预览/Class 表，否则 Class 表还是空的。
+        if copied:
+            try:
+                self._load_classes()
+            except Exception as e:
+                self.log(f"[Class] 导入后补类别失败: {type(e).__name__}: {e}")
+            self._rebuild_masks_for_imported(targets)
+        self._refresh_after_annotation_import()
+
+    def _rebuild_masks_for_imported(self, bases):
+        """导入 JSON 后顺手把掩膜 PNG 生成出来。
+
+        平台约定 `annotations/<组名>_te_0_mask.png` 是训练要读的文件，而画布只在
+        "打开某张图"时才会顺手从 JSON 生成掩膜 —— 批量导完不生成的话，
+        训练会直接报缺掩膜（用户还得一张张点开）。这里按 JSON 一次性补齐。
+        多视图只生成 te_0（三视图像素对齐、共用一张掩膜），单图工程按原名生成。
+        """
+        try:
+            from annotation.labelme_io import load_labelme_json, shapes_to_mask
+            from core.class_discovery import read_project_classes
+            pd = self._project_dir
+            classes = list(getattr(self, "_cached_classes", []) or read_project_classes(pd))
+            ann_dir = os.path.join(pd, "annotations")
+            os.makedirs(ann_dir, exist_ok=True)
+            mv = bool(getattr(self, "_mv_mode_list", False))
+            made = skipped = 0
+            for base in bases:
+                if mv and not base.endswith("_te_0"):
+                    continue                      # 多视图：只要 te_0 的掩膜
+                jp = os.path.join(pd, "images", base + ".json")
+                if not os.path.exists(jp):
+                    continue
+                shapes, info = load_labelme_json(jp)
+                if not shapes:
+                    skipped += 1
+                    continue
+                h = w = 0
+                for ext in (".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"):
+                    ip = os.path.join(pd, "images", base + ext)
+                    if os.path.exists(ip):
+                        try:
+                            from PIL import Image as _I
+                            w, h = _I.open(ip).size
+                        except Exception:
+                            h = w = 0
+                        break
+                if not (h and w) and info:
+                    h, w = info.get("imageHeight", 0), info.get("imageWidth", 0)
+                if not (h and w):
+                    continue
+                unknown = set()
+                mask = shapes_to_mask(shapes, classes, (h, w), unknown_out=unknown)
+                from PIL import Image as _I
+                _I.fromarray(mask.astype("uint8")).save(os.path.join(ann_dir, base + "_mask.png"))
+                made += 1
+                if unknown:
+                    self.log(f"  ⚠️ {base}: JSON 里有类别表之外的标签 {sorted(unknown)}（已按背景处理）")
+            self.log(f"掩膜 PNG 生成：{made} 个" + (f"，空标注跳过 {skipped} 个" if skipped else ""))
+        except Exception as e:
+            self.log(f"生成掩膜失败（不影响 JSON 已导入）: {type(e).__name__}: {e}")
+
+    def _refresh_after_annotation_import(self):
+        """导入标注后同步刷新三处：图片列表 / 预览画布（含掩膜叠加）/ Class 表。"""
+        # ① 图片列表：标注列、形状数、统计条
+        try:
+            self._pred_count_cache_key = None
+            self._filter_images(self.search_input.text())
+        except Exception as e:
+            self.log(f"刷新图片列表失败: {type(e).__name__}: {e}")
+        # ② 预览画布：重新载入当前图，掩膜叠加立刻反映新导入的标注
+        try:
+            cur = getattr(self.canvas, "current_image_path", None)
+            if cur and os.path.exists(cur):
+                self.canvas.load_image(cur)
+                if getattr(self.canvas, "_show_heatmap", False):
+                    self._auto_load_heatmap_for_current()
+                if self.mv_preview.is_multiview():
+                    self.mv_preview._sync_from_canvas(force=True)
+            self._refresh_versions()
+        except Exception as e:
+            self.log(f"刷新预览失败: {type(e).__name__}: {e}")
+        # ③ Class 表 + 右侧统计
+        for fn in ("_refresh_class_ui", "_refresh_stats", "_update_stats"):
+            try:
+                f = getattr(self, fn, None)
+                if callable(f):
+                    f()
+            except Exception:
+                pass
+        try:
+            self._stats_timer.start(150)
+        except Exception:
+            pass
+        self.log("已刷新：图片列表 / 预览 / Class 表")
 
     def _open_json_location(self, selected_rows, project_dir):
         """Open folder in Explorer and highlight the JSON file."""
@@ -2688,6 +4077,9 @@ class MainWindow(QMainWindow):
         """Refresh version history list for current image."""
         if not hasattr(self, "version_list"):
             return
+        # 顺带刷新「图像管理」里的图像信息/划分/输出，以及「模型管理」的模型列表 ——
+        # 这个函数已经在切图、保存标注、打开工程时被调用，挂在这里不用再加触发点。
+        self._refresh_image_info()
         self.version_list.clear()
         path = getattr(self.canvas, "current_image_path", None)
         if not path or not self.current_project:
@@ -2727,21 +4119,45 @@ class MainWindow(QMainWindow):
     # ============ Class Management ============
 
     def _load_classes(self):
-        """Load class list from project config."""
+        """Load class list from project config.
+
+        类别表的真源是**图片的标注 JSON**：project.json 里的 classes 只是缓存。
+        所以这里读完 project.json 还要扫一遍 JSON，把没登记过的类别补进去，
+        否则会出现"JSON 导进来了、图片列表能看标注，但 Class 表一行都没有、
+        手工标注也选不到类别"（真实踩过：工程 classes 是 []）。
+        """
         if not self.current_project:
             return
         pd = str(self.pm.get_project_dir(self.current_project["name"]))
-        config_path = os.path.join(pd, "project.json")
-        classes = ["background"]
-        if os.path.exists(config_path):
-            try:
-                with open(config_path, "r", encoding="utf-8") as f:
-                    meta = json.load(f)
-                classes = meta.get("classes", ["background"])
-            except Exception:
-                pass
+        from core.class_discovery import merge_classes, read_project_classes, discover_labels
+        try:
+            # ⚠️ 试过"用 JSON 指纹跳过全量扫描"的缓存，实测**反而更慢**
+            #    （同进程内第 2/3 次 _load_classes 从 1.2s 涨到 8~10s），已回退。
+            #    大头不在这里，而在下面的 _compute_counts（遍历 402 个文件逐个读 JSON/掩膜）。
+            discovered = discover_labels(pd)
+            classes, added = merge_classes(pd, discovered)
+            if added:
+                self.log(f"[Class] 从标注 JSON 补入 {len(added)} 个类别: {', '.join(added)}")
+        except Exception as e:
+            self.log(f"[Class] 扫描标注 JSON 失败，仅用 project.json: {type(e).__name__}: {e}")
+            classes = read_project_classes(pd)
         self._cached_classes = classes
+        self._reload_canvas_classes()
         self._refresh_class_ui()
+
+    def _reload_canvas_classes(self):
+        """把类别表推给画布（LabelManager 决定掩膜像素值，必须与类别表同源）。"""
+        try:
+            lm = getattr(self.canvas, "label_manager", None)
+            if lm is not None:
+                lm.load()
+                # 类别变多/变少后，当前选中类别要夹到合法范围
+                n = len(getattr(lm, "classes", []) or [])
+                if n and getattr(self.canvas, "current_class_id", 0) >= n:
+                    self.canvas.set_class(n - 1)
+        except Exception as e:
+            self.log(f"[Class] 画布类别表刷新失败: {type(e).__name__}: {e}")
+
     def _on_class_changed(self, current):
         """Handle class selection change in class list."""
         if current < 0 or not hasattr(self.canvas, "label_manager"):
@@ -2890,9 +4306,15 @@ class MainWindow(QMainWindow):
         self.log(f"[Class] Moved '{classes[new_row]}' {'up' if delta < 0 else 'down'}")
 
     def _refresh_class_stats(self):
-        """Recompute class table counts from project files."""
+        """Recompute class table counts from project files.
+
+        注意：这里必须走 `_load_classes()`（重读 project.json + 重扫标注 JSON），
+        不能只 `_refresh_class_ui()`（那只是把**内存里**的类别表重画一遍）。
+        用户在外部补了 JSON 标注、或类别表还是空的时，按"刷新"就是要重新发现类别。
+        """
+        self._load_classes()
         self._refresh_class_ui()
-        self.log("[Class] Stats refreshed")
+        self.log("[Class] 已重读 project.json 并重扫标注 JSON，统计数据已更新")
 
     def _refresh_class_ui(self):
         """Refresh class list and palette from _cached_classes."""
@@ -2900,6 +4322,13 @@ class MainWindow(QMainWindow):
         if hasattr(self, "class_list"):
             self.class_list.set_project_dir(self._project_dir_or_none())
             self.class_list.set_classes(classes)
+        self._update_class_count_label(len(classes or []))
+        # 推理参数面板按类别组织：类别表一变，它的下拉也要跟着重建
+        try:
+            if hasattr(self, "infer_params"):
+                self.infer_params.set_project(self._project_dir_or_none(), classes)
+        except Exception:
+            pass
 
     # ============ UI Panel Toggles ============
 
@@ -4547,8 +5976,8 @@ class MainWindow(QMainWindow):
         images_dir = os.path.join(project_dir, "images")
         if not os.path.exists(images_dir):
             return QMessageBox.warning(self, "Warning", "No images directory found")
-        # Show training settings dialog
-        dlg = TrainSettingsDialog(self)
+        # Show training settings dialog（传入工程目录，自动识别三视图工程）
+        dlg = TrainSettingsDialog(self, project_dir=project_dir)
         if dlg.exec_() != dlg.Accepted:
             return
         settings = dlg.get_settings()
@@ -4567,13 +5996,37 @@ class MainWindow(QMainWindow):
         self.train_progress.setValue(0)
 
         from training.trainer import Trainer
-        self.trainer = Trainer(project_dir, model_name=model_name)
+        # ── 三视图工程走 9 通道训练器 ──
+        # 两者 train() 接口完全一致，所以下面的线程/进度/停止逻辑不用改一行。
+        is_mv = bool(settings.get("is_multiview", False))
+        if is_mv:
+            from training.multiview_gui import MultiViewTrainer
+            # 分块参数来自训练设置对话框（「分块」勾选框 + 滑窗大小 + 步长% + 取样方式）
+            _tile = int(settings.get("tile_size", 256)) if settings.get("tile", False) else 0
+            self.trainer = MultiViewTrainer(
+                project_dir, model_name=model_name,
+                unet_base=settings.get("unet_base", 16),
+                unet_depth=settings.get("unet_depth", 4),
+                tile_size=_tile,
+                tile_mode=settings.get("tile_mode", "slide"),
+                tile_stride_pct=settings.get("tile_stride", 75))
+            if _tile:
+                self.log(f"分块训练：滑窗 {_tile}px，步长 {settings.get('tile_stride', 75)}%"
+                         f"（{'均匀滑窗遍历' if settings.get('tile_mode', 'slide') == 'slide' else '缺陷居中+负样本'}）"
+                         f" —— 原分辨率裁剪，不做整图缩放")
+            else:
+                self.log("⚠️ 未勾选分块：整图会被缩放到训练尺寸，大图上的小缺陷可能被缩小抹掉")
+        else:
+            self.trainer = Trainer(project_dir, model_name=model_name)
 
         resume = settings.get("resume", False)
         self.log(f"Starting training: {model_name}, {epochs} epochs, batch={batch_size}"
                  + (f", {cv_folds}-fold CV" if cv_folds > 1 else "")
                  + f", loss={loss_name}, aug={self._augment_level_text(augment)}"
-                 + (f", resume" if resume else ""))
+                 + (f", resume" if resume else "")
+                 + ("  [三视图 9 通道]"
+                    + (f" base={settings.get('unet_base', 16)} depth={settings.get('unet_depth', 4)}"
+                       if model_name == "unet" else "") if is_mv else ""))
         # 独立 Loss/Acc 窗口随训练启动自动弹出（与分类训练一致）
         try:
             win = self._ensure_loss_window()
@@ -4720,6 +6173,128 @@ class MainWindow(QMainWindow):
             self._run_det_inference_single(project_dir)
         else:
             self._run_seg_inference_single(project_dir)
+    # ────────── 多视图推理（三视图 9 通道）──────────
+    def _mv_key_of(self, image_path):
+        """从 <组名>_te_N.jpg 反推组名；不是多视图命名就返回原文件名。"""
+        import re as _re
+        stem = os.path.splitext(os.path.basename(image_path or ""))[0]
+        return _re.sub(r"_te_\d+$", "", stem)
+
+    def _mv_group_paths(self, project_dir, key):
+        """找出某一组的三视图路径 {view: path}；缺视图返回空（调用方报错）。"""
+        from training.multiview_gui import project_views
+        views, _names = project_views(project_dir)
+        img_dir = os.path.join(project_dir, "images")
+        out = {}
+        for v in views:
+            for ext in (".jpg", ".jpeg", ".png", ".bmp"):
+                p = os.path.join(img_dir, f"{key}_{v}{ext}")
+                if os.path.exists(p):
+                    out[v] = p
+                    break
+        return out
+
+    def _mv_infer_one(self, predictor, project_dir, image_path, tile=None):
+        """跑一组三视图推理，返回 (pred, overlay)。"""
+        from PIL import Image as _I
+        key = self._mv_key_of(image_path)
+        paths = self._mv_group_paths(project_dir, key)
+        missing = [v for v in predictor.views if v not in paths]
+        if missing:
+            raise RuntimeError(f"组 {key} 缺少视图 {missing}（三视图必须齐全）")
+        t = int(tile or self._mv_tile(project_dir))
+        imgs = {v: _I.open(paths[v]) for v in predictor.views}
+        pred, overlay = predictor.predict_multiview(
+            imgs, tile=t, stride=max(1, int(t * 0.75)), return_overlay=True)
+        self.log(f"[多视图推理] {key}：{len(predictor.views)} 视图 → {len(predictor.views)*3} 通道，"
+                 f"滑窗 {t}（原分辨率分块）")
+        return pred, overlay
+
+    def _mv_tile(self, project_dir):
+        """推理滑窗大小：优先用刚才训练设置里保存的，其次 256。"""
+        try:
+            return int(self._load_ui_setting("tile_size", 256)) or 256
+        except Exception:
+            return 256
+
+    def _run_seg_batch_inference_mv(self, project_dir, model_file, out_dir):
+        """多视图批处理：**按组遍历**，每组一次 9 通道推理，写出与单图流程同格式的结果。"""
+        import threading
+        from inference.predictor import Predictor
+        from flow.frame import Frame
+        from flow.registry import create_node
+        from training.multiview_gui import project_views
+        views, _names = project_views(project_dir)
+        keys = []
+        img_dir = os.path.join(project_dir, "images")
+        for fn in sorted(os.listdir(img_dir)):
+            stem, ext = os.path.splitext(fn)
+            if ext.lower() not in (".jpg", ".jpeg", ".png", ".bmp"):
+                continue
+            if not stem.endswith("_" + views[0]) or stem in keys:
+                continue
+            key = stem[: -(len(views[0]) + 1)]
+            if all(any(os.path.exists(os.path.join(img_dir, f"{key}_{v}{e}"))
+                       for e in (".jpg", ".jpeg", ".png", ".bmp")) for v in views):
+                keys.append(key)
+        if not keys:
+            return QMessageBox.warning(self, "Warning", "没有三视图齐全的组")
+        total = len(keys)
+        self._stop_flag = False
+        self.btn_infer_stop.setEnabled(True)
+        self.infer_progress.setVisible(True)
+        self.infer_progress.setMaximum(total); self.infer_progress.setValue(0)
+        self.infer_status.setText("Running...")
+        self.log(f"多视图批处理：{total} 组（每组一次 {len(views)*3} 通道推理，按组不按文件）")
+
+        def run():
+            done = fail = 0
+            try:
+                pr = Predictor(project_dir, model_file, backend=self._backend_key())
+                writer = create_node("seg_result_writer", node_id="out", out_dir=out_dir)
+                from PIL import Image as _I
+                import numpy as _np
+                t = self._mv_tile(project_dir)
+                for i, key in enumerate(keys, 1):
+                    _t0 = time.time()
+                    if self._stop_flag:
+                        self.log_signal.emit("已停止（完成 %d/%d 组）" % (done, total)); break
+                    try:
+                        paths = self._mv_group_paths(project_dir, key)
+                        imgs = {v: _I.open(paths[v]) for v in pr.views}
+                        pred, overlay = pr.predict_multiview(
+                            imgs, tile=t, stride=max(1, int(t * 0.75)), return_overlay=True)
+                        fr = Frame(image=_np.array(imgs[pr.views[0]]), path=paths[pr.views[0]],
+                                   result={"mask": pred, "overlay": overlay,
+                                           "classes": list(pr.classes)},
+                                   meta={"project_dir": project_dir})
+                        writer.run(fr)
+                        done += 1
+                        # ⚠️ 每组都要打一行进度：原来只在**失败**时打日志，
+                        #    成功时一声不吭 -> 用户看到"点了没动静"（实测反馈）。
+                        #    134 组 × 8s ≈ 18 分钟，中间没有任何输出等于让人干等。
+                        _dt = time.time() - _t0
+                        self.log_signal.emit("[%d/%d] %s 完成 (%.1fs)" % (i, total, key, _dt))
+                        self.infer_status.setText("Running... %d/%d" % (i, total))
+                    except Exception as e:
+                        fail += 1
+                        self.log_signal.emit("[%d/%d] %s: FAILED - %s: %s" % (i, total, key, type(e).__name__, e))
+                    self.infer_progress_signal.emit(i, total)
+                self.log_signal.emit("多视图批处理完成：成功 %d / 失败 %d，输出 %s" % (done, fail, out_dir))
+                self.infer_status.setText("Complete")
+                self._pred_count_cache_key = None
+                threading.Thread(target=self._load_output_stats_async, args=(project_dir,), daemon=True).start()
+            except Exception as e:
+                import traceback
+                self.log_signal.emit(f"多视图批处理错误: {e}")
+                self.log_signal.emit(traceback.format_exc())
+                self.infer_status.setText("Failed")
+            finally:
+                self.btn_infer_stop.setEnabled(False)
+                self.infer_progress.setVisible(False)
+
+        threading.Thread(target=run, daemon=True).start()
+
     def _run_seg_inference_single(self, project_dir):
         model_file = self.model_combo.currentText()
         model_path = os.path.join(project_dir, "models", model_file)
@@ -4727,11 +6302,27 @@ class MainWindow(QMainWindow):
             return QMessageBox.warning(self, "Error",
                 f"Model not found: {model_path}\nPlease train a model first.")
         self.log(f"Running inference: {model_file}")
+        _t_infer = time.time()          # 单张推理耗时（回填列表「耗时」列）
         try:
             from inference.predictor import Predictor
             predictor = Predictor(project_dir, model_file, backend=self._backend_key())
-            pred, overlay = predictor.predict(self.canvas.image, return_overlay=True,
-                tiled=self.tiled_check.isChecked(), scale=self.scale_slider.value() / 100.0)
+            if getattr(predictor, "views", ()):
+                # 多视图工程：三视图按 views 顺序拼 N*3 通道，走和训练/工具菜单**同一条**路
+                pred, overlay = self._mv_infer_one(predictor, project_dir,
+                                                   getattr(self.canvas, "current_image_path", ""))
+            else:
+                pred, overlay = predictor.predict(self.canvas.image, return_overlay=True,
+                    tiled=self.tiled_check.isChecked(), scale=self.scale_slider.value() / 100.0)
+
+            # ── 推理参数过滤（面积/宽度/高度/角度/灰度/分数 + 孔洞填充/最大个数）──
+            #    以前这一步**完全没有**：模型 argmax 出来是什么就显示什么，
+            #    碎点、孔洞、超限块全都直接进结果表。
+            prob = getattr(predictor, "last_prob", None)
+            self.canvas._pred_prob = prob
+            pred, report = self._apply_infer_params(pred, predictor, project_dir, prob=prob)
+            if any(report.get("dropped", {}).values()):
+                overlay = predictor._create_overlay(self.canvas.image, pred)
+
             h, w, ch = overlay.shape
             qimg = QImage(overlay.data, w, h, 3 * w, QImage.Format_RGB888)
             self.canvas._prediction_qimage = qimg.copy()
@@ -4740,11 +6331,72 @@ class MainWindow(QMainWindow):
             self.canvas._pred_classes = predictor.classes
             self.canvas.update()
             self.log("Inference complete - Space to view")
+            # ── 推理完必须刷两处（用户实测反馈：Result 表和图片列表都没动）──
+            #    ① Result 表：按连通域逐行（_update_stats 里做）
             self._update_stats()
+            #    ② 图片列表的「结果 / 分数 / 耗时」列：这两列读的是 _pred_count / _infer_times，
+            #       单张推理以前只写了画布的预测层，从没回填这两张表 -> 列表一直显示 0
+            try:
+                import numpy as _np, cv2 as _cv2
+                base = os.path.splitext(os.path.basename(
+                    getattr(self.canvas, "current_image_path", "") or ""))[0]
+                pm = getattr(self.canvas, "_prediction_mask", None)
+                n_blocks = 0
+                if pm is not None and base:
+                    for cid in set(_np.unique(pm).tolist()) - {0, 255}:
+                        n, _lab, _st, _c = _cv2.connectedComponentsWithStats(
+                            (pm == cid).astype(_np.uint8), 8)
+                        n_blocks += max(0, n - 1)
+                if base:
+                    if not hasattr(self, "_pred_count") or self._pred_count is None:
+                        self._pred_count = {}
+                    self._pred_count[base] = n_blocks
+                    if not hasattr(self, "_infer_times") or self._infer_times is None:
+                        self._infer_times = {}
+                    self._infer_times[base] = round(time.time() - _t_infer, 2)
+                self.log(f"本图预测块数：{n_blocks}（已回填图片列表「结果」列）")
+                self._pred_count_cache_key = None
+                self._filter_images(self.search_input.text())
+            except Exception as e:
+                self.log(f"[刷新列表] 失败: {type(e).__name__}: {e}")
         except Exception as e:
             import traceback
             self.log(traceback.format_exc())
             QMessageBox.warning(self, "Error", f"Inference failed: {e}")
+
+    def _apply_infer_params(self, pred, predictor=None, project_dir=None, prob=None):
+        """按「推理参数」过滤分割结果，并把结果写日志/状态栏。
+
+        返回 (过滤后的掩膜, report)。任何异常都不影响出图 —— 过滤失败就原样返回。
+        """
+        try:
+            from inference.params import filter_prediction, summarize
+            project_dir = project_dir or self._project_dir
+            lm = getattr(self.canvas, "label_manager", None)
+            classes = list(getattr(lm, "classes", []) or [])
+            panel = getattr(self, "infer_params", None)
+            params = panel.current_params() if panel is not None else None
+            if params is None:
+                from inference.params import load_params
+                params = load_params(project_dir, classes)
+            gray = None
+            try:
+                gray = np.asarray(self.canvas.image.convert("L"), dtype=np.float32)
+            except Exception:
+                gray = None
+            out, report = filter_prediction(pred, classes=classes, params=params,
+                                            gray=gray, prob=prob, image=self.canvas.image)
+            txt = summarize(report)
+            if txt:
+                self.log("[推理参数] " + txt)
+                try:
+                    self.infer_result_label.setText(txt[:80])
+                except Exception:
+                    pass
+            return out, report
+        except Exception as e:
+            self.log(f"[推理参数] 过滤失败，已按原结果输出: {type(e).__name__}: {e}")
+            return pred, {}
     def _run_det_inference_single(self, project_dir):
         """Run detection inference on current image and display boxes."""
         model_path = os.path.join(project_dir, "models", "detection", "best.pt")
@@ -4794,6 +6446,14 @@ class MainWindow(QMainWindow):
         out_dir = os.path.join(project_dir, "outputs")
         os.makedirs(out_dir, exist_ok=True)
         from flow.batch import BatchRunner, build_seg_flow, list_images
+        # 多视图工程：**按"组"遍历**（一颗电芯一次推理）。
+        # 原来按 402 个文件遍历 -> 三视图各算一次、结果重复，且模型是 9 通道根本喂不进去。
+        try:
+            from training.multiview_gui import is_multiview_project
+            if is_multiview_project(project_dir):
+                return self._run_seg_batch_inference_mv(project_dir, model_file, out_dir)
+        except Exception as e:
+            self.log(f"[多视图批处理] 判定失败，退回单图流程: {type(e).__name__}: {e}")
         images = list_images(project_dir)
         if not images:
             return QMessageBox.warning(self, "Warning", "No images found")
@@ -5245,6 +6905,29 @@ class MainWindow(QMainWindow):
         dlg = HeatmapAnalyzerDialog(self)
         dlg.resize(1180, 760)
         dlg.exec_()
+
+    def _open_threshold_panel(self):
+        """Tools 菜单：分类判定阈值调优（过杀率 / 漏检率 权衡）。"""
+        try:
+            from ui.threshold_panel import ThresholdPanelDialog
+        except Exception as e:
+            import traceback
+            self.log_signal.emit(f"阈值调优面板打开失败: {e}")
+            self.log_signal.emit(traceback.format_exc())
+            return
+        project_dir = None
+        try:
+            if self.current_project:
+                project_dir = str(self.pm.get_project_dir(self.current_project["name"]))
+        except Exception:
+            project_dir = None
+        try:
+            dlg = ThresholdPanelDialog(self, project_dir=project_dir)
+            dlg.exec_()
+        except Exception as e:
+            import traceback
+            self.log_signal.emit(f"阈值调优面板异常: {e}")
+            self.log_signal.emit(traceback.format_exc())
     def _open_flow_editor(self):
         """打开可视化流程编辑器（Vision Flow）。"""
         try:
@@ -5295,7 +6978,15 @@ class MainWindow(QMainWindow):
             return
         try:
             from annotation.labelme_io import save_mask_to_json
-            save_mask_to_json(path, self.canvas.mask, self.canvas.label_manager.classes, self.current_project)
+            # ⚠️ 参数顺序：save_mask_to_json(mask, image_path, project_dir, class_names)
+            #    以前这里写成了 (path, mask, classes, project) —— 每次保存都抛异常，
+            #    被 except 吞掉只在日志里留一句 "Save failed"，按钮看着能点其实没保存。
+            classes = []
+            try:
+                classes = list(self.canvas.label_manager.classes)
+            except Exception:
+                classes = list(getattr(self, "_cached_classes", []) or ["background"])
+            save_mask_to_json(self.canvas.mask, path, self._project_dir, classes)
             self._refresh_class_ui()
             self._ann_refresh_timer.start()
             self.log("Annotation saved")
