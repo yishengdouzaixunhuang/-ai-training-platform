@@ -81,3 +81,6 @@ project.json.backup
 git_commit_push.bat
 # Crash logs
 crash_log.txt
+
+# 本机专属启动脚本（含本机 venv 路径）
+启动_本机.bat
