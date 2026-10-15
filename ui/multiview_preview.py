@@ -20,9 +20,9 @@ from __future__ import annotations
 
 import numpy as np
 
-from PyQt5.QtCore import Qt, QRectF, QEvent, QTimer
-from PyQt5.QtGui import QColor, QImage, QPainter, QPixmap
-from PyQt5.QtWidgets import (QComboBox, QFrame, QGridLayout, QHBoxLayout, QLabel,
+from PyQt5.QtCore import Qt, QRectF, QEvent, QTimer, pyqtSignal
+from PyQt5.QtGui import QColor, QCursor, QImage, QPainter, QPixmap
+from PyQt5.QtWidgets import (QFrame, QGridLayout, QLabel,
                              QSizePolicy, QVBoxLayout, QWidget)
 
 LAYOUT_MODES = ["自动（N*1）", "1*1（仅主视图）", "2*1", "3*1", "2*2", "4*1"]
@@ -119,6 +119,12 @@ def build_mask_overlay_rgba(mask, show_classes=True, show_ignore=True):
 class _RefPanel(QFrame):
     """只读参考视图：与主画布同步显示同一图像区域，滚轮也能缩放。"""
 
+    # 光标在本面板里的像素坐标（**主视图图像坐标系**，见 `_view_to_image`）。
+    # 无坐标（出图 / 离开控件 / 映射拿不到）发 (-1, -1) 表示"清空"。
+    # 只在整数像素真的变了才发：鼠标每动一下都发信号 = 让底部信息栏跟着重排，
+    # 比重绘还贵（主画布那条信号定的也是这个规矩）。
+    cursor_moved = pyqtSignal(int, int)
+
     def __init__(self, on_wheel=None, parent=None):
         super().__init__(parent)
         self.setFrameShape(QFrame.StyledPanel)
@@ -126,6 +132,12 @@ class _RefPanel(QFrame):
         self._on_wheel = on_wheel
         self._on_pan = None       # 由 MultiViewPreview 绑定：拖动平移画布
         self.setFocusPolicy(Qt.StrongFocus)
+        # ⚠️ **鼠标跟踪必须显式打开**，而且面板与内层 QLabel 两个都要开。
+        #    QLabel 默认只在**按住鼠标键**时才产生 MouseMove —— 于是"只是把光标停在
+        #    形状图1 / 形状图2 上"一个事件都没有，底部信息栏的「坐标 / RGB」
+        #    就一直停在 `--`（用户 2026-10-14 报的正是这个）。
+        #    主画布那边之所以"一直是对的"，是因为 AnnotationCanvas 自己开了跟踪。
+        self.setMouseTracking(True)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(2, 2, 2, 2)
         lay.setSpacing(2)
@@ -141,21 +153,39 @@ class _RefPanel(QFrame):
         self.view.setMinimumSize(40, 40)
         self.view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.view.setStyleSheet(f"border:none; color:#55607A; background:{_BG};")
+        self.view.setMouseTracking(True)        # 见 __init__ 里的说明：不开就收不到 MouseMove
         self.view.installEventFilter(self)      # 在图上滚动也要能缩放
         lay.addWidget(self.view, 1)
         self._src = None          # 本视图自己的原图（形状图就是形状图，绝不能换成别的）
         self._ov = None           # **仅掩膜**的 RGBA 叠加层（透明背景）
         self._ov_tag = None
-        self._state = None        # 上次渲染用的 (zoom, cx, cy, w, h)
+        # 标注标签（IGNORE / 类别名）——与主画布**同一份** shapes 与同一套绘制实现。
+        # 早期版本参考窗只画掩膜色块、不画标签，于是"只有漫反射图有 IGNORE/Ys 字样，
+        # 形状图1/形状图2 光有色块"（用户一眼就看出来了）。
+        self._shapes = None
+        self._label_tag = None
+        self._lab_ann = True      # Ctrl+Space：缺陷类别标签
+        self._lab_ign = True      # Ctrl+Alt：忽略区 IGNORE 标签
+        self._state = None        # 上次渲染用的 (zoom, cx, cy, w, h, ...)
         self._buf = None
         self._dirty = True        # 需要重画（尺寸/图像变化时置位）
         self._drag = None
+        # ---- 光标上报（底部「图片信息栏」的坐标 / RGB 用的就是这几个）----
+        self._path = None
+        self._srcimg = None       # 懒取 QImage（见 _src_image 的性能说明）
+        self._hover_pt = None     # 上次**上报过**的图像坐标（去重用），None = 当前没上报
+        self._hover_vpos = None   # 光标在 view 内的最后位置（换图后按它补报一次）
+        self._hovering = False
+        # 兜底：面板自己还没渲染过（_state 为 None）时，向容器要画布当前的中心点
+        self._state_provider = None
         self.setCursor(Qt.OpenHandCursor)   # 提示可拖动
 
     # ---- 数据 ----
     def set_image(self, path, name):
         self.title.setText(name)
+        self._path = path
         self._src = _load_pixmap(path)
+        self._srcimg = None          # 换图必须让懒取的 QImage 失效
         self._state = None
         self._dirty = True
         if self._src is None or self._src.isNull():
@@ -163,6 +193,12 @@ class _RefPanel(QFrame):
             self.view.setText("加载失败")
         else:
             self.view.setText("")
+            # 换图后光标还停在这一格上：按同一个窗口位置补报一次。
+            # 不补的话映射（_state）刚被清空，读数要等用户再动一下鼠标才回来 ——
+            # 那就又变成"看起来是空的"了。
+            if self._hovering and self._hover_vpos is not None:
+                self._hover_pt = None
+                self._emit_hover_xy(self._hover_vpos[0], self._hover_vpos[1])
 
     def needs_render(self):
         """当前面板尺寸与上次渲染尺寸不一致 -> 需要重画。
@@ -197,6 +233,27 @@ class _RefPanel(QFrame):
         self._state = None
         self._dirty = True
 
+    def set_labels(self, shapes, tag=None, show_classes=True, show_ignore=True):
+        """设置标注标签的数据源（shapes 来自**主画布当前图**的 json，与掩膜同源）。
+
+        为什么 labels 跟掩膜同源而不是各视图自己的 json：三视图工程里标注是一份
+        （掩膜就是这么来的），参考窗若去读 `xxx_te_1.json` 只会读到不存在 —— 于是
+        "掩膜有、标签没有"，正是这次要修的现象。
+
+        tag 用来做变化检测（这里传 json 路径 + mtime）；标签内容或两个开关变了都要重画。
+        """
+        show_classes = bool(show_classes)
+        show_ignore = bool(show_ignore)
+        if (tag == self._label_tag and show_classes == self._lab_ann
+                and show_ignore == self._lab_ign):
+            return
+        self._shapes = shapes
+        self._label_tag = tag
+        self._lab_ann = show_classes
+        self._lab_ign = show_ignore
+        self._state = None
+        self._dirty = True
+
     # ---- 同步渲染 ----
     def render_view(self, zoom, cx_img, cy_img):
         """把"图像坐标 (cx_img, cy_img)"这一点放到本面板中心，按 zoom 缩放。"""
@@ -207,7 +264,11 @@ class _RefPanel(QFrame):
         if vw < 8 or vh < 8:
             return
         key = (round(zoom, 6), round(cx_img, 2), round(cy_img, 2), vw, vh,
-               self._ov_tag if self._ov is not None else None)
+               self._ov_tag if self._ov is not None else None,
+               # 标签也必须进 key：否则掩膜没变时这里直接 return，
+               # 改了标注/按了 Ctrl+Space/Ctrl+Alt 参考窗都不会重画（就是"看起来没反应"）。
+               self._label_tag, self._lab_ann, self._lab_ign,
+               id(self._shapes) if self._shapes is not None else None)
         if key == self._state:
             return
         self._state = key
@@ -241,9 +302,149 @@ class _RefPanel(QFrame):
         # ② 再叠加"仅掩膜"的透明层（同一变换 -> 与主画布逐像素对齐）
         if self._ov is not None and not self._ov.isNull():
             p.drawPixmap(dst, self._ov, src_r)
+        # ③ 最后画标注标签（IGNORE / 类别名）
+        #    与主画布共用 core/label_overlay.paint_shape_labels —— 字号公式
+        #    （max(8, 10*zoom)）与配色完全一致，三窗同款；各窗变换不同而已。
+        #    这一层以前缺失，就是"只有漫反射图有 IGNORE/Ys 字样"的直接原因。
+        if self._shapes and (self._lab_ann or self._lab_ign):
+            try:
+                from core.label_overlay import paint_shape_labels
+                paint_shape_labels(
+                    p, self._shapes,
+                    lambda ix, iy: (x + ix * zoom, y + iy * zoom),
+                    zoom, show_classes=self._lab_ann, show_ignore=self._lab_ign)
+            except Exception:
+                pass
         p.end()
         self.view.setPixmap(self._buf)
         self._dirty = False
+
+    # ---- 光标坐标 / 像素（底部「图片信息栏」的数据源）----
+    def _view_state(self):
+        """返回 (zoom, cx_img, cy_img, vw, vh)；拿不到就返回 None。"""
+        vw, vh = self.view.width(), self.view.height()
+        st = self._state
+        if st is not None and len(st) >= 5:
+            return float(st[0]), float(st[1]), float(st[2]), int(st[3]), int(st[4])
+        # 还没渲染过（刚切图 / 刚布局 / 尺寸还没落定）：向容器要主画布当前的中心点。
+        # 没有这条兜底的话，这段瞬间坐标就一直是 `--` —— 又回到"看起来是空的"。
+        fn = self._state_provider
+        if fn is None or vw < 8 or vh < 8:
+            return None
+        got = fn()
+        if got is None:
+            return None
+        z, cx, cy = got
+        return float(z), float(cx), float(cy), vw, vh
+
+    def _view_to_image(self, vx, vy):
+        """面板内坐标 -> **主视图图像坐标**（`render_view` 那套变换的精确反解）。
+
+        为什么用主视图的坐标系：三窗同步干的就是"把画布中心对应的图像点搬到各自中心"
+        （见模块 docstring），所以三格里同一个图像坐标指的就是同一处 —— 坐标在
+        漫反射 / 形状图1 / 形状图2 上一致，这正是这个字段的意义。
+
+        ⚠️ 反解必须和 `render_view` 里**同一个取整**（那里画的目标矩形是 round 过的）。
+            直接用未取整的公式，缩小时会系统性偏 1 个像素 —— 这种偏差肉眼看不出，
+            但拿它去对标注坐标就会"差一行"。
+        """
+        g = self._view_state()
+        if g is None:
+            return None
+        z, cx, cy, vw, vh = g
+        if z <= 0:
+            return None
+        x = vw / 2.0 - cx * z
+        y = vh / 2.0 - cy * z
+        sx = max(0.0, -x / z)
+        sy = max(0.0, -y / z)
+        dx = float(round(x + sx * z))
+        dy = float(round(y + sy * z))
+        return sx + (vx - dx) / z, sy + (vy - dy) / z
+
+    def _src_image(self):
+        """懒取本视图的 QImage（给 pixel_at 用）。
+
+        实测 `QPixmap.toImage()` 对 1450×3940 只要 **0.1~1.5ms**（Qt5 光栅后端下
+        与 pixmap 共用缓冲，几乎没有拷贝开销），所以不必担心"鼠标一动就解一张大图"。
+        """
+        if self._srcimg is not None:
+            return self._srcimg
+        src = self._src
+        if src is None or src.isNull():
+            return None
+        try:
+            self._srcimg = src.toImage()
+        except Exception:
+            return None
+        return self._srcimg
+
+    def pixel_at(self, x, y):
+        """读本视图 (x, y) 处的像素，**一律返回 (r, g, b) 三元组**。
+
+        参考窗 = 形状图1 / 形状图2。产品口径（Arthur 2026-10-14 明确：
+        "形状1和形状2都要显示RGB"）：这两格**固定按 RGB 呈现**，
+        即使源文件是 L 灰度（此时 r == g == b，也是数据本来如此，不是读错）。
+
+        为什么要这样：主画布那格（漫反射）走的是 `AnnotationCanvas.image`，而它在加载时
+        就 `.convert("RGB")` 了（`mask_editor.py`）⇒ 底栏一直显示「RGB 169,169,169」。
+        形状图那两格早先按**文件 mode** 走，L 灰度就显示「灰度 127」—— 于是同一条信息栏上
+        两种形态并存（用户就是看到这个才提的）。现在三格**统一 RGB**。
+
+        早先那段判定（`Image.open()` 只读文件头拿 `mode`，比"逐像素 r==g==b"猜可靠 ——
+        真彩图里的灰色像素会被后者误判）已删：形态由**视图角色**定，不由文件 mode 定。
+
+        ⚠️ 实测（孚能现场 1175×3739 L 灰度 JPEG）：Qt 解出来的 r/g/b **严格相等**，
+           且与 PIL 逐点完全一致 ⇒ 形状图那两格的三值相等是数据本身如此。
+        """
+        img = self._src_image()
+        if img is None or img.isNull():
+            return None
+        x, y = int(x), int(y)
+        if x < 0 or y < 0 or x >= img.width() or y >= img.height():
+            return None
+        c = img.pixelColor(x, y)
+        return (c.red(), c.green(), c.blue())
+
+    def _emit_hover_xy(self, px, py):
+        """把"面板内坐标"换算成图像坐标并上报（越界 -> 上报清空）。"""
+        self._hovering = True
+        self._hover_vpos = (int(px), int(py))
+        vw, vh = self.view.width(), self.view.height()
+        if vw <= 0 or vh <= 0 or not (0 <= px < vw and 0 <= py < vh):
+            self._drop_hover()
+            return
+        got = self._view_to_image(px, py)
+        if got is None:
+            self._drop_hover()
+            return
+        ix, iy = int(got[0]), int(got[1])
+        src = self._src
+        if src is not None and not src.isNull() \
+                and not (0 <= ix < src.width() and 0 <= iy < src.height()):
+            # 落在本视图图像之外（三图尺寸不一致时才会发生）：报"无坐标"，
+            # 别报一个越界的数字 —— 那比没有更误导。
+            self._drop_hover()
+            return
+        if (ix, iy) == self._hover_pt:
+            return
+        self._hover_pt = (ix, iy)
+        self.cursor_moved.emit(ix, iy)
+
+    def _drop_hover(self):
+        """上报"无坐标"。只在从"有坐标"变过来时发一次，免得鼠标一出界就狂发信号。
+
+        ⚠️ 特意**不清** `_hover_vpos`：换图后还要按这个窗口位置补报一次。
+        清不清由 `_hovering` 决定。
+        """
+        if self._hover_pt is not None:
+            self._hover_pt = None
+            self.cursor_moved.emit(-1, -1)
+
+    def leaveEvent(self, e):
+        self._hovering = False
+        self._drop_hover()
+        super().leaveEvent(e)
 
     # ---- 交互：任一窗口都能滚轮缩放，且锚定光标（与主画布手感一致）----
     def _wheel_pos_in_view(self, src, e):
@@ -276,6 +477,12 @@ class _RefPanel(QFrame):
         super().mousePressEvent(e)
 
     def mouseMoveEvent(self, e):
+        # 这里**不**上报坐标：面板级的 MouseMove 要么来自标题条/边距（本来就不是图像区，
+        # 该走"清空"），要么是 eventFilter 从 `view` **原样转发**过来的平移事件 ——
+        # 后者的 `e.pos()` 是 view 坐标，而本函数看到的面板坐标还含标题条与边距，
+        # 在这里换算会**再报一个偏了一整条标题条高度（~20px）的值**，把 eventFilter
+        # 刚报对的那个盖掉。光标在图像区时的事件一律由 eventFilter（挂在 self.view 上）
+        # 处理，足够覆盖 MouseMove / Enter / Leave 三种情形。
         if self._drag is not None and self._on_pan is not None:
             d = e.pos() - self._drag
             self._drag = e.pos()
@@ -294,23 +501,60 @@ class _RefPanel(QFrame):
 
     # ---- 事件转发：在图上拖动也要能平移 ----
     def eventFilter(self, obj, ev):
-        if obj is self.view and self._on_wheel is not None:
+        if obj is self.view:
             t = ev.type()
-            if t == QEvent.Wheel:
-                self._on_wheel(ev.angleDelta().y(), self._wheel_pos_in_view(self.view, ev))
-                ev.accept()
-                return True
-            if self._on_pan is not None and t in (QEvent.MouseButtonPress,
-                                                  QEvent.MouseMove,
-                                                  QEvent.MouseButtonRelease):
-                self.event(ev)          # 交给本面板的鼠标处理（坐标已按 view 平移）
-                ev.accept()
-                return True
+            # ★ 光标上报放在**滚轮/平移开关判断之外**：否则没绑定平移时
+            #   （比如只读参考预览）坐标就永远收不到 —— 又变成空的。
+            if t == QEvent.MouseMove:
+                try:
+                    p = ev.pos()
+                    self._emit_hover_xy(p.x(), p.y())
+                except Exception:
+                    pass
+            elif t == QEvent.Enter:
+                # 光标从画布挪进来时按**当前真实位置**报一次，免得非等用户再动一下
+                # 才出现读数（Enter 事件本身不带坐标）。
+                try:
+                    p = self.view.mapFromGlobal(QCursor.pos())
+                    self._emit_hover_xy(p.x(), p.y())
+                except Exception:
+                    pass
+            elif t == QEvent.Leave:
+                self._hovering = False
+                self._drop_hover()
+            if self._on_wheel is not None:
+                if t == QEvent.Wheel:
+                    self._on_wheel(ev.angleDelta().y(), self._wheel_pos_in_view(self.view, ev))
+                    ev.accept()
+                    return True
+                if self._on_pan is not None and t in (QEvent.MouseButtonPress,
+                                                      QEvent.MouseMove,
+                                                      QEvent.MouseButtonRelease):
+                    self.event(ev)      # 交给本面板的鼠标处理（坐标已按 view 平移）
+                    ev.accept()
+                    return True
         return super().eventFilter(obj, ev)
 
 
 class MultiViewPreview(QWidget):
     """N 视图并排预览容器（viewer stack 的 index 0）。"""
+
+    # 光标上报的**唯一出口**：`(x, y, source)`。
+    #   x, y   = 主视图图像坐标系里的像素坐标；无坐标时 (-1, -1)
+    #   source = 光标所在的那一格（主画布，或某个 _RefPanel）
+    # 为什么要带 source：三格各自显示自己的图（漫反射 / 形状图1 / 形状图2），
+    # 底栏的「RGB」必须读**光标底下那一格**的像素 —— 否则对着形状图报漫反射灰度，
+    # 这种读数比没有读数更误导。主画布与参考窗的原始信号都在这里汇成一路，
+    # 上层（底部信息栏）只挂一个钩子，不用知道有几格。
+    cursor_moved = pyqtSignal(int, int, object)
+
+    # 主画布状态汇总：三个图层开关 + 当前类别 + 缩放百分比 + 视图数。
+    #
+    # 顶栏删掉之后，这些值**没有第二个人**可以问 —— 所以必须有个出口。
+    # 为什么是一个 dict 而不是五个信号：这些值由同一个 40ms 轮询里的一次比较得出
+    # （见 `_emit_state`），"任意一项变了"就该刷新工具栏/底栏；
+    # 拆成五个信号就得在五处各写一遍去重，还没法保证"三开关 + 类别"是同一瞬间的快照。
+    state_changed = pyqtSignal(dict)
 
     def __init__(self, canvas, parent=None):
         super().__init__(parent)
@@ -318,6 +562,9 @@ class MultiViewPreview(QWidget):
         self._items = []
         self._panels = []
         self._last_sig = None
+        # 视图布局模式（原先是顶栏那个下拉框，下拉已搬到标注工具栏）。
+        # 默认取 LAYOUT_MODES[0] = "自动（N*1）"，与搬走前的默认一致。
+        self._layout_mode = LAYOUT_MODES[0]
         self._build()
         # 轮询计时器在 _build() 里创建（装完画布事件过滤器之后），此处不要再建一个，
         # 否则会同时跑两个定时器做重复同步。
@@ -328,37 +575,23 @@ class MultiViewPreview(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(2)
 
-        self.bar = QWidget()
-        bar = QHBoxLayout(self.bar)
-        bar.setContentsMargins(6, 2, 6, 0)
-        bar.setSpacing(6)
-        lb = QLabel("视图布局")
-        lb.setStyleSheet("color:#8A93A6; font-size:12px;")
-        bar.addWidget(lb)
-        self.combo = QComboBox()
-        self.combo.addItems(LAYOUT_MODES)
-        self.combo.setFixedWidth(150)
-        self.combo.setToolTip("多视图工程默认横排；三个窗口缩放自动同步")
-        self.combo.currentIndexChanged.connect(lambda *_: self.apply_layout())
-        bar.addWidget(self.combo)
-        self.zoom_lbl = QLabel("")
-        self.zoom_lbl.setStyleSheet("color:#00E5FF; font-size:12px;")
-        bar.addWidget(self.zoom_lbl)
-        self.hint = QLabel("")
-        self.hint.setStyleSheet("color:#8A93A6; font-size:12px;")
-        bar.addWidget(self.hint)
-        # 状态信息（原来那行"1175x3739 | Pan | Class: ? | ..."）改到这条顶栏显示：
-        # 顶栏本来就是多视图模式独占的一整行，横着放得下，且一点不占图像区 ——
-        # 比原来压在 window 1 图像左下角强，三窗的图也就能完全对齐了。
-        self.info_lbl = QLabel("")
-        self.info_lbl.setStyleSheet("color:#C8D2E0; font-size:12px;")
-        # 文本很长时不要撑宽顶栏（宁可裁掉尾巴），否则会把三个窗口挤窄
-        self.info_lbl.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
-        self.info_lbl.setMinimumWidth(0)
-        self.info_lbl.setToolTip("当前主视图状态（图像尺寸 / 工具 / 类别 / 标注开关 / 缩放 / 笔宽）\n"
-                                 "快捷键：Ctrl+Space 显示/隐藏缺陷类别　Ctrl+Alt（或 Ctrl+Alt+I）显示/隐藏忽略区")
-        bar.addWidget(self.info_lbl, 1)
-        root.addWidget(self.bar)
+        # ⚠️ 图像区上方那一整行「顶栏」已按 Arthur 2026-10-14 的决定**拆掉**
+        #    （原话："我感觉咱们顶栏和底栏可以合二为一，你可以参考一下友商的"）。
+        #    关键是**不能只搬位置**：实测（tmp/measure_bars2.py，SimSun 9pt）
+        #    这条栏三段文本 726px + 下拉 150px ≈ **976px**，而中央列可用只有
+        #    757~950px ⇒ 一条底栏根本装不下两行的信息，硬搬只会挤爆。
+        #    所以按"这项有没有别处显示"重新分派：
+        #      · 缩放 X%          -> 底部信息栏最右端（照友商：那里放 −/滑块/+ 控件，
+        #                            读数与控件同处，不用"上面看数、下面调"）
+        #      · 视图布局下拉      -> 标注工具栏右侧（QToolButton + 菜单，仅多视图可见）
+        #      · Annot/Ignore/Pred -> 标注工具栏上三个可点开关（**原来全屏只有这一处显示**，
+        #                            只能靠 Ctrl+Space / Ctrl+Alt 切，删了就再也看不见）
+        #      · Class: xx        -> 标注工具栏上的类别格（点开可换类别）
+        #      · 当前工具 Pan / Brush: 15 -> **删**：工具栏上工具按钮本来就高亮、
+        #                            最左边那个控件就是「宽度 15 px」，同屏写两遍纯冗余
+        #      · "3 视图：漫反射/形状图1/形状图2" -> **删**：每格标题上已经写着
+        #    删掉后状态文本的出口是 state_changed 信号（见类属性与 _emit_state），
+        #    主窗口接住后分发给工具栏按钮与底栏读数 —— 单一出口，不再各处挂钩子。
 
         self.host = QWidget()
         self.grid = QGridLayout(self.host)
@@ -366,7 +599,6 @@ class MultiViewPreview(QWidget):
         self.grid.setSpacing(2)
         root.addWidget(self.host, 1)
 
-        self.bar.setVisible(False)
         # 主视图外框（多视图模式下用来对齐 window 1 与 2/3 的视图矩形），单图模式下为 None
         self._main_panel = None
         self.grid.addWidget(self.canvas, 0, 0)
@@ -378,6 +610,13 @@ class MultiViewPreview(QWidget):
         except Exception as e:
             # 老版本画布没有这个信号时退回纯轮询（不能让缺少信号导致崩）
             print(f"[多视图预览] 画布无 view_changed 信号，退回轮询同步: {e}")
+        # 主视图（第 0 格）的光标上报也汇进本容器那一路：底部信息栏只挂一个钩子。
+        # 用 lambda 绑定 source，别依赖槽的默认参数（信号 2 个参数、槽 3 个参数，
+        # 靠默认值能不能连上要看 PyQt 的签名推断，写成 lambda 就没这个悬念）。
+        try:
+            self.canvas.cursor_moved.connect(self._relay_cursor_from_canvas)
+        except Exception as e:
+            print(f"[多视图预览] 画布无 cursor_moved 信号，底栏坐标只能靠参考窗那两格: {e}")
         self._sync_timer = QTimer(self)
         # 轮询只兜底：拖动平移这类高频连续动作不逐个信号推送（每移动一次就重画两个窗
         # 反而更卡），交给 40ms 轮询跟进。数值比较开销可忽略。
@@ -388,6 +627,9 @@ class MultiViewPreview(QWidget):
     def _on_canvas_view_changed(self):
         """画布 zoom/pan/标注开关变化 -> 立即同步（不等轮询）。"""
         self._sync_from_canvas(force=True)
+
+    def _relay_cursor_from_canvas(self, x, y):
+        self.cursor_moved.emit(int(x), int(y), self.canvas)
 
     def _set_status_overlay(self, enabled):
         try:
@@ -401,18 +643,136 @@ class MultiViewPreview(QWidget):
         except Exception:
             pass
 
-    def _refresh_info(self):
-        """把画布的状态信息同步到顶部信息栏（文本没变就不动控件）。"""
-        lb = getattr(self, "info_lbl", None)
-        if lb is None:
+    def _emit_state(self):
+        """把画布状态汇成一个 dict 推给主窗口（**只在真的变了**才发）。
+
+        这是顶栏拆掉之后这些状态的**唯一出口**。为什么挂在 40ms 轮询里、而不是全靠信号：
+        这些值有三个来源 —— ① 快捷键（画布自己改，`toggle_*` / 数字键选类别）；
+        ② 工具栏上的开关与类别格（主窗口改）；③ 打开工程/换图时的一次性初始化。
+        靠信号就得三处都记得发、还得各自去重；轮询里比较一个 5 元组几乎不要钱，
+        而且**漏掉任何一条路径也不会出现"按钮亮着、实际是关的"**这种假状态。
+        这一条比省几个 CPU 周期重要得多。
+
+        ⚠️ 检测模式下"标注层"其实是 `_show_annotation_boxes`（Ctrl+Space 切的是框），
+        分割模式下才是 `_show_annotation` —— 回读时也必须分模式，
+        否则按钮的亮灭跟开关实际控制的东西不是同一个（`status_info_text` 踩过同一个坑）。
+        """
+        c = self.canvas
+        if c is None:
             return
+        det = getattr(c, "_det_overlay", None) is not None
         try:
-            txt = self.canvas.status_info_text()
+            annot = (bool(getattr(c, "_show_annotation_boxes", True)) if det
+                     else bool(getattr(c, "_show_annotation", True)))
         except Exception:
-            return                      # 老版本画布没有这个方法：保持空白，不报错
-        if txt != getattr(self, "_info_txt", None):
-            self._info_txt = txt
-            lb.setText(txt)
+            annot = True
+        try:
+            # 三个模式各管一个字段，跟 `toggle_prediction_visibility` / `keyPressEvent`
+            # 里的分支必须一一对应，否则按钮的亮灭跟它实际控制的东西不是一回事。
+            if det:
+                pred = bool(getattr(c, "_show_pred_boxes", True))
+            elif getattr(c, "_cls_mode", False):
+                pred = bool(getattr(c, "_show_heatmap", True))
+            else:
+                pred = bool(getattr(c, "_show_prediction", False))
+        except Exception:
+            pred = False
+        try:
+            ignore = bool(getattr(c, "_show_ignore", True))
+        except Exception:
+            ignore = True
+        cls_name = "?"
+        try:
+            lm = getattr(c, "label_manager", None)
+            if lm is not None and 0 <= int(c.current_class_id) < len(lm.classes):
+                cls_name = lm.classes[int(c.current_class_id)]
+        except Exception:
+            cls_name = "?"
+        st = {
+            "annot": annot,
+            "ignore": ignore,
+            "pred": pred,
+            "cls": cls_name,
+            "zoom_pct": self.zoom_percent(),
+            "n_views": len(self._items or []),
+        }
+        # ⚠️ `n_views` 必须进签名。视图数从 1 变成 3 时另外五项一个都没变，
+        #    不进签名就**永远不发这一拍** —— 工具栏右侧那三个开关与类别格只在
+        #    多视图模式下露面，于是它们永远不显示，而界面上完全看不出"少了东西"
+        #    （2026-10-14 冒烟实测：layers_visible 一直是 False）。
+        sig = (annot, ignore, pred, cls_name, st["zoom_pct"], st["n_views"])
+        if sig == getattr(self, "_state_sig", None):
+            return
+        self._state_sig = sig
+        self.state_changed.emit(st)
+
+    def zoom_percent(self):
+        """当前缩放，单位是"相对适应窗口的百分比"（界面上那个 `140%`）。
+
+        算式只留这一处：`_emit_state` 与底栏都从这里取 ——
+        两处各算一遍迟早会漂移成"上面的数字和下面滑块对不上"。
+        """
+        c = self.canvas
+        try:
+            fit = float(getattr(c, "_fit_zoom", 1.0) or 1.0)
+            if fit <= 0:
+                return 100
+            return int(round(float(c.zoom_level) / fit * 100))
+        except Exception:
+            return 100
+
+    def set_zoom_percent(self, pct):
+        """按"相对适应窗口的百分比"设定缩放（底栏 −/滑块/+ 走这条路）。
+
+        锚点是**窗口中心**。滚轮缩放锚的是光标，但拖滑块时光标在滑块上、不在图上，
+        锚光标没有意义 ⇒ 这里锚中心，等价于"窗口中心那个图像点保持不动"。
+        中心锚定的好处是 n_cx/n_cy 直接就是当前的 cx/cy，不用像 `_zoom_at` 那样解方程；
+        但 **zoom 变了 pan 必须跟着重算**，否则图像会整体跳一下。
+
+        返回是否真的改了（滑块回写时要用它决定要不要动滑块，避免来回打架）。
+        """
+        c = self.canvas
+        got = self._canvas_center_in_image()
+        if got is None:
+            return False
+        z, cx, cy = got
+        try:
+            iw, ih = c.image.size
+            iw, ih = int(iw), int(ih)
+        except Exception:
+            return False
+        fit = float(getattr(c, "_fit_zoom", 0.0) or 0.0)
+        if fit <= 0:
+            return False
+        lo = float(getattr(c, "MIN_ZOOM", 0.05) or 0.05)
+        hi = float(getattr(c, "MAX_ZOOM", 30.0) or 30.0)
+        nz = max(lo, min(hi, fit * float(pct) / 100.0))
+        if abs(nz - z) < 1e-9:
+            return False
+        c.zoom_level = nz
+        c.pan_offset_x = (iw / 2.0 - cx) * nz
+        c.pan_offset_y = (ih / 2.0 - cy) * nz
+        try:
+            c.update()
+        except Exception:
+            pass
+        self._sync_from_canvas(force=True)
+        return True
+
+    def layout_modes(self):
+        """可选视图布局（工具栏那个按钮的菜单项来源，别再抄一份常量）。"""
+        return list(LAYOUT_MODES)
+
+    def layout_mode(self):
+        return getattr(self, "_layout_mode", LAYOUT_MODES[0])
+
+    def set_layout_mode(self, text):
+        """由工具栏的「视图布局」按钮调用（这个下拉原先在顶栏，已搬到工具栏）。"""
+        if text not in LAYOUT_MODES or text == getattr(self, "_layout_mode", None):
+            return False
+        self._layout_mode = text
+        self.apply_layout()
+        return True
 
     def eventFilter(self, obj, ev):
         """把任意面板上的 Ctrl+Space / Ctrl+Alt 都变成同一次显示开关。
@@ -447,7 +807,6 @@ class MultiViewPreview(QWidget):
     # ────────── 对外接口 ──────────
     def clear_views(self):
         self._items = []
-        self.bar.setVisible(False)
         self.apply_layout()
 
     def set_views(self, items):
@@ -462,8 +821,6 @@ class MultiViewPreview(QWidget):
         self._items = items
         if len(items) <= 1:
             return self.clear_views()
-        self.bar.setVisible(True)
-        self.hint.setText(f"{len(items)} 视图：" + " / ".join(n for _, n in items))
         reuse = (len(prev) == len(items) and len(self._panels) == len(items) - 1
                  and all(p.view.width() > 8 for p in self._panels))
         if reuse:
@@ -479,7 +836,8 @@ class MultiViewPreview(QWidget):
 
     # ────────── 布局 ──────────
     def _grid_shape(self, n):
-        m = self.combo.currentText()
+        # 布局模式原先读顶栏那个下拉框；下拉搬到工具栏后由 set_layout_mode 写入。
+        m = getattr(self, "_layout_mode", LAYOUT_MODES[0])
         if m.startswith("1*1"):
             return 1, 1
         if m.startswith("2*1"):
@@ -551,6 +909,12 @@ class MultiViewPreview(QWidget):
             panel.set_image(path, name)
             panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
             panel.view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            # 光标坐标：面板自己还没渲染过时向本容器要画布的中心点（见 _view_state）
+            panel._state_provider = self._canvas_center_in_image
+            # 默认参数 p=panel 把"是哪一格"绑死 —— 不要用 self.sender()，
+            # 那要依赖连接方式（直连/排队）才成立。
+            panel.cursor_moved.connect(
+                lambda x, y, p=panel: self.cursor_moved.emit(int(x), int(y), p))
             # 焦点落到参考窗时按键不会传给画布，装过滤器自己接住 Ctrl+Space
             panel.installEventFilter(self)
             self._panels.append(panel)
@@ -645,9 +1009,51 @@ class MultiViewPreview(QWidget):
         except Exception:
             return None
 
+    # ────────── 标注标签数据源（与主画布同源） ──────────
+    def _current_shapes(self):
+        """取主画布当前图对应的 LabelMe shapes，返回 `(shapes, tag)`。
+
+        `tag = (json 路径, mtime)`：保存标注后 mtime 变 -> 参考窗自动补上新标签。
+
+        为什么用**主画布**这份 json、而不是各参考视图自己的：
+        三视图工程的标注只有一份（掩膜就是这么加载的，见 `load_mask_from_json`），
+        参考窗若去读 `xxx_te_1.json` 通常读到的是"不存在" —— 结果就是"掩膜有、
+        标签没有"，正是这次修的现象。标签与掩膜同源，两者永远一致。
+
+        带缓存：这里每 40ms 被轮询一次，不能每次都读盘 + 解析 json。
+        """
+        path = getattr(self.canvas, "current_image_path", None)
+        if not path:
+            return None, None
+        try:
+            from annotation.labelme_io import get_json_path
+            jp = get_json_path(path)
+        except Exception:
+            import os.path as _osp
+            jp = _osp.splitext(path)[0] + ".json"
+        try:
+            import os
+            tag = (jp, os.path.getmtime(jp))
+        except OSError:
+            tag = (jp, None)          # json 还不存在（未保存过标注）
+        if tag == getattr(self, "_lab_tag_cache", None):
+            return getattr(self, "_lab_shapes_cache", None), tag
+        shapes = None
+        if tag[1] is not None:
+            try:
+                from annotation.labelme_io import load_labelme_json
+                shapes, _ = load_labelme_json(jp)
+            except Exception:
+                shapes = None
+        self._lab_tag_cache = tag
+        self._lab_shapes_cache = shapes
+        return shapes, tag
+
     def _sync_from_canvas(self, force=False):
-        # 顶栏状态信息每轮都刷一次（只是字符串比较，没有变化就不动控件）
-        self._refresh_info()
+        # 状态汇总每轮都做一次（比较一个 5 元组，没变就不发信号）。
+        # 必须放在它下面那个 `if not self._panels: return` **之前** ——
+        # 单图模式同样要用工具栏上的三个图层开关与底栏的缩放滑块。
+        self._emit_state()
         if not self._panels:
             return
         got = self._canvas_center_in_image()
@@ -665,6 +1071,9 @@ class MultiViewPreview(QWidget):
         # 少算任何一个，关掉之后参考窗都还会照旧显示。
         show_ann = bool(getattr(self.canvas, "_show_annotation", True))
         show_ign = bool(getattr(self.canvas, "_show_ignore", True))
+        # 标注标签（IGNORE / 类别名）与掩膜**同源**：都取主画布当前图的 json。
+        # 参考窗以前不画标签，于是"只有漫反射图有 IGNORE/Ys 字样"——这里补上。
+        shapes, lab_tag = self._current_shapes()
         if not force and sig == self._last_sig and not dirty \
                 and show_ann == getattr(self, "_ov_show_ann", None) \
                 and show_ign == getattr(self, "_ov_show_ignore", None):
@@ -679,7 +1088,8 @@ class MultiViewPreview(QWidget):
                 tag = ov.cacheKey() if ov is not None else None
             except Exception:
                 tag = None
-            if all(getattr(p, "_ov_tag", None) == tag for p in self._panels):
+            if all(getattr(p, "_ov_tag", None) == tag for p in self._panels) \
+                    and all(getattr(p, "_label_tag", None) == lab_tag for p in self._panels):
                 return
         self._last_sig = sig
         # 掩膜叠加层：只在掩膜变化时重建。
@@ -734,9 +1144,8 @@ class MultiViewPreview(QWidget):
         for p in self._panels:
             # 注意：传的是**仅掩膜**的透明层，各面板仍画各自的视图原图
             p.set_overlay(self._mask_qimg, ctag)
+            # 标签与掩膜同源（主画布的 json），两个开关各管一类
+            p.set_labels(shapes, lab_tag, show_classes=show_ann, show_ignore=show_ign)
             p.render_view(z, cx, cy)
-        try:
-            fit = float(getattr(self.canvas, "_fit_zoom", 1.0) or 1.0)
-            self.zoom_lbl.setText(f"缩放 {int(z / fit * 100)}%（三窗同步）")
-        except Exception:
-            pass
+        # 原来这里往顶栏那个青色标签写 "缩放 X%（三窗同步）"。顶栏已拆，
+        # 缩放改由底栏右端显示（与 −/滑块/+ 控件同处一栏，读数就在手指边）。

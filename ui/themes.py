@@ -42,6 +42,70 @@ QTableWidget#imageList::item:selected { background-color: #0E3A52; color: #00E5F
 QTableWidget#imageList::item:selected:!active { background-color: #0E3A52; color: #00E5FF; }
 """
 
+# ── 滑块（QSlider）：**必须写在主题表里，不能写在控件的内联样式里** ──
+# 2026-10-14 踩过，代价是"一个像素都不画"：
+# 底栏缩放滑块的内联 QSS 用了 #2A3A5C / #0E3A52 / #00E5FF 三个色，**全在
+# THEME_COLORS 白名单里** ⇒ `sweep_inline_styles` 判定"这段只用了主题皮肤色"，
+# 把颜色声明整段剥掉（度量留下）。槽和手柄于是**没有背景色**，而主题表当时
+# 没有 QSlider 规则可兜底 ⇒ 滑块占着 84px 宽，画出来是一片空槽。
+# 功能断言（value / geometry / valueChanged / zoom_level）**全绿**，肉眼全空 ——
+# 只有把控件 `grab()` 出来数像素才看得见。
+# 结论：内联样式只写度量；颜色写进这里（主题表的规则 sweep 不会碰）。
+_DARK_SLIDER = """
+QSlider::groove:horizontal { height: 4px; background: #2A3A5C; border-radius: 2px; }
+QSlider::sub-page:horizontal { background: #0E3A52; border-radius: 2px; }
+QSlider::handle:horizontal {
+    width: 9px; margin: -5px 0; border-radius: 5px; background: #00E5FF;
+}
+QSlider::handle:horizontal:hover { background: #E6F0FF; }
+"""
+
+# ── 工具栏里的三个"文字型"小按钮：#toolsToggle / #layerSw / #classPick ──
+# 同一条规矩的第二个受害者（2026-10-15 记录）：这几个按钮的内联 QSS 颜色
+# （#2A3A5C/#8A93A6/#00E5FF/#0E3A52/#E6F0FF/#C8D2E0）**全在白名单里** ⇒
+# `sweep_inline_styles` 剥掉颜色、只留度量 ⇒ 它们退回全局通用 `QToolButton` 规则
+# （#D6E4FF 亮字 + 透明底）。不会"空槽"，但**变成了另一种配色**（比作者意图更刺眼、
+# 未勾选态看不出是开关）。所以配色在这里落一份，主题表的规则 sweep 不会碰。
+# 教训固化成一句话：**新增任何自绘/文字型子控件，都要问"主题表里有它吗"**。
+_DARK_TOOLBAR_SW = """
+QToolButton#toolsToggle {
+    border: 1px solid #2A3A5C; border-radius: 4px;
+    padding: 2px 8px; margin: 0px;
+    color: #C8D2E0; font-size: 12px;
+}
+QToolButton#toolsToggle:hover { border-color: #00E5FF; color: #E6F0FF; }
+QToolButton#toolsToggle:checked {
+    background: #0E3A52; border-color: #00E5FF; color: #00E5FF;
+}
+QToolButton#layerSw, QToolButton#classPick {
+    border: 1px solid #2A3A5C; border-radius: 4px;
+    padding: 1px 5px; margin: 0px;
+    color: #8A93A6; font-size: 12px;
+}
+QToolButton#layerSw:hover, QToolButton#classPick:hover { border-color: #00E5FF; }
+QToolButton#layerSw:checked {
+    background: #0E3A52; border-color: #00E5FF; color: #E6F0FF;
+}
+QToolButton#classPick { color: #C8D2E0; }
+
+# ── 三个图层开关（2026-10-15 照友商改成真复选框：勾上=实心青块，没勾=空框+灰字）──
+# 勾选态用**实心方块**而不是打勾：对 12px 的小方块，实心色块的"开/关"对比度
+# 比一个 1px 的对勾高得多，远看也分得出（友商截图就是这么做的）。
+QLabel#layerGroupLabel { color: #8A93A6; font-size: 12px; padding-right: 2px; }
+QCheckBox#layerSw { color: #8A93A6; spacing: 4px; }
+QCheckBox#layerSw:hover { color: #C8D2E0; }
+QCheckBox#layerSw:checked { color: #E6F0FF; }
+QCheckBox#layerSw::indicator {
+    width: 12px; height: 12px;
+    border: 1px solid #2A3A5C; border-radius: 2px;
+    background: #0E1420;
+}
+QCheckBox#layerSw::indicator:hover { border-color: #00E5FF; }
+QCheckBox#layerSw::indicator:checked {
+    background: #00E5FF; border: 1px solid #00E5FF;
+}
+"""
+
 # ── 浅色主题：覆盖主要表面 ──
 LIGHT_OVERLAY = """
 QWidget { background-color: #F4F6FA; color: #1A2233; }
@@ -99,6 +163,16 @@ QCheckBox::indicator:checked, QRadioButton::indicator:checked {
 QRadioButton::indicator { border-radius: 7px; }
 QCheckBox { spacing: 6px; }
 
+/* 页签（crop_tool / resize_tool / heatmap_analyzer 三个工具窗在用）：
+   base 表用的是 `QTabBar::tab{bg:#0C1220; color:#8A93A6}` —— 伪状态选择器，
+   `QWidget` 通配**盖不住它**（specificity 规则不同），不显式覆盖就一直是深底浅灰。 */
+QTabWidget::pane { border: 1px solid #D8E0EA; }
+QTabBar::tab {
+    background: #E9EEF6; color: #24405E;
+    border: 1px solid #D8E0EA; padding: 6px 14px;
+}
+QTabBar::tab:selected { background: #FFFFFF; color: #00527A; }
+
 QToolTip { background-color: #FFFFFF; color: #1A2233; border: 1px solid #C9D3E0; }
 QStatusBar { background-color: #E9EEF6; color: #1A2233; }
 
@@ -108,6 +182,13 @@ QStatusBar { background-color: #E9EEF6; color: #1A2233; }
    所以浅色主题必须给出足够的底/字对比，让深色类别字也能读。 */
 QTableWidget#imageList::item:selected { background-color: #CFE6FA; color: #0B2A44; }
 QTableWidget#imageList::item:selected:!active { background-color: #CFE6FA; color: #0B2A44; }
+
+/* 图片列表**默认行色**：浅色主题必须给深字（深色主题由 base 表给 #FFFFFF）。
+   这条是 main_window._render_page 里 setForeground(白) 退役后，行色的唯一来源 —— 
+   正因为它是 QSS，切换主题时才能**立即**生效、不必重刷列表。
+   ⚠️ 类别色（_apply_class_color）是内联 setForeground，仍压过这条 —— 那是语义色，
+   浅色主题下 CLASS_COLORS 本来就是深色（见 core/config.py），浅底上可读。 */
+QTableWidget#imageList { color: #1A2233; }
 
 /* 工程列表(QTreeWidget) 与各类列表的 hover/选中态：
    浅色主题下原来沿用了深色的 hover 底（深蓝），文字还是深色 -> 悬浮上去整行看不见
@@ -127,6 +208,54 @@ QTableWidget::item:selected:!active, QTableView::item:selected:!active {
 QMenu::item:selected { background-color: #D6E9F8; color: #00527A; }
 QComboBox QAbstractItemView::item:hover, QComboBox QAbstractItemView::item:selected {
     background-color: #D6E9F8; color: #00527A;
+}
+"""
+
+# 浅色主题的滑块配色（与上面的 _DARK_SLIDER 成对；度量必须一致，
+# 否则切主题时手柄会跳一下）。色取自本表已用的：边框 #C9D3E0、强调 #0077B6。
+_LIGHT_SLIDER = """
+QSlider::groove:horizontal { height: 4px; background: #C9D3E0; border-radius: 2px; }
+QSlider::sub-page:horizontal { background: #0077B6; border-radius: 2px; }
+QSlider::handle:horizontal {
+    width: 9px; margin: -5px 0; border-radius: 5px; background: #0077B6;
+}
+QSlider::handle:horizontal:hover { background: #00527A; }
+"""
+
+#: 浅色主题下上面三个小按钮的配色（与 _DARK_TOOLBAR_SW 成对）。
+_LIGHT_TOOLBAR_SW = """
+QToolButton#toolsToggle {
+    border: 1px solid #C9D3E0; border-radius: 4px;
+    padding: 2px 8px; margin: 0px;
+    color: #1A2233; font-size: 12px;
+}
+QToolButton#toolsToggle:hover { border-color: #0077B6; color: #00527A; }
+QToolButton#toolsToggle:checked {
+    background: #D6E9F8; border-color: #0077B6; color: #00527A;
+}
+QToolButton#layerSw, QToolButton#classPick {
+    border: 1px solid #C9D3E0; border-radius: 4px;
+    padding: 1px 5px; margin: 0px;
+    color: #4A5568; font-size: 12px;
+}
+QToolButton#layerSw:hover, QToolButton#classPick:hover { border-color: #0077B6; }
+QToolButton#layerSw:checked {
+    background: #D6E9F8; border-color: #0077B6; color: #00527A;
+}
+QToolButton#classPick { color: #1A2233; }
+
+QLabel#layerGroupLabel { color: #4A5568; font-size: 12px; padding-right: 2px; }
+QCheckBox#layerSw { color: #4A5568; spacing: 4px; }
+QCheckBox#layerSw:hover { color: #1A2233; }
+QCheckBox#layerSw:checked { color: #1A2233; }
+QCheckBox#layerSw::indicator {
+    width: 12px; height: 12px;
+    border: 1px solid #C9D3E0; border-radius: 2px;
+    background: #FFFFFF;
+}
+QCheckBox#layerSw::indicator:hover { border-color: #0077B6; }
+QCheckBox#layerSw::indicator:checked {
+    background: #0077B6; border: 1px solid #0077B6;
 }
 """
 
@@ -151,6 +280,125 @@ THEME_COLORS = {
 _HEX_RE = _re.compile(r"#[0-9a-fA-F]{6}")
 _SWEEP_PROP = "_dsh_swept_qss"
 
+# ── 「剥颜色、留度量」用的分解规则 ──
+# 纯颜色属性：整条删掉，配色交回主题表。
+_PURE_COLOR_PROPS = {
+    "color", "background-color", "border-color",
+    "border-top-color", "border-right-color", "border-bottom-color", "border-left-color",
+    "selection-color", "selection-background-color", "gridline-color",
+    "alternate-background-color", "outline-color",
+}
+# 边框简写：值里颜色和度量混在一起（如 `border: 1px solid #2A3A5C`），
+# 不能整条删，得拆成长属性，否则会留下 `1px solid` 这种缺色简写（Qt 解析不稳）。
+_BORDER_SIDES = {
+    "border": "", "border-top": "-top", "border-right": "-right",
+    "border-bottom": "-bottom", "border-left": "-left",
+}
+_BORDER_STYLES = {"none", "solid", "dashed", "dotted", "double",
+                  "groove", "ridge", "inset", "outset", "hidden"}
+_LEN_RE = _re.compile(r"^\d+(?:\.\d+)?(?:px|pt|em|%)?$")
+_COMMENT_RE = _re.compile(r"/\*.*?\*/", _re.S)
+_RULE_RE = _re.compile(r"([^{}]*)\{([^{}]*)\}")
+
+
+def _split_decls(body):
+    """`font-size: 10px; padding: 1px 6px` -> [(prop, value), ...]"""
+    out = []
+    for d in (body or "").split(";"):
+        if ":" not in d:
+            continue
+        p, v = d.split(":", 1)
+        p, v = p.strip(), v.strip()
+        if p:
+            out.append((p, v))
+    return out
+
+
+def _decolor_decls(body):
+    """把一段声明剥成「只剩度量」的形式。返回 (props, changed)。"""
+    changed = False
+    props = []
+    for prop, val in _split_decls(body):
+        lp = prop.lower()
+        if lp in _PURE_COLOR_PROPS:                 # 纯颜色 -> 交给主题表
+            changed = True
+            continue
+        had_hex = bool(_HEX_RE.search(val))
+        if had_hex:
+            val = _HEX_RE.sub("", val).strip()      # 从简写值里摘掉颜色
+            changed = True
+        if not val:
+            continue                                # 这条本来就只是颜色（如 background:#0E1420）
+        if lp in _BORDER_SIDES and had_hex:
+            # 只有**确实摘掉了颜色**的简写才拆成长属性（避免留下 `1px solid` 这种缺色简写）。
+            # 不带颜色的简写一律原样保留：`border: 1px solid transparent` 是**布局占位**
+            # （防止 hover 时才出现边框导致尺寸抖动），`border: none` 也有语义 ——
+            # 拆成 width/style 会把 `transparent` 丢掉，边框就冒出来了。
+            side = _BORDER_SIDES[lp]
+            toks = val.split()
+            w = [t for t in toks if _LEN_RE.match(t)]
+            s = [t for t in toks if t.lower() in _BORDER_STYLES]
+            if w:
+                props.append((f"border{side}-width", " ".join(w)))
+            if s:
+                props.append((f"border{side}-style", " ".join(s)))
+            if not w and not s:                     # 没认出来的值原样保留，别丢信息
+                props.append((prop, val))
+            continue
+        props.append((prop, val))
+    return props, changed
+
+
+def _emit(props):
+    return " ".join(f"{p}: {v};" for p, v in props)
+
+
+def strip_colors(qss):
+    """把样式表里的**颜色**剥掉，只留字号/内边距/边框宽度等度量。
+
+    返回 (剥色后的样式表, 是否真的剥掉了东西)。
+
+    为什么不是把整段内联样式清成空串（旧做法，已修）：
+      `QPushButton { font-size: 10px; padding: 1px 6px; border: 1px solid #2A3A5C; }`
+      这句话里，颜色该让位给主题表，**度量不该**。整段清掉后控件回落到应用级
+      `QPushButton { padding: 5px 12px }` + 默认 13px 字号 —— 对一个
+      `setFixedHeight(22)` 的小按钮就是"文字上下被切掉"（Arthur 实测报的
+      「显示不全」：按钮 111x22，字号需要 19px，扣掉 padding 后内容区只剩 10px）。
+      平台上共 **19 个**控件的内联样式会被清扫，都受这个影响。
+
+    ⚠️ 必须支持**没有选择器的裸声明**（如 `color:#00E5FF; font-size:10px;`，
+    `_make_block_header` 就是这么写的）：这种形式没有 `{}` 块，只按规则块解析会
+    整段漏掉 → 控件不被清扫 → 浅色主题下亮青字压在白底上**几乎看不见**
+    （已实测踩到，见 probe 记录）。所以下面的解析要把 `{}` 之外的部分也当成
+    "作用于本控件自身"的声明来处理。
+    """
+    if not qss:
+        return qss, False
+    qss = _COMMENT_RE.sub("", qss)      # 注释里可能有花括号，先去掉再解析
+    changed = False
+    parts = []
+    pos = 0
+    for m in _RULE_RE.finditer(qss):
+        head = qss[pos:m.start()].strip()
+        if ":" in head:                  # 块之前的裸声明：作用于本控件自身
+            props, ch = _decolor_decls(head)
+            changed |= ch
+            if props:
+                parts.append(_emit(props))
+        sel = m.group(1).strip()
+        props, ch = _decolor_decls(m.group(2))
+        changed |= ch
+        if sel and props:
+            parts.append("%s { %s }" % (sel, _emit(props)))
+        pos = m.end()
+    tail = qss[pos:].strip()
+    if ":" in tail:                      # 整张表就是裸声明（无 {}）的情况
+        props, ch = _decolor_decls(tail)
+        changed |= ch
+        if props:
+            parts.append(_emit(props))
+    return " ".join(parts), changed
+
 
 def _is_theme_sheet(qss):
     """这段内联样式是否"全是主题皮肤色"（是 -> 切主题时可以让位）。"""
@@ -161,17 +409,19 @@ def _is_theme_sheet(qss):
 
 
 def sweep_inline_styles(app, restore=False):
-    """把"只用了主题皮肤色"的内联样式暂存并清掉，让主题表接管配色。
+    """把"只用了主题皮肤色"的内联样式**剥掉颜色**，让主题表接管配色。
 
     为什么要这一步：Qt 里**控件自己的 setStyleSheet 优先级高于应用级主题表**，
     平台里有几十处 `setStyleSheet("color:#8A93A6")` 之类写死的主题色 ——
     不清掉它们，切浅色主题时这些字仍是深色主题的灰/青，永远变不成黑字。
 
     规则（保守，宁可不改也不改错）：
-      · 只清"颜色**全部**落在 THEME_COLORS 白名单里"的；
+      · 只动"颜色**全部**落在 THEME_COLORS 白名单里"的；
+      · 只剥**颜色声明**，度量（font-size / padding / font-weight / border-width…）
+        必须原样留着 —— 见 strip_colors 的说明；
       · 只要出现一个语义色（红/绿/橙…）就整段保留 —— 那些是"用颜色表达含义"的，
         比如绿色的 Start Training、红色的错误提示，误清会丢信息。
-      · 切回深色时按属性还原，原样不差。
+      · 切回深色时按属性还原原样式，原样不差。
     """
     for w in app.allWidgets():
         try:
@@ -187,9 +437,34 @@ def sweep_inline_styles(app, restore=False):
         if not cur or w.property(_SWEEP_PROP):
             continue
         if _is_theme_sheet(cur):
-            w.setProperty(_SWEEP_PROP, cur)
-            w.setStyleSheet("")
-            print(f"[theme] swept inline qss on {type(w).__name__}: {cur[:60]!r}", flush=True)
+            thin, changed = strip_colors(cur)
+            if not changed:
+                continue
+            w.setProperty(_SWEEP_PROP, cur)      # 原样式留着，切回深色原样还原
+            w.setStyleSheet(thin)                # 只少了颜色，度量还在
+            print(f"[theme] swept colors in inline qss on {type(w).__name__}: "
+                  f"{len(cur)} -> {len(thin)} chars  {cur[:48]!r}", flush=True)
+
+
+
+# ── 主题感知的内联前景色 ──
+# 为什么需要：QSS **管不到** setForeground —— 内联前景色的优先级高于应用级主题表。
+# 凡是「深色主题下写死了浅色字」的地方（列表里的占位文字等），切浅色后必然是浅字浅底。
+# 这类着色点必须走这里取色，别再自己写 QColor(...) 常量。
+def is_light():
+    """当前是否浅色主题（看 apply_theme 打在 QApplication 上的 dsh_theme 属性）。"""
+    try:
+        from PyQt5.QtWidgets import QApplication
+        app = QApplication.instance()
+        return bool(app is not None and app.property("dsh_theme") == "light")
+    except Exception:
+        return False
+
+
+def fg_muted():
+    """次级/占位文字（如「这一格没有文件」）的前景：深色主题浅灰、浅色主题中灰，两边都可读。"""
+    from PyQt5.QtGui import QColor
+    return QColor("#6B7688") if is_light() else QColor("#CCCCCC")
 
 
 def set_base_qss(qss):
@@ -215,11 +490,11 @@ def apply_theme(app, name="dark"):
     if name == "light":
         # 先还原上一次清扫（否则深色主题暂存的样式会丢），再按新主题清扫一遍
         sweep_inline_styles(app, restore=True)
-        app.setStyleSheet(base_qss() + LIGHT_OVERLAY)
+        app.setStyleSheet(base_qss() + LIGHT_OVERLAY + _LIGHT_SLIDER + _LIGHT_TOOLBAR_SW)
         sweep_inline_styles(app, restore=False)
     else:
         sweep_inline_styles(app, restore=True)
-        app.setStyleSheet(base_qss() + DARK_INDICATOR)
+        app.setStyleSheet(base_qss() + DARK_INDICATOR + _DARK_SLIDER + _DARK_TOOLBAR_SW)
     # 记住选择：直接写 .ui_settings.json（不依赖主窗口的 _save_ui_setting 落在哪个文件）
     try:
         import json as _json, os as _os

@@ -11,11 +11,11 @@ from PyQt5.QtWidgets import (
     QMainWindow, QMenu, QAction, QSplitter, QTreeWidget, QTreeWidgetItem,
     QTextEdit, QFileDialog, QMessageBox, QInputDialog, QVBoxLayout, QHBoxLayout,
     QWidget, QLabel, QPushButton, QComboBox, QSpinBox, QDoubleSpinBox, QProgressBar, QGroupBox,
-    QListWidget, QSlider, QDialog, QFormLayout, QDialogButtonBox,
+    QListWidget, QSlider, QDialog, QFormLayout, QDialogButtonBox, QToolButton,
     QLineEdit, QCheckBox, QTableWidget, QTableWidgetItem, QHeaderView, QGridLayout,
-    QStackedWidget, QApplication, QScrollArea, QSizePolicy
+    QStackedWidget, QApplication, QScrollArea, QSizePolicy, QSpacerItem
 )
-from PyQt5.QtGui import QFont, QColor, QImage, QPixmap, QPainter, QLinearGradient, QKeySequence, QCursor
+from PyQt5.QtGui import QFont, QColor, QImage, QPixmap, QPainter, QLinearGradient, QKeySequence, QCursor, QFontMetrics
 from PyQt5.QtCore import Qt, pyqtSignal, QTimer
 import matplotlib
 matplotlib.use("Qt5Agg")
@@ -23,6 +23,10 @@ from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from core.config import APP_NAME, APP_VERSION, load_config, save_config, CLASS_COLORS
 from core.project_manager import ProjectManager
+from core import marks as marks_mod
+from core.filter_expr import FilterExpr
+from ui.mark_panel import MarkToolbar, MarkStatsPanel
+from ui.filter_builder import FilterBuilderDialog
 from annotation.label_manager import LabelManager
 from annotation.mask_editor import AnnotationCanvas
 from ui.mixed_viewer import MixedViewer
@@ -44,6 +48,116 @@ from ui.global_hotkey import register_global_hotkey, unregister_global_hotkey, W
 import ctypes
 from ctypes import wintypes
 print("main_window imports OK")
+
+# ────────── 底部「图片信息栏」右端的交互件（2026-10-14 顶栏并进底栏时加的）──────────
+#
+# 缩放用**相对"适应窗口"的百分比**（与画布 `_fit_zoom` 同口径，见 MultiViewPreview.zoom_percent）。
+# 不用绝对倍率：绝对倍率在不同尺寸的图上读数完全不一样，"100% = 铺满窗口"
+# 才是用户心里的那个基准（友商底栏右下角那个 100% 就是这个意思）。
+#
+# 刻度用**对数**，不用线性：
+#   · 线性的 5..800 会让 100%（= 什么都没动的默认态）落在轨道**最左 12%** 处 ——
+#     手柄贴着左端、右边空一大截，看着像坏了；而且"缩小"那 20 倍range 挤在 12%
+#     的行程里，往左轻轻一拖就掉到 5%，往右（放大，复核凹点最常干的事）反倒占 88%。
+#   · 对数刻度把 100% 放在**轨道中段**（pos≈525/1000），左右两边"倍率行程"相等：
+#         pct = MIN * (MAX/MIN) ** (pos / POS_MAX)
+#     顺带一个好处：± 每格固定走 40 个位置 ⇒ 各倍率下"点一下"的幅度都是 ×1.19，
+#     手感一致（线性档位在 20% 处点一下是 +50%、在 700% 处点一下几乎不动）。
+ZOOM_PCT_MIN = 10
+ZOOM_PCT_MAX = 800
+ZOOM_POS_MAX = 1000           # 滑块**内部位置** 0..1000（不是百分比，别当 pct 用）
+ZOOM_STEP_POS = 40            # −/+ 一格 = 位置 40 ⇒ 固定 ×1.19（各倍率下点一下幅度一致）
+
+
+def zoom_pos_to_pct(pos):
+    """滑块位置 -> 缩放百分比（**对数刻度**）。"""
+    p = max(0, min(ZOOM_POS_MAX, int(pos)))
+    ratio = float(ZOOM_PCT_MAX) / float(ZOOM_PCT_MIN)
+    return int(round(ZOOM_PCT_MIN * ratio ** (p / float(ZOOM_POS_MAX))))
+
+
+def zoom_pct_to_pos(pct):
+    """缩放百分比 -> 滑块位置（`zoom_pos_to_pct` 的反函数）。"""
+    import math
+    p = max(ZOOM_PCT_MIN, min(ZOOM_PCT_MAX, int(pct)))
+    span = math.log(float(ZOOM_PCT_MAX) / float(ZOOM_PCT_MIN))
+    return int(round(ZOOM_POS_MAX * math.log(float(p) / float(ZOOM_PCT_MIN)) / span))
+
+
+# ────────── 竖排页签的样式：右栏 / 左栏**共用这一份** ──────────
+#
+# 左栏重构（2026-10-14 晚）时把右栏那份内联样式原样搬了过来。与其两边各写一份
+# 迟早漂移，不如只留一处：形状/字号/选中态都在这。
+#
+# ⚠️ 这里**只写主题皮肤色**（`#D6E4FF` / `#2A3A5C` / `#0E3A52` / `#00E5FF`，
+#    全在 `ui.themes.THEME_COLORS` 白名单里）—— 切浅色时 `sweep_inline_styles`
+#    会把这些颜色剥掉、度量留住，配色交回主题表。**别在这一段里塞语义色**（红/绿），
+#    一旦混进一个，整段就不会被清扫，浅色主题下会留下深色皮肤（见 dlstudio-ui-verify）。
+_V_TAB_QSS = (
+    "QPushButton { font-size: 12px; font-weight: bold; color: #D6E4FF;"
+    " padding: 2px 0; border: 1px solid transparent; border-radius: 3px; }"
+    "QPushButton:hover { border-color: #2A3A5C; }"
+    "QPushButton:checked { background-color: #0E3A52; color: #00E5FF;"
+    " border: 1px solid #00E5FF; }"
+)
+
+
+# 底栏那两个 ± 小按钮的样式：**只带度量，颜色交给主题表**。
+# ⚠️ 这里原来还写着 `color: #C8D2E0` / `border: 1px solid #2A3A5C` —— 全是
+#    `ui.themes.THEME_COLORS` 白名单里的色。窗口建好后 `sweep_inline_styles`
+#    会把这类内联样式里的颜色声明**整段剥掉**（只留度量），配色交回主题表；
+#    也就是说：写在这里的颜色**从来没有生效过**，只是让这份源码在骗人
+#    （`QToolButton:hover` 被剥成空规则 ⇒ 悬停其实一点反馈都没有）。
+#    2026-10-14 的教训比"没生效"严重得多：底栏滑块的内联 QSS 三个颜色同样全在
+#    白名单里 ⇒ 槽和手柄被剥成"没有背景色" ⇒ **占着 84px 宽一个像素都不画**，
+#    而主题表里当时**没有** QSlider 规则可兜底。功能断言（value/geometry/信号）
+#    全绿，肉眼却是一段空槽。
+#    规则：**颜色一律写进 themes.py 的主题表，内联样式只写度量**。
+_BAR_BTN_QSS = """
+QToolButton {
+    border-width: 1px; border-style: solid; border-radius: 3px;
+    padding: 0px; margin: 0px;
+    font-size: 12px;
+    background: transparent;
+}
+"""
+
+
+class ElideLabel(QLabel):
+    """按可用宽度**中间省略**的标签：宽不够时自己变短，绝不把右边的兄弟控件顶出去。
+
+    「图片信息栏」左边是文件名（可达 40+ 字符），右边是坐标/RGB/计数等短字段。
+    文件名用普通 QLabel 会把整条栏撑宽 —— 在中心列只有 ~700px 的窗口里，
+    右边的"耗时"就被挤到屏幕外（而"耗时"恰恰是没跑推理时最需要看到"是空的"那一项）。
+    所以：文件名这一格可缩、缩到装不下就 ElideMiddle（头尾都留住：
+    前缀能看到日期/机号/缺陷，后缀能看到 _te_0.jpg 是哪个视图），右边字段一律不动。
+    """
+
+    def __init__(self, text="", parent=None):
+        super().__init__(text, parent)
+        self._full_text = text
+        # 宽度由布局说了算：不让 sizeHint 反过来跟布局讨价还价（会来回抖）
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.setMinimumWidth(80)
+
+    def setFullText(self, text):
+        self._full_text = text or ""
+        self.setToolTip(self._full_text)
+        self._apply_elide()
+
+    def fullText(self):
+        return self._full_text
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._apply_elide()
+
+    def _apply_elide(self):
+        fm = QFontMetrics(self.font())
+        w = max(0, self.width() - 2)
+        if w <= 0:
+            return
+        self.setText(fm.elidedText(self._full_text, Qt.ElideMiddle, w))
 
 
 class ShrinkStack(QStackedWidget):
@@ -114,6 +228,10 @@ class LossCurveWindow(QWidget):
         if val_acc:
             ax2 = ax.twinx()
             ax2.plot(epochs, val_acc, "g-", label="Val Acc", alpha=0.8)
+            # 缺陷召回曲线：比总准确率更贴近产线关心的「漏检」
+            ng_rec = history.get("val_ng_recall", [])
+            if ng_rec and len(ng_rec) == len(epochs):
+                ax2.plot(epochs, ng_rec, "m--", label="NG Recall", alpha=0.8)
             ax2.set_ylabel("Accuracy", color="g")
             ax2.tick_params(axis="y", labelcolor="g")
             ax2.set_ylim(0, 1.05)
@@ -344,6 +462,13 @@ class MainWindow(QMainWindow):
         self._page_size = 50
         self._current_page = 0
         self._filtered_data = []
+        # ── 标记（对标 iCogtiveFlow 的四态：正常/过杀/漏杀/存疑）──
+        # 与 label 物理分离：不进训练集，只做统计与筛选，是难例闭环的入口。
+        self._marks = {}            # base -> {mark,note,by,at}
+        self._marks_project = None  # 标记已加载的工程目录（避免每次刷新都读盘）
+        self._mark_filter = ""      # 工具栏/统计面板点出来的快速筛选（kind）
+        self._defect_filter = ""    # 快速筛选的缺陷类型
+        self._filter_expr = FilterExpr()   # 条目式表达式筛选（高/低级筛选可叠加）
 
         # Install event filter for global Space key handling
         from PyQt5.QtWidgets import QApplication
@@ -391,7 +516,9 @@ class MainWindow(QMainWindow):
         self._main_splitter.addWidget(self._left_panel)
         self._main_splitter.addWidget(self._center_panel)
         self._main_splitter.addWidget(self._right_panel)
-        self._main_splitter.setSizes([200, 800, 300])
+        # 左栏 200 -> 240：左栏重构后左边多了一条 40px 的竖排页签条，
+        # 补回这 40px，**内容区宽度与重构前一致**（不然图片列表平白窄一截）。
+        self._main_splitter.setSizes([240, 800, 300])
         self._main_splitter.setStretchFactor(0, 0)  # left: no stretch
         self._main_splitter.setStretchFactor(1, 1)  # canvas: stretches
         self._main_splitter.setStretchFactor(2, 0)  # right: no stretch
@@ -407,6 +534,10 @@ class MainWindow(QMainWindow):
         self._log_splitter.setStretchFactor(0, 1)  # main content stretches
         self._log_splitter.setStretchFactor(1, 0)  # log: fixed/minimum
         self._log_splitter.setCollapsible(1, True)
+        # 拖日志分隔条会改左栏高度（左栏挂在 main_splitter 里），但**不会**触发
+        # MainWindow.resizeEvent ⇒ 表格那个"最多能长多高"得在这里补一次重量，
+        # 否则拖过之后表格就一直停在旧限制上（收下去后展不开）。
+        self._log_splitter.splitterMoved.connect(lambda *_: self._schedule_fit_list_height())
         self._saved_log = 150
         main_layout.addWidget(self._log_splitter)
         self.log(f"{APP_NAME} v{APP_VERSION} started")
@@ -437,6 +568,10 @@ class MainWindow(QMainWindow):
         tm.addAction("Image Resize Tool...", self._open_resize_tool)
         tm.addAction("Heatmap Region Analyzer...", self._open_heatmap_analyzer)
         tm.addAction("分类阈值调优 (过杀/漏检)...", self._open_threshold_panel)
+        # 「管理数据集划分…」的**零门槛兜底入口**：图片列表右键里也有一条，但那条要
+        # 先选中至少一行才出菜单（`_on_image_context_menu` 的早退），而"划分"是工程级动作、
+        # 跟选没选中图无关 —— 没这个兜底，面板按钮删掉后就会出现"想划分却点不到"。
+        tm.addAction("数据集划分管理...", self._manage_split)
         tm.addSeparator()
         tm.addAction("Flow Editor...", self._open_flow_editor)
         sm = mb.addMenu("Settings(&S)")
@@ -459,9 +594,10 @@ class MainWindow(QMainWindow):
         #    它们和右侧「图像/标注/模型管理」模块完全重叠，而且同名不同内容
         #    （菜单里的 Model Mgmt 管的是训练/推理，右侧模块管的是模型文件），
         #    同一动作两个入口迟早出现"改了一处、另一处行为不同"。
-        #    其中原先**只有菜单能点**的四项已补进右侧模块：
-        #      导入图片…            -> 图像管理 / 输出与工程
-        #      导出 JSON / 导出标注 / 清理碎标注 -> 标注管理 / 标注操作
+        #    其中原先**只有菜单能点**的四项已补进面板：
+        #      导入图片…            -> 左栏图片列表右键菜单（原在"图像管理/输出与工程"，
+        #                              2026-10-14 该页删除时改挂到这里）
+        #      导出 JSON / 导出标注 / 清理碎标注 -> 左栏图片列表右键菜单（原"标注管理/标注操作"）
         #      批量推理（全部图片）…  -> 模型管理 / 模型列表
         hm = mb.addMenu("Help(&H)")
         # 参照友商「帮助」：日志 / 使用说明 / 开发文档 / 示例工程 / 快捷键提示
@@ -601,20 +737,90 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "示例工程", f"生成失败: {e}")
 
     def _create_left_panel(self):
+        # ★ 2026-10-15 改成「**常驻把手条 + 可折叠内容**」：
+        #   原来折叠按钮在面板**里面**，一按就跟着面板一起消失 ⇒ 想再展开只能去 View 菜单，
+        #   而鼠标明明就停在刚才那个位置（Arthur 反馈"这很不方便"）。
+        #   现在把手条（只放那一枚箭头）**永远可见**，收起时只藏内容：
+        #     展开态 = 把手 + 内容；折叠态 = 只剩把手、箭头反向 ⇒ 点它就展开。
+        #   `self._left_panel` 现在是这个**容器**（splitter 里放的仍是它，引用不用改）。
+        container = QWidget()
+        _cl = QHBoxLayout(container)
+        _cl.setContentsMargins(0, 0, 0, 0)
+        _cl.setSpacing(0)
+
+        handle = QWidget()
+        _hl = QVBoxLayout(handle)
+        _hl.setContentsMargins(2, 2, 2, 2)
+        _hl.setSpacing(0)
+        btn_left = QPushButton("\u25c0")
+        btn_left.setFixedSize(20, 20)
+        btn_left.setToolTip("收起左栏（再点一下展开；Ctrl+[）")
+        btn_left.clicked.connect(lambda: self._toggle_panel("left"))
+        _hl.addWidget(btn_left)
+        _hl.addStretch()
+        _cl.addWidget(handle)
+        self._left_handle = handle
+        self._left_toggle_btn = btn_left
+
         p = QWidget(); outer_layout = QVBoxLayout(p); outer_layout.setContentsMargins(2, 2, 2, 2)
         outer_layout.setSpacing(2)
+        _cl.addWidget(p, 1)
+        self._left_content = p          # 折叠时被 setVisible(False) 的就是它
 
-        # ==== TOP: Projects (collapsible content, not accordion) ====
-        ph = QHBoxLayout(); ph.setContentsMargins(0, 0, 0, 0)
-        self._proj_toggle_btn = QPushButton("\u25bc"); self._proj_toggle_btn.setFixedSize(18, 18)
-        self._proj_toggle_btn.setToolTip("Collapse Projects")
-        ph.addWidget(self._proj_toggle_btn)
-        ph.addWidget(QLabel("<b>Projects</b>")); ph.addStretch()
-        btn_left = QPushButton("\u25c0"); btn_left.setFixedSize(22, 22)
-        btn_left.setToolTip("Collapse left panel")
-        btn_left.clicked.connect(lambda: self._toggle_panel("left"))
-        ph.addWidget(btn_left)
-        outer_layout.addLayout(ph)
+        # ==== 主体：竖排页签（最左） + 页栈（右）====
+        # 参照右栏那套（`_create_right_panel`）：40px 宽的竖排按钮条 + QStackedWidget，
+        # 只是把页签条摆到**最左端** —— 整窗左右各一条竖栏，视觉上对称。
+        #
+        # 为什么必须从"上下叠放"改成"分页"：
+        #   原来工程树 `setMaximumHeight(150)` 钉死，图片列表吃"剩下的那点高度"，
+        #   两者**互相抢空间**（用户 2026-10-14 反馈左栏"挺丑的"就是这个）。
+        #   分页之后每一页都拿到**整栏高度**，工程多 / 图片多都不再互相压。
+        body = QHBoxLayout(); body.setContentsMargins(0, 0, 0, 0); body.setSpacing(0)
+
+        tab_bar = QWidget(); tab_bar.setFixedWidth(40)
+        tab_layout = QVBoxLayout(tab_bar)
+        tab_layout.setContentsMargins(1, 2, 1, 2); tab_layout.setSpacing(2)
+
+        # ⚠️ 这里**不能**用 setExclusive(True)：独占组里"再点一次已选中的那个"点不下去，
+        #    而本轮的诉求恰恰是"再点一下 = 收起"（照友商：点图像管理即显示/隐藏图像列表）。
+        #    所以改成非独占、互斥自己管 —— 见 `_on_left_tab_clicked`。
+        self._left_tabs = QButtonGroup(self); self._left_tabs.setExclusive(False)
+        #: 左栏模块页下标（与右栏 `_right_tab_index` 同一个套路：按名字取，不写死数字）
+        self._left_tab_index = {"proj": 0, "img": 1}
+        tab_defs = [
+            ("工程管理", "工程列表：打开 / 新建 / 删除工程", "proj"),
+            ("图像管理", "图片列表与标记统计", "img"),
+        ]
+        self._left_tab_btns = {}
+        for icon_text, tooltip, key in tab_defs:
+            # 竖排：一个字一行（与右栏完全一致；横排 4 个字塞进 40px 会溢出到按钮外面）
+            btn = QPushButton("\n".join(icon_text))
+            btn.setCheckable(True)
+            btn.setToolTip(tooltip + f"（{icon_text}：点一下显示，再点一下收起）")
+            btn.setMinimumHeight(56)
+            btn.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+            btn.setStyleSheet(_V_TAB_QSS)          # 与右栏共用同一份样式
+            # ⚠️ 用 clicked 而不是 toggled：clicked 只在**用户点击**后发，
+            #    所以 `setChecked()` 回写状态时不会绕回来（无需 blockSignals 那套）。
+            btn.clicked.connect(lambda checked, k=key: self._on_left_tab_clicked(k, checked))
+            self._left_tabs.addButton(btn)
+            self._left_tab_btns[key] = btn
+            tab_layout.addWidget(btn, 1)          # ← stretch=1：两块均分整条竖栏
+        body.addWidget(tab_bar)
+        # ⚠️ 页签条必须**钉在最左端**，不能跟着内容收起而居中：
+        #    `_left_stack` 一隐藏，body 里就只剩 tab_bar 一个控件，而它被
+        #    setFixedWidth(40) 钉死、吃不下多余宽度 ⇒ QHBoxLayout 会把剩下的
+        #    237px **平均分到两边**，竖条就飘到栏中间去了（实测踩到）。
+        #    微测试（tmp/micro_align2.py）对比过四种修法，只有 AlignLeft 既能贴左
+        #    又不影响展开态（常驻 addStretch 会让页栈只拿到一半宽）。
+        body.setAlignment(tab_bar, Qt.AlignLeft)
+
+        self._left_stack = QStackedWidget()
+
+        # ── 页 0：工程管理（工程列表）──
+        page_proj = QWidget()
+        pl = QVBoxLayout(page_proj); pl.setContentsMargins(0, 2, 0, 0); pl.setSpacing(2)
+        pl.addWidget(self._make_block_header("工程列表"))
 
         self.project_tree = QTreeWidget()
         self.project_tree.setHeaderLabels(["Name", "Time"])
@@ -627,48 +833,43 @@ class MainWindow(QMainWindow):
         self.month_item = QTreeWidgetItem(["Within 1 month"])
         self.older_item = QTreeWidgetItem(["Older"])
         self.project_tree.addTopLevelItems([self.week_item, self.month_item, self.older_item])
-        self.project_tree.setMaximumHeight(250)
-        outer_layout.addWidget(self.project_tree)
-        # Projects collapse toggle
-        def _toggle_proj():
-            v = not self.project_tree.isVisible()
-            self.project_tree.setVisible(v)
-            self._proj_toggle_btn.setText("\u25b6" if not v else "\u25bc")
-        self._proj_toggle_btn.clicked.connect(_toggle_proj)
+        # ⚠️ 这里原来钉死 `setMaximumHeight(150)`，理由是"别把下面的图片列表挤没了"。
+        #    现在两者是**两页**、不会再互相挤，所以把这个限制撤掉：
+        #    工程多的时候让它吃满整页（自带滚动条），不必再手动拖分隔条。
+        pl.addWidget(self.project_tree, 1)
+        self._left_stack.addWidget(page_proj)      # 0
 
-        # ==== MIDDLE: 图片列表（原来 Result / Annotation / Image List 三块手风琴，
-        #      Result 与 Annotation 两张表已挪到右侧「标注」页 Class 表下面
-        #      —— 那里本来就空着一大片，而图片列表正需要高度。这里只留图片列表。 ====
-        sep = QFrame(); sep.setFrameShape(QFrame.HLine); sep.setFrameShadow(QFrame.Sunken)
-        outer_layout.addWidget(sep)
+        # ── 页 1：图像管理（图片列表 + 标记统计）──
+        # 原来这条分隔线（sep）是用来在"上下叠放"里分开工程树与图片列表的，
+        # 现在两页互斥显示，线就没有意义了。
+        page_img = QWidget()
+        pg = QVBoxLayout(page_img); pg.setContentsMargins(0, 0, 0, 0); pg.setSpacing(1)
 
-        # Header（只作标题/计数，不再切换页面）
-        ah_layout = QHBoxLayout(); ah_layout.setContentsMargins(0, 0, 0, 0); ah_layout.setSpacing(1)
-        self._accordion_btns = []
-        self._accordion_headers = [("Image List", "imglist")]
-        btn = QPushButton("Image List (0)")
-        btn.setFixedHeight(22)
-        btn.setStyleSheet(
-            "QPushButton { font-size: 10px; padding: 1px 6px; border: 1px solid #2A3A5C; border-radius: 2px; color: #D6E4FF; }"
-        )
-        ah_layout.addWidget(btn)
-        self._accordion_btns.append(btn)
-        ah_layout.addStretch()
-        outer_layout.addLayout(ah_layout)
+        # ⚠️ 2026-10-15（第二轮）用户判定这整行都冗余，已删：
+        #   · 「图片列表 (n)」标题 -> 底部已有「共 N 组（M 张）」+ 左侧竖排页签「图像管理」，
+        #     同一个信息说了三遍；计数唯一来源交给 _update_accordion_counts 写底部。
+        #   · 「标记统计」按钮 -> 标记工具条里的「统计」按钮是同一个动作（_switch_accordion(1)），
+        #     入口只留一处；从统计页返回走 MarkStatsPanel 顶部的「← 返回列表」（back_requested）。
+        #    这行删掉后，表格直接顶到筛选行下面，省 26px。
 
         # Accordion content: QStackedWidget (fills all remaining space)
         self._accordion_stack = QStackedWidget()
-        outer_layout.addWidget(self._accordion_stack, 1)  # stretch=1
+        pg.addWidget(self._accordion_stack, 1)  # stretch=1
 
         # -- Page 2: Image List --
         imglist_page = QWidget(); il = QVBoxLayout(imglist_page); il.setContentsMargins(0, 2, 0, 0); il.setSpacing(1)
 
-        # Filter toolbar
+        # ── 筛选区：两行，按"用得多的在前、用得少的在后"排 ──
+        # 原来 5 个控件挤一行（Search / All Sets / Annotated / All Labels / Recent），
+        # 在 ~480px 的左栏里最后一个「Recent」直接被截掉看不见（用户 2026-10-14 截图里
+        # 就是截断的样子）。现在：行1 = 搜索 + 两个"选什么"的下拉；
+        # 行2 = Pred 门限 + 两个"要不要"的勾选（原来 Pred 独占一行、右边一大片空白）。
         ft = QHBoxLayout(); ft.setContentsMargins(0, 0, 0, 0); ft.setSpacing(2)
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("Search...")
+        self.search_input.setMinimumWidth(110)
         self.search_input.textChanged.connect(self._filter_images)
-        ft.addWidget(self.search_input)
+        ft.addWidget(self.search_input, 1)
         self.split_filter = QComboBox()
         # 对标友商 iSense 的筛选下拉：除数据集外，还要能按"是否标注 / 是否有结果"筛。
         # 后半段这几项在 _filter_images 里实现。
@@ -678,9 +879,6 @@ class MainWindow(QMainWindow):
         self.split_filter.setToolTip("筛选：数据集 / 已标注 / 未标注 / 有结果 / 无结果")
         self.split_filter.currentIndexChanged.connect(lambda: self._filter_images(self.search_input.text()))
         ft.addWidget(self.split_filter)
-        self.annotated_check = QCheckBox("Annotated")
-        self.annotated_check.toggled.connect(lambda: self._filter_images(self.search_input.text()))
-        ft.addWidget(self.annotated_check)
         # 标注名字筛选（对标友商下拉里的「标注名字」）：选一个类别，只看含该类的图。
         # 选项在 _filter_images 里按工程类别懒同步，不必到处挂钩子。
         self.label_filter = QComboBox()
@@ -689,10 +887,6 @@ class MainWindow(QMainWindow):
         self.label_filter.currentIndexChanged.connect(
             lambda: self._filter_images(self.search_input.text()))
         ft.addWidget(self.label_filter)
-        self.recent_check = QCheckBox("Recent")
-        self.recent_check.setToolTip("Sort by annotation date")
-        self.recent_check.toggled.connect(lambda: self._filter_images(self.search_input.text()))
-        ft.addWidget(self.recent_check)
         il.addLayout(ft)
         # Pred filter row
         pf = QHBoxLayout(); pf.setContentsMargins(0, 0, 0, 0); pf.setSpacing(2)
@@ -704,14 +898,54 @@ class MainWindow(QMainWindow):
         self.pred_count_spin = QSpinBox(); self.pred_count_spin.setRange(0, 9999); self.pred_count_spin.setValue(0)
         self.pred_count_spin.setToolTip("0=disabled")
         self.pred_count_spin.valueChanged.connect(lambda: self._filter_images(self.search_input.text()))
-        pf.addWidget(self.pred_count_spin); pf.addStretch()
+        pf.addWidget(self.pred_count_spin)
+        pf.addSpacing(10)
+        self.annotated_check = QCheckBox("Annotated")
+        self.annotated_check.toggled.connect(lambda: self._filter_images(self.search_input.text()))
+        pf.addWidget(self.annotated_check)
+        self.recent_check = QCheckBox("Recent")
+        self.recent_check.setToolTip("Sort by annotation date")
+        self.recent_check.toggled.connect(lambda: self._filter_images(self.search_input.text()))
+        pf.addWidget(self.recent_check)
+        pf.addStretch()
         il.addLayout(pf)
+
+        # ── 标记工具条 + 表达式筛选（对标 iCogtiveFlow 的标记栏） ──
+        # 作用域 = 列表里选中的行（支持多选批量）；统计按钮切到右侧「标记统计」页。
+        self.mark_toolbar = MarkToolbar()
+        self.mark_toolbar.mark_requested.connect(self._on_mark_requested)
+        self.mark_toolbar.note_requested.connect(self._on_mark_note)
+        self.mark_toolbar.stats_requested.connect(lambda: self._switch_accordion(1))
+        il.addWidget(self.mark_toolbar)
+
+        # ── 筛选操作行 ──
+        # ⚠️ 2026-10-15 用户反馈左栏列表上方控件堆了太多行、按钮又挤又小：
+        #   · 「筛选…」（条目式高级筛选）低频 → 收进图片列表右键菜单（见 _on_image_context_menu）
+        #   · 「结果转标注…」 → 右键菜单「标记」子菜单里已有同名入口（_run_convert_by_mark），
+        #     面板上删掉，不再重复挂第三个地方
+        #   · 「清除筛选」是高频 + mark_filter_label 的提示文案指向它 → 保留在面板上
+        mf = QHBoxLayout(); mf.setContentsMargins(0, 0, 0, 0); mf.setSpacing(2)
+        self.btn_filter_clear = QPushButton("清除筛选")
+        self.btn_filter_clear.setToolTip("清掉条目式筛选/标记筛选/缺陷筛选，恢复显示全部图片")
+        self.btn_filter_clear.clicked.connect(self._clear_mark_filters)
+        mf.addWidget(self.btn_filter_clear)
+        mf.addStretch(1)
+        il.addLayout(mf)
+        self.mark_filter_label = QLabel("")
+        self.mark_filter_label.setWordWrap(True)
+        self.mark_filter_label.setVisible(False)
+        il.addWidget(self.mark_filter_label)
 
         # Image table
         self.image_list_widget = QTableWidget()
-        self.image_list_widget.setColumnCount(8)
-        self.image_list_widget.setHorizontalHeaderLabels(["序号", "图片名", "大小", "数据集", "标注", "结果", "分数", "耗时"])
-        self.image_list_widget.horizontalHeader().setStretchLastSection(True)
+        self.image_list_widget.setColumnCount(9)
+        self.image_list_widget.setHorizontalHeaderLabels(
+            ["序号", "图片名", "大小", "数据集", "标注", "结果", "分数", "耗时ms", "标记"])
+        # ⚠️ 不要让「标记」列当拉伸列：stretchLastSection 会把它在宽面板下拉成一大条，
+        #    而它承载的是"一个色块 + 两个字"，宽度固定 54px 才是它的正确形态。
+        #    多余宽度交给「图片名」（它本来就是最长的字段）。
+        self.image_list_widget.horizontalHeader().setStretchLastSection(False)
+        self.image_list_widget.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         self.image_list_widget.setSelectionBehavior(QTableWidget.SelectRows)
         self.image_list_widget.setSelectionMode(QTableWidget.ExtendedSelection)
         # ⚠️ 选中态配色**不能写死在这里**：这段内联样式优先级高于全局主题表，
@@ -735,6 +969,10 @@ class MainWindow(QMainWindow):
         self.image_list_widget.setColumnWidth(4, 50)
         self.image_list_widget.setColumnWidth(5, 50)
         self.image_list_widget.setColumnWidth(6, 60)
+        # 第 7 列（耗时ms）以前**没设宽度**、用的是默认值 100px：列头还只写「耗时」，
+        # 既白占宽度又看不出单位，而值本身以前存的还是秒。宽度给够列头、值本身不超过 4 位。
+        self.image_list_widget.setColumnWidth(7, 62)
+        self.image_list_widget.setColumnWidth(8, 54)
         il.addWidget(self.image_list_widget, 1)
 
         # Pagination
@@ -762,34 +1000,226 @@ class MainWindow(QMainWindow):
         pag_bar.addWidget(self.page_next_btn); pag_bar.addStretch()
         il.addLayout(pag_bar)
         self.list_status = QLabel(""); il.addWidget(self.list_status)
-        self._accordion_stack.addWidget(imglist_page)  # 0（唯一一页）
+
+        # ⚠️ 这行位置**曾短暂放过**两个小按钮（「管理划分…」「输出目录」）：右栏「图像管理」
+        #    页整页删除时，把这两个"别处没有入口"的动作搬到了这里。
+        #    Arthur 当晚看到实机后判定**这一行本身冗余**（面板上多一行视觉噪音），已删。
+        #    现在两个动作都只在**右键菜单 / 菜单栏**里，面板上不占位：
+        #      · 打开输出目录     -> 图片列表右键 + 工程树右键（`_open_output_dir`）
+        #      · 管理数据集划分…  -> 图片列表右键 + 顶部 Tools（`_manage_split`）
+        #    ⚠️ 别再把它们摆回面板：`输出目录` 光右键就有两处，再挂面板就是第三处入口。
+        # 表格收成内容高度后，空出来的那截必须有个"接盘侠"，否则 Qt 会把它**平摊给其它
+        # 控件**：实测（--dump-layout）标记工具栏被撑成 69px、状态行被撑成 68px，
+        # 按钮和文字各自飘在一大块空白中间，比原来"表格下面一片空白"更难看。
+        # 所以尾部放一个可切换的弹簧：表格被限高时它 Expanding 吸走余量（余量落在最下面），
+        # 表格撑满时它退回 Fixed 让位给表格（否则弹簧会和表格五五分）。
+        self._list_bottom_spacer = QSpacerItem(0, 0, QSizePolicy.Minimum, QSizePolicy.Fixed)
+        il.addSpacerItem(self._list_bottom_spacer)
+        self._accordion_stack.addWidget(imglist_page)  # 0
+        # 1：标记统计页（四态计数与占比 + 缺陷类型 × 标记 交叉表）
+        self.mark_stats = MarkStatsPanel()
+        self.mark_stats.cell_filter_requested.connect(self._on_mark_cell_filter)
+        self.mark_stats.kind_filter_requested.connect(self._on_mark_kind_filter)
+        # 页头行删除后（2026-10-15），从统计页不带筛选回列表的唯一入口
+        self.mark_stats.back_requested.connect(lambda: self._switch_accordion(0))
+        self._accordion_stack.addWidget(self.mark_stats)
 
         # Default: show Image List
         self._switch_accordion(0)
 
+        # 收口：图片页进栈 → 栈进主体 → 主体进左栏
+        self._left_stack.addWidget(page_img)       # 1
+        body.addWidget(self._left_stack, 1)
+        outer_layout.addLayout(body, 1)            # stretch=1：页栈吃掉整栏余高
+
         # ==== BOTTOM: New Project (fixed) ====
+        # 位置**不动**（用户明确说过别挪它）：仍在左栏最底下、不随页签收起而消失。
         sep2 = QFrame(); sep2.setFrameShape(QFrame.HLine); sep2.setFrameShadow(QFrame.Sunken)
         outer_layout.addWidget(sep2)
         btn_new = QPushButton("+ New Project"); btn_new.clicked.connect(self._new_project)
         outer_layout.addWidget(btn_new)
 
-        return p
+        # 供「表格高度自适应内容」用：需要页面高度与"除表格外的其它行高度"来算可用高度
+        # （见 _fit_list_height 里为什么不能直接量 table.height()）。
+        self._list_page = imglist_page
+        self._list_layout = il
+
+        # Default: 落在「工程管理」（Arthur 2026-10-15 拍板：重启后先看工程列表）。
+        # 为什么这样更合理：没打开工程时图片列表**本来就是空的**，落在一个空列表页
+        # 等于"右侧画布是灰的、左边也是空的"，用户第一眼无事可做；
+        # 落在工程列表则一眼看到"有哪些工程、上次做到哪儿"。
+        # 配套：打开工程成功后会自动切到「图像管理」（见 _open_project_by_name 末尾），
+        # 否则从工程列表打开工程后还停在一页空图片列表上。
+        self.show_left_tab("proj")
+        return container        # 把手条 + 内容；splitter 里放的是它
+
+    def _fit_list_height(self):
+        """图片列表高度跟着内容走：行少时收成内容高度，行多时照旧撑满。
+
+        用户 2026-10-14 反馈："表格下方一大片空白"。场景是**筛完之后**列表只剩几行，
+        而表格仍按拉伸占满剩余高度，看着像没加载完。
+
+        ⚠️ 可用高度**不能**拿 `table.height()` 量：表格一旦被限过高度，再量到的就是
+        被限后的那个值 ⇒ 限制永远解不开（自锁，窗口拉大表格也不跟着长）。
+        所以这里按"页面高度 - 其它行高度 - 行间距"算，与表格当前被限没被限无关。
+        """
+        t = getattr(self, "image_list_widget", None)
+        lay = getattr(self, "_list_layout", None)
+        page = getattr(self, "_list_page", None)
+        if t is None or lay is None or page is None:
+            return
+        try:
+            # 切到"标记统计"页时列表页是隐藏的（高度 0）：此时不量、也不动限制
+            if page.height() <= 0 or not page.isVisible():
+                return
+            other = 0
+            for i in range(lay.count()):
+                it = lay.itemAt(i)
+                w = it.widget()
+                if w is t:
+                    continue
+                if w is not None:
+                    # ⚠️ 隐藏的控件必须跳过：它不占位，但 height() 给的是**上次的旧高度**。
+                    #    实测（2026-10-14，--dump-layout 量出来的）mark_filter_label 隐藏时
+                    #    仍报 480px ⇒ 可用高度算成 -249 ⇒ 自适应永远不触发，
+                    #    现象就是"改了但看起来没改"。
+                    if not w.isVisible():
+                        continue
+                    other += w.height()
+                else:
+                    sub = it.layout()
+                    if sub is not None:
+                        other += sub.geometry().height() or sub.sizeHint().height()
+            avail = page.height() - other - lay.spacing() * max(0, lay.count() - 1)
+            hh = 0 if t.horizontalHeader().isHidden() else t.horizontalHeader().height()
+            body = sum(t.rowHeight(r) for r in range(t.rowCount()))
+            need = hh + body + 2 * t.frameWidth() + 6
+            # need < avail 才收：行多的时候让 maximumHeight 放开，交给布局去拉伸。
+            # 同时切换尾部弹簧（见 _create_left_panel 里的注释）：收起来时余量落到最下面。
+            spacer = getattr(self, "_list_bottom_spacer", None)
+            if need < avail:
+                t.setMaximumHeight(need)
+                if spacer is not None:
+                    spacer.changeSize(0, 0, QSizePolicy.Minimum, QSizePolicy.Expanding)
+            else:
+                t.setMaximumHeight(16777215)
+                if spacer is not None:
+                    spacer.changeSize(0, 0, QSizePolicy.Minimum, QSizePolicy.Fixed)
+        except Exception:
+            pass
+
+    def _schedule_fit_list_height(self):
+        """下一轮事件循环再量高：布局几何要等这一轮结束才落到控件上。"""
+        try:
+            QTimer.singleShot(0, self._fit_list_height)
+        except Exception:
+            pass
+
+    # ────────── 工具行折叠 / 展开（2026-10-15 照友商"点标注显示隐藏工具栏"）──────────
+    def _on_toolbar_collapsed(self, _on):
+        """工具行藏起来 = 画布长高了约 30px ⇒ 把下游"按尺寸排版"的东西都叫醒。
+
+        ⚠️ 必须延后一轮：`toggled` 是在**点击处理中**发的，此刻布局几何还没重算，
+           立刻去量画布宽高拿到的是**旧值** ⇒ 重排完还是错的，而且不报错（最难查的那类）。
+           （同 `_schedule_fit_list_height` 的道理。）
+        """
+        def _relayout():
+            # 画布/viewer 的重画**不用管**：Qt 在几何变化时会发 resizeEvent，
+            # MultiViewPreview 的 resizeEvent 自己把 `_state` 置空并标脏（见该文件 465行）。
+            # 这里只补"不靠 resizeEvent 的那一个"：图片信息栏按可用宽度排版。
+            # ⚠️ 不要写 `if hasattr(mv, "refresh_state"): ...` 这种兜底调用 ——
+            #    方法不存在时它静默什么都不做，看着"排过了"，其实没排。
+            try:
+                self._schedule_fit_img_info_bar()
+            except Exception:
+                pass
+        try:
+            QTimer.singleShot(0, _relayout)
+        except Exception:
+            pass
+
+    def resizeEvent(self, event):
+        """窗口尺寸变了，表格能长多少也跟着变 —— 不重量的话"收起来"就再也展不开了。
+
+        底栏右端同理：宽了就放得下 −/滑块/+，窄了就得收（见 `_fit_img_info_bar`）。
+        """
+        super().resizeEvent(event)
+        self._layout_edge_buttons()      # 边缘恢复按钮是浮层，窗口一变大小就得重贴
+        self._schedule_fit_list_height()
+        self._schedule_fit_img_info_bar()
 
     def _switch_accordion(self, idx):
-        """左侧现在只有图片列表一页，保底切到 0（保留函数以兼容旧调用点）。"""
-        idx = 0 if idx >= len(self._accordion_btns) else idx
-        for i, btn in enumerate(self._accordion_btns):
-            btn.setChecked(i == idx)
+        """切左侧页：0=图片列表，1=标记统计。"""
+        # 2026-10-15 第二轮减负后，页头那一整行（标题 + 「标记统计」按钮）已删：
+        # 去统计页走标记工具条的「统计」按钮，回列表走统计页里的「← 返回列表」。
+        idx = max(0, min(idx, 1))
         self._accordion_stack.setCurrentIndex(idx)
+        # 切回图片列表页时页面高度才确定，表格高度自适应要重量一次
+        self._schedule_fit_list_height()
+
+    # ────────── 左栏模块页签（参照右栏，2026-10-14 重构）──────────
+
+    def show_left_tab(self, key, notify=True):
+        """按**名字**切左栏模块页（"proj" = 工程管理 / "img" = 图像管理）。
+
+        与右栏 `show_right_tab` 同一个套路：按名字取下标，不写死数字 ——
+        页序一改，写死的 `setCurrentIndex(1)` 就变成"点了跳到别的页"，且不报错。
+
+        `notify=False` 给构造期用（那时窗口还没显示，算高度没意义）。
+        """
+        idx = getattr(self, "_left_tab_index", {}).get(key)
+        if idx is None:
+            return
+        self._left_stack.setCurrentIndex(idx)
+        # ⚠️ 勾选状态必须**由下标唯一决定**：这里原来只勾目标按钮、从不去取消别的。
+        #    默认页改成「工程管理」+ 打开工程再自动切「图像管理」之后，
+        #    两个按钮会**同时勾着**（探针实测 checked=['proj','img']）——
+        #    页签是互斥的一组，两颗都亮等于"我也不知道现在在哪一页"。
+        #    setChecked 依然安全：按钮连的是 `clicked`（只有用户点击才发），
+        #    不是 `toggled` —— 否则这一下就会绕回 _on_left_tab_clicked 来回打架。
+        _idx_map = getattr(self, "_left_tab_index", {}) or {}
+        for _k, _b in (getattr(self, "_left_tab_btns", {}) or {}).items():
+            _b.setChecked(_idx_map.get(_k) == idx)
+        self._left_stack.setVisible(True)
+        if notify:
+            # 图片页刚可见时才量得到真实高度（_fit_list_height 依赖 page.height()），
+            # 且必须延后一拍：布局几何要等这一轮事件循环结束才落到控件上。
+            self._schedule_fit_list_height()
+
+    def _on_left_tab_clicked(self, key, checked):
+        """左栏页签点击：**点一下显示该列表，再点一下收起整块内容**。
+
+        这是照友商的行为（"只要点击图像管理就会显示或者隐藏图像列表"）做的，
+        所以页签按钮**不能**进独占组（独占组里"再点已选中的那个"点不下去）。
+        两个页签都弹起来 = 整块内容收起。
+        """
+        if checked:
+            # 互斥：把另一个放开（它连的是 clicked，setChecked 不会绕回来）
+            for k, b in self._left_tab_btns.items():
+                if k != key and b.isChecked():
+                    b.setChecked(False)
+            self.show_left_tab(key)
+            return
+        if not any(b.isChecked() for b in self._left_tab_btns.values()):
+            # ⚠️ 只收**内容**，竖条本身绝不能隐藏 —— 否则就再也点不回来了。
+            self._left_stack.setVisible(False)
+            self._schedule_fit_list_height()
+
+    def left_tab_state(self):
+        """诊断用：当前左栏状态（哪个页签按着、内容可不可见）。"""
+        return {
+            "checked": [k for k, b in getattr(self, "_left_tab_btns", {}).items() if b.isChecked()],
+            "content_visible": bool(self._left_stack.isVisible()) if hasattr(self, "_left_stack") else None,
+            "page": self._left_stack.currentIndex() if hasattr(self, "_left_stack") else None,
+        }
 
     def _update_accordion_counts(self, result_count=None, ann_count=None, img_count=None):
-        """更新计数标签：左侧「Image List (n)」+ 右侧「Result (n) / Annotation (n)」。
+        """更新右侧「Result (n) / Annotation (n)」小标题的计数。
 
-        函数名沿用旧的（调用点在 _filter_images 里），但它现在同时管两处 ——
-        计数只有一个来源，界面在两处显示。
+        2026-10-15 起不再管左侧：「图片列表 (n)」页头标题已删（同一份计数底部
+        stats_summary 已写「共 N 组（M 张）」，见 _filter_images 里那几行）。
+        img_count 形参保留只为兼容旧调用点，不再消费。
         """
-        if img_count is not None and self._accordion_btns:
-            self._accordion_btns[0].setText(f"Image List ({img_count})")
         if result_count is not None or ann_count is not None:
             self._update_block_counts(result_count, ann_count)
 
@@ -865,6 +1295,17 @@ class MainWindow(QMainWindow):
         self.canvas.width_changed.connect(self.annotation_toolbar.set_width)
         self.canvas.class_select_requested.connect(self._on_canvas_class_select)
         self.canvas.save_requested.connect(self._save_current_mask)
+        # 工具栏右侧状态区（2026-10-14 顶栏并进底栏时加的）：
+        # 三个图层开关与当前类别原先只以**纯文本**挂在多视图顶栏上，顶栏删掉后
+        # 它们在全屏没有第二个显示处（只能靠快捷键盲切），所以搬过来并做成可点按钮。
+        # 类别那一格直接复用数字键那条路（`_on_canvas_class_select`）——
+        # 同一个动作只留一个实现，两个入口才不会各自跑偏。
+        self.annotation_toolbar.layer_toggled.connect(self._on_layer_toggled)
+        # 工具行折叠/展开（2026-10-15 照友商"点标注显示隐藏工具栏"）：
+        # 工具行是这个布局里的兄弟控件，藏起来画布会**真的变大** ——
+        # 所以必须通知下游"视口尺寸变了"：图片信息栏按可用宽排版、底栏滑块重算适配，
+        # 否则会出现"画布长高了但信息栏还按旧宽度摆"的错位。
+        self.annotation_toolbar.tools_toggled.connect(self._on_toolbar_collapsed)
         cl.addWidget(self.annotation_toolbar)
         # 轻量级目标检测标注工具栏（仅 detection 项目显示，与分割工具栏同位置互斥）
         self.det_toolbar = DetToolbar()
@@ -874,26 +1315,527 @@ class MainWindow(QMainWindow):
         self.det_toolbar.cancel_requested.connect(self._det_cancel)
         self.det_toolbar.undo_requested.connect(self._det_undo)
         self.det_toolbar.redo_requested.connect(self._det_redo)
+        self.det_toolbar.tools_toggled.connect(self._on_toolbar_collapsed)
         self.canvas.det_selection_changed.connect(self._sync_det_toolbar)
         cl.addWidget(self.det_toolbar)
         cl.addWidget(self._viewer_stack)
+        # 图像区正下方的「图片信息栏」（文件/宽高/坐标/RGB/已标注/已检出/耗时/平均耗时）
+        # 注意要把 cc 作为 parent 传进去，不能只靠 addWidget 事后认父（见该函数文档里的坑）
+        cl.addWidget(self._build_img_info_bar(cc))
 
         outer.addWidget(cc)
+
+        # ── 折叠后的「边缘恢复按钮」（2026-10-15 改版）──
+        # 上一版：折叠 = 面板收窄成 26px 把手条 ⇒ 画布**没有占满整宽**，两侧各留一条空白
+        #   （Arthur："折叠后，预览窗口直接占满左右栏就好"）。
+        # 这一版：折叠 = **整个面板藏起来**（宽度归零，画布吃满），
+        #   恢复按钮改成**贴在画布左右边缘的浮层小按钮**，用 move() 定位、不进布局 ⇒
+        #   不占任何布局宽度，同时又满足"随时能点回来"（上一版的需求）。
+        # 为什么浮层不用布局：`cc` 的布局是 QVBoxLayout，加进去就等于给它宽度/高度。
+        self._edge_left_btn = QToolButton(cc)
+        self._edge_right_btn = QToolButton(cc)
+        for _b, _tip in ((self._edge_left_btn, "展开左栏（Ctrl+[）"),
+                         (self._edge_right_btn, "展开右栏（Ctrl+]）")):
+            _b.setText("▶" if _tip.startswith("展开左") else "◀")
+            _b.setToolTip(_tip)
+            _b.setFixedSize(16, 46)
+            _b.setCursor(Qt.PointingHandCursor)
+            _b.setFocusPolicy(Qt.NoFocus)
+            _b.hide()                      # 默认两侧都是展开态 ⇒ 不显示
+        self._edge_left_btn.clicked.connect(lambda: self._toggle_panel("left"))
+        self._edge_right_btn.clicked.connect(lambda: self._toggle_panel("right"))
+
         return outer
 
+    def _layout_edge_buttons(self):
+        """把两枚边缘恢复按钮贴到图像区的左右边缘（浮层，不占布局宽度）。"""
+        for side, btn in (("left", getattr(self, "_edge_left_btn", None)),
+                          ("right", getattr(self, "_edge_right_btn", None))):
+            if btn is None or btn.isHidden():
+                continue
+            host = btn.parentWidget()
+            if host is None:
+                continue
+            y = max(0, (host.height() - btn.height()) // 2)
+            if side == "left":
+                btn.move(0, y)
+            else:
+                btn.move(max(0, host.width() - btn.width()), y)
+            btn.raise_()                  # 压在图像之上，不被布局压到底层
+
+    # ────────── 底部「图片信息栏」（对标成熟视觉软件的图片信息栏字段表） ──────────
+    def _build_img_info_bar(self, parent=None):
+        """文件 / 宽高 / 坐标 / RGB / 已标注 / 已检出 / 耗时 / 平均耗时。
+
+        两条规矩：
+        1. **数据只从图片列表那一行的同一条记录取**（`self._filtered_data` 里按 base 找），
+           不另算一份 —— 否则"列表说 89 块、底栏说 90 块"这种互相打脸迟早出现；
+        2. 宽度不够时**只让文件名变短**（中间省略），右边的坐标/RGB/计数/耗时一律不截 ——
+           "耗时是不是空的"恰恰是没跑推理时最需要看见的一项。
+
+        ⚠️ 容器控件（box/sep/bar）必须**在构造时就把 parent 给死**（调用点传 cc 进来）。
+        踩过的坑（2026-10-14，真窗口探针抓的，静默崩）：中间那个 `bar` QFrame 既没有父对象、
+        又没被 self 引用 ⇒ PyQt 认为它归 Python 所有 ⇒ 本函数一返回它就**被 GC 删掉**，
+        孩子（这些 QLabel）跟着一起被删。之后再碰就是
+        `RuntimeError: wrapped C/C++ object of type ElideLabel has been deleted`，
+        而这个异常发生在 Qt 槽里 ⇒ PyQt 走 qFatal/abort **直接杀进程**，
+        stderr 还没 flush ⇒ 现场表现是"打开工程就静默退出、没有 traceback、崩溃日志也没写"。
+        """
+        box = QWidget(parent)
+        vb = QVBoxLayout(box)
+        vb.setContentsMargins(0, 0, 0, 0)
+        vb.setSpacing(0)
+        sep = QFrame(box)
+        sep.setFrameShape(QFrame.HLine)
+        sep.setFrameShadow(QFrame.Sunken)
+        vb.addWidget(sep)
+        bar = QFrame(box)
+        lay = QHBoxLayout(bar)
+        # 间距/边距都收紧一点：数值项的"最小宽度"是钉死的（防抖动），紧出来的宽度
+        # 全部让给左边那个可缩的文件名 —— 中心列只有 ~700px 时不至于把名字砍得太狠。
+        lay.setContentsMargins(6, 1, 6, 1)
+        lay.setSpacing(7)
+        self._info_file = ElideLabel("文件 --")
+        lay.addWidget(self._info_file, 1)
+        self._info_dims = QLabel("宽高 --")
+        self._info_xy = QLabel("坐标 --")
+        self._info_rgb = QLabel("RGB --")
+        self._info_ann = QLabel("已标注 --")
+        self._info_det = QLabel("已检出 --")
+        self._info_ms = QLabel("耗时 --")
+        self._info_avg = QLabel("平均 --")
+        self._img_info_bar = box          # 供探针/后续代码定位这一条（断言它挂在图像区下方）
+        fm = QFontMetrics(self.font())
+        # 数字位数一变（1129,1962 -> 999,1962）整条栏就会左右抖，看着像在跳。
+        # 用"最宽的样本串"给每一项钉一个最小宽度：位置固定、只有数字本身在变。
+        for lb, sample in ((self._info_dims, "宽高 0000×0000"), (self._info_xy, "坐标 0000,0000"),
+                           (self._info_rgb, "RGB 255,255,255"), (self._info_ann, "已标注 000"),
+                           (self._info_det, "已检出 000"), (self._info_ms, "耗时 0000ms"),
+                           (self._info_avg, "平均 0000ms")):
+            lb.setMinimumWidth(fm.horizontalAdvance(sample) + 2)
+            lay.addWidget(lb)
+        self._info_bar = bar            # 供 `_fit_img_info_bar` 量可用宽（见那里的自锁说明）
+        # 右端：视图布局 + 缩放控件（照友商把缩放摆在同一栏的最右端）
+        lay.addWidget(self._build_zoom_controls(bar))
+        # ⚠️ 这一行不能漏：给了 parent 只解决"会不会被回收"，**不等于进了布局** ——
+        #    漏掉它就是"有父对象但没人管它"的野孩子，实测整条栏只剩 3px 高（分隔线的高度），
+        #    标签一个都看不见，而 isVisible() 仍然是 True（探针第一版就是这么被骗过去的，
+        #    后来改成量 box.height() 才露出来）。
+        vb.addWidget(bar)
+        # 光标坐标 / RGB 从**三格里的任意一格**上报，不只主画布。
+        # 用户 2026-10-14 报的正是这个："光标停留在形状1和形状2上时，这些值都是空的" ——
+        # 参考窗那时是纯 QLabel、连鼠标跟踪都没开，压根不产生事件，更没人接。
+        # 挂 MultiViewPreview 那一路（它已经把主画布与各参考窗汇成一个出口）；
+        # 老版本没有这个信号时退回只挂画布（至少主视图那格还是好的，不崩）。
+        _mv = getattr(self, "mv_preview", None)
+        if _mv is not None and hasattr(_mv, "cursor_moved"):
+            _mv.cursor_moved.connect(self._on_canvas_cursor_moved)
+        else:
+            self.canvas.cursor_moved.connect(self._on_canvas_cursor_moved)
+        # 顶栏拆掉后的**状态出口**（三个图层开关 / 当前类别 / 缩放百分比）。
+        # 同样是"老版本没有就跳过"：缺这个信号时工具栏那几个控件只是不同步，
+        # 不该因此让整个窗口起不来。
+        if _mv is not None and hasattr(_mv, "state_changed"):
+            _mv.state_changed.connect(self._on_mv_state)
+        self._refresh_img_info()
+        return box
+
+    def _build_zoom_controls(self, parent=None):
+        """底栏右端那组控件：`[视图布局] − [滑块] + 140%`。
+
+        为什么缩放读数挪到这里（原话是"顶栏和底栏可以合二为一，参考友商"）：
+        原先"缩放 140%（三窗同步）"在多视图顶栏、而调缩放只能滚轮 ——
+        读数与操作分在两处；友商把读数和 −/滑块/+ 摆在同一栏的最右端，照做。
+
+        ⚠️ **一切缩放只走 `set_zoom_percent`**（滑块、±、以后可能的键盘）。
+        三个入口各自算一遍 zoom/pan 的话，迟早出现"滑块说 140%、画面是 200%"。
+        """
+        box = QWidget(parent)
+        h = QHBoxLayout(box)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(3)
+
+        # 「视图布局」只是个按钮（QToolButton + 菜单）。这个下拉原先在多视图顶栏，
+        # 顶栏删掉后无处可去：塞标注工具栏实测放不下（工具栏 sizeHint 已 773px，
+        # 中央列左栏展开时只有 757px），所以跟缩放一起放在底栏右端，只有在多视图模式下才出现。
+        self._view_layout_btn = QToolButton(box)
+        self._view_layout_btn.setText("视图布局")
+        self._view_layout_btn.setToolTip("多视图排列方式（1*1 / 2*1 / 3*1 / 2*2 / 4*1）")
+        self._view_layout_btn.setCursor(Qt.PointingHandCursor)
+        self._view_layout_btn.setPopupMode(QToolButton.InstantPopup)
+        self._view_layout_btn.setStyleSheet(_BAR_BTN_QSS)
+        self._layout_menu = QMenu(self._view_layout_btn)
+        self._view_layout_btn.setMenu(self._layout_menu)
+        self._view_layout_btn.setVisible(False)     # 单图模式没有布局可设
+        h.addWidget(self._view_layout_btn)
+
+        self._zoom_out_btn = QToolButton(box)
+        self._zoom_out_btn.setText("\u2212")        # U+2212：连字符"-"在居中时偏上，视觉不对称
+        self._zoom_out_btn.setToolTip("缩小（三窗同步，长按连续）")
+        self._zoom_out_btn.setCursor(Qt.PointingHandCursor)
+        self._zoom_out_btn.setAutoRepeat(True)
+        self._zoom_out_btn.setAutoRepeatDelay(420)
+        self._zoom_out_btn.setAutoRepeatInterval(110)
+        self._zoom_out_btn.setStyleSheet(_BAR_BTN_QSS)
+        self._zoom_out_btn.setFixedSize(18, 17)
+        h.addWidget(self._zoom_out_btn)
+
+        self._zoom_slider = QSlider(Qt.Horizontal, box)
+        self._zoom_slider.setRange(0, ZOOM_POS_MAX)      # 内部位置，不是百分比（见 zoom_pos_to_pct）
+        self._zoom_slider.setValue(zoom_pct_to_pos(100))
+        self._zoom_slider.setSingleStep(ZOOM_STEP_POS)
+        self._zoom_slider.setPageStep(ZOOM_STEP_POS * 3)
+        self._zoom_slider.setFixedWidth(84)
+        self._zoom_slider.setFixedHeight(17)
+        self._zoom_slider.setToolTip("缩放（相对「适应窗口」，三窗同步）")
+        # ⚠️ **不要**在这里 setStyleSheet 写颜色：颜色写在内联样式里会被
+        #    `sweep_inline_styles` 剥掉（白名单色）⇒ 槽和手柄没有背景色 ⇒ 空槽。
+        #    配色在 ui/themes.py 的 `_DARK_SLIDER` / `_LIGHT_SLIDER`。
+        h.addWidget(self._zoom_slider)
+
+        self._zoom_in_btn = QToolButton(box)
+        self._zoom_in_btn.setText("+")
+        self._zoom_in_btn.setToolTip("放大（三窗同步，长按连续）")
+        self._zoom_in_btn.setCursor(Qt.PointingHandCursor)
+        self._zoom_in_btn.setAutoRepeat(True)
+        self._zoom_in_btn.setAutoRepeatDelay(420)
+        self._zoom_in_btn.setAutoRepeatInterval(110)
+        self._zoom_in_btn.setStyleSheet(_BAR_BTN_QSS)
+        self._zoom_in_btn.setFixedSize(18, 17)
+        h.addWidget(self._zoom_in_btn)
+
+        self._zoom_pct = QLabel("100%", box)
+        # 按"最宽样本"钉死：从 100% 跳到 800% 时整条底栏不能跟着左右抖
+        self._zoom_pct.setMinimumWidth(QFontMetrics(self.font()).horizontalAdvance("1000%") + 2)
+        h.addWidget(self._zoom_pct)
+
+        self._zoom_out_btn.clicked.connect(lambda: self._nudge_zoom(-1))
+        self._zoom_in_btn.clicked.connect(lambda: self._nudge_zoom(+1))
+        self._zoom_slider.valueChanged.connect(self._on_zoom_slider)
+        return box
+
+    def _nudge_zoom(self, sign):
+        """−/+ 按钮：一格 = 滑块位置走 `ZOOM_STEP_POS`。
+
+        对数刻度下这就是**固定倍率**（×1.19）：在 20% 处和在 700% 处点一下，
+        画面变化的幅度一样 —— 线性档位在两端的手感会差出一个数量级。
+        改的是**滑块值**、不直接调 `set_zoom_percent`：保持"缩放入口只有一条路"
+        （`valueChanged` -> `_on_zoom_slider` -> `set_zoom_percent`）。
+        """
+        pos = int(self._zoom_slider.value()) + int(sign) * ZOOM_STEP_POS
+        pos = max(0, min(ZOOM_POS_MAX, pos))
+        if pos != self._zoom_slider.value():
+            self._zoom_slider.setValue(pos)
+
+    def _on_zoom_slider(self, val):
+        """滑块（或 ± 按钮）改缩放。拖动时高频触发，所以这里只干一件事：交给 MultiViewPreview。"""
+        if getattr(self, "_zoom_sync_lock", False):
+            return
+        pct = zoom_pos_to_pct(val)          # 位置 -> 百分比只在这里换算
+        mv = getattr(self, "mv_preview", None)
+        if mv is not None and hasattr(mv, "set_zoom_percent"):
+            mv.set_zoom_percent(pct)
+        self._zoom_pct.setText("%d%%" % pct)
+
+    def _apply_zoom_ui(self, pct):
+        """把外面的缩放值回写到滑块与读数（滚轮缩放 / 打开工程 / 程序性改视图时走这里）。
+
+        `_zoom_sync_lock` 不能省：`setValue` 会触发 `valueChanged` → `_on_zoom_slider`
+        → 又去 set_zoom_percent → 又回来 → 无限回环，而且每圈都重画三格。
+
+        ⚠️ 回写前要先问一句"滑块自己的位置**已经是**这个百分比了吗"：
+        画布上报的是**取整**过的百分比（`zoom_percent()` 返回 int），而位置->百分比
+        是连着的一条曲线，取整会来回蹭。实测（2026-10-14）：滑块在 356（=48%），
+        画布报 48%、反算位置得 358 ⇒ 无条件 setValue 会把滑块从 356 挪到 358，
+        于是"± 一格固定走 40"变成 41/42，而且每点一下滑块都被无意义地拖动一次。
+        判据用**滑块自己的位置**算回来的百分比，不是拿位置跟位置比。
+        """
+        self._zoom_sync_lock = True
+        try:
+            pct = max(ZOOM_PCT_MIN, min(ZOOM_PCT_MAX, int(pct)))
+            if zoom_pos_to_pct(self._zoom_slider.value()) != pct:
+                self._zoom_slider.setValue(zoom_pct_to_pos(pct))
+            self._zoom_pct.setText("%d%%" % pct)
+        finally:
+            self._zoom_sync_lock = False
+
+    def _rebuild_layout_menu(self):
+        """重建「视图布局」菜单（模式列表从 MultiViewPreview 问，不在这里抄一份常量）。"""
+        mv = getattr(self, "mv_preview", None)
+        btn = getattr(self, "_view_layout_btn", None)
+        if mv is None or btn is None or not hasattr(mv, "layout_modes"):
+            return
+        m = self._layout_menu
+        m.clear()
+        cur = mv.layout_mode()
+        for text in mv.layout_modes():
+            act = m.addAction(text)
+            act.setCheckable(True)
+            act.setChecked(text == cur)
+            act.triggered.connect(lambda *a, t=text: self._on_layout_pick(t))
+
+    def _on_layout_pick(self, text):
+        mv = getattr(self, "mv_preview", None)
+        if mv is not None and hasattr(mv, "set_layout_mode"):
+            mv.set_layout_mode(text)
+
+    def _on_layer_toggled(self, key, on):
+        """工具栏右侧三个图层开关被点。
+
+        ⚠️ 一律调画布自己的 `toggle_*`，**不直接改字段**：画布那边还要负责
+        `_overlay_dirty`、`status_message`、`view_changed`；绕过它就是
+        "标志位改了但叠加层没重画"这类只在某些图上才看得出来的 bug。
+        按钮的亮灭与画布真实状态由 `state_changed` 兜底校正（最多差一个 40ms 轮询），
+        所以万一模式对不上（比如检测模式下"标注"切的是框），按钮会自己弹回去 —— 这是对的。
+        """
+        c = getattr(self, "canvas", None)
+        if c is None:
+            return
+        try:
+            if key == "annot":
+                c.toggle_annotation_visibility()
+            elif key == "ignore":
+                c.toggle_ignore_visibility()
+            elif key == "pred":
+                c.toggle_prediction_visibility()
+        except Exception as e:
+            self.log(f"[图层开关] 切换 {key} 失败：{type(e).__name__}: {e}")
+
+    def _on_mv_state(self, st):
+        """接 MultiViewPreview 的状态汇总（顶栏拆掉后这些值的**唯一出口**）。
+
+        三件事：
+        ① 工具栏右侧三个图层开关 + 类别格 —— **只在多视图模式显示**：
+           单图模式下画布自己叠着一行状态文本（`set_status_overlay(True)`），
+           这里再显示一处就是"同一个状态同屏两遍"（正是这次要消掉的毛病）；
+        ② 底栏的缩放读数与滑块位置；
+        ③ 底栏「视图布局」按钮的可见性（同理，单图模式没有布局可设）。
+        """
+        if not isinstance(st, dict):
+            return
+        multi = int(st.get("n_views") or 0) > 1
+        tb = getattr(self, "annotation_toolbar", None)
+        if tb is not None:
+            try:
+                tb.set_layers_visible(multi)
+                tb.set_layer_states(st.get("annot", True), st.get("ignore", True),
+                                    st.get("pred", False))
+            except Exception:
+                pass
+        btn = getattr(self, "_view_layout_btn", None)
+        if btn is not None and bool(btn.isVisible()) != multi:
+            btn.setVisible(multi)
+            if multi:
+                self._rebuild_layout_menu()
+        self._apply_zoom_ui(st.get("zoom_pct", 100))
+        self._schedule_fit_img_info_bar()
+
+    def _fit_img_info_bar(self):
+        """底栏放不下时，按优先级收起右端的交互件（**读数一项都不收**）。
+
+        收起顺序：视图布局按钮 → **滑块** → −/+ → 「100%」读数（这个永不收）。
+
+        为什么这个顺序：
+          · 「视图布局」排第一 —— 多视图顶栏那个下拉删掉后，它是**唯一**的布局入口，
+            收掉就等于"这个功能没了"（别处再也没有）。
+          · 滑块排第二、−/+ 排最后 —— 两者都是缩放入口，但滑块是照友商做的主控件，
+            而且拖动比连点精确；更关键的是 ± 与"指针在图上滚轮"完全重复，
+            窄窗口下先牺牲它，用户照样能缩放（滚轮一直在）。
+            反过来的顺序（先收滑块、留两个小 ± ）会把友商那个特征控件弄丢，
+            屏幕上只剩下两个看不出干什么的方块。
+          · 「100%」读数永不收：它不占位、又是唯一能一眼看出"当前是不是 100%"的地方。
+
+        为什么读数一项都不收：它们全是"扫一眼就知道"的东西，收起来就得悬停，
+        等于没有。而右端那几个是**可交互**的，短时间收掉不影响看数（滚轮缩放一直在）。
+        实测（tmp/measure_bars2.py）：7 个数字项钉死宽合计 530px + 间隙 + 边距 ≈ 601px，
+        再加文件名最小 80px ⇒ 中央列窄到 757px 时右端只剩 ~76px，必须收。
+
+        ⚠️ **只算一遍就定完，不做"收起来再量"。** 收起会让可用宽变大，
+        于是又"够放了" ⇒ 显示 ⇒ 又不够 —— 来回抖（表格高度自适应踩过同一个自锁）。
+        所以这里量的是固定项的最小需求，与当前显示状态无关。
+        """
+        bar = getattr(self, "_info_bar", None)
+        if bar is None or bar.width() <= 8:
+            return
+        fixed = 0
+        for lb in (getattr(self, "_info_dims", None), getattr(self, "_info_xy", None),
+                   getattr(self, "_info_rgb", None), getattr(self, "_info_ann", None),
+                   getattr(self, "_info_det", None), getattr(self, "_info_ms", None),
+                   getattr(self, "_info_avg", None)):
+            if lb is not None:
+                fixed += lb.minimumWidth()
+        lay = bar.layout()
+        gap = lay.spacing() if lay is not None else 7
+        fixed += gap * 7
+        room = bar.width() - 12 - fixed - 80       # 12=边距, 80=文件名最小宽
+        try:
+            multi = bool(getattr(self.mv_preview, "is_multiview", lambda: False)())
+        except Exception:
+            multi = False
+        for w, need_multi in ((getattr(self, "_view_layout_btn", None), True),
+                              (getattr(self, "_zoom_slider", None), False),
+                              (getattr(self, "_zoom_out_btn", None), False),
+                              (getattr(self, "_zoom_in_btn", None), False)):
+            if w is None:
+                continue
+            cost = w.sizeHint().width() + 3
+            show = (not need_multi or multi)
+            if show and room >= cost:
+                room -= cost
+            else:
+                show = False
+            if bool(w.isVisible()) != show:
+                w.setVisible(show)
+        # 按钮刚变可见时补一次菜单重建 —— 菜单原先只在 `_on_mv_state` 里建，
+        # 而那条路要靠 `state_changed` 推；这里兜底，免得出现"按钮能点、点开是空的"
+        # （空菜单在界面上完全看不出是坏的，只会觉得"这个按钮没用"）。
+        btn = getattr(self, "_view_layout_btn", None)
+        if btn is not None and btn.isVisible() and not self._layout_menu.actions():
+            self._rebuild_layout_menu()
+
+    def _schedule_fit_img_info_bar(self):
+        """延到事件循环下一拍再量：布局还没走完时量到的宽度是旧的（"改了但看起来没改"）。"""
+        try:
+            QTimer.singleShot(0, self._fit_img_info_bar)
+        except Exception:
+            pass
+
+    def _img_info_record(self, base):
+        """当前图对应的**列表记录**（多视图工程里 base = 主视图 stem，列表一行 = 一颗电芯）。
+
+        对不上就返回 None（版本预览、外部目录里打开的图）：此时只显示画布能自报的文件与尺寸，
+        计数项老实显示 "--"，不假装是 0。
+        """
+        if not base:
+            return None
+        cached = getattr(self, "_img_info_rec_cache", None)
+        if cached and cached[0] == base:
+            return cached[1]
+        rec = None
+        for r in (getattr(self, "_filtered_data", None) or []):
+            if r.get("base") == base:
+                rec = r
+                break
+        self._img_info_rec_cache = (base, rec)
+        return rec
+
+    def _refresh_img_info(self):
+        """刷新信息栏（低频路径：换图 / 列表重建 / 标注变化时调用）。"""
+        if getattr(self, "_info_file", None) is None:
+            return
+        path = getattr(self.canvas, "current_image_path", "") or ""
+        base = os.path.splitext(os.path.basename(path))[0] if path else ""
+        self._img_info_rec_cache = None
+        rec = self._img_info_record(base)
+        self._info_file.setFullText(("文件 " + os.path.basename(path)) if path else "文件 --")
+        w = int(rec.get("img_w") or 0) if rec else 0
+        h = int(rec.get("img_h") or 0) if rec else 0
+        if not w or not h:
+            img = getattr(self.canvas, "image", None)
+            if img is not None:
+                w, h = img.size
+        self._info_dims.setText("宽高 %s" % ("%d×%d" % (w, h) if (w and h) else "--"))
+        self._info_ann.setText("已标注 %s" % (rec.get("shape_count", 0) if rec else "--"))
+        self._info_det.setText("已检出 %s" % (rec.get("pred_cnt", 0) if rec else "--"))
+        ms = rec.get("infer_ms") if rec else None
+        self._info_ms.setText("耗时 %s" % ("%dms" % int(round(float(ms))) if ms not in (None, "") else "--"))
+        # 平均耗时：本项目已跑过推理的图取平均（与列表「耗时」列同一个字典，同一种单位）
+        times = [float(v) for v in (getattr(self, "_infer_times", None) or {}).values()
+                 if isinstance(v, (int, float))]
+        self._info_avg.setText("平均 %s" % ("%dms" % int(round(sum(times) / len(times))) if times else "--"))
+        if not path:
+            self._on_canvas_cursor_moved(-1, -1)
+
+    def _on_canvas_cursor_moved(self, x, y, source=None):
+        """画布/参考窗上报光标像素坐标（高频路径：只碰这两个标签，别的什么都不管）。
+
+        `source` = 光标所在的那一格（主画布，或某个参考窗面板）：
+        RGB 读的是**光标底下那一格显示的图** —— 漫反射 / 形状图1 / 形状图2 各自为政，
+        显示什么就读什么。否则"对着形状图读漫反射灰度"这种读数比没有读数更误导。
+        坐标则三格共用主视图的图像坐标系（三窗同步就是按它对齐的），
+        所以同一个数字在漫反射和形状图上指的是同一处 —— 这正是它有用的原因。
+
+        值形态：三格**统一 RGB**（用户 2026-10-14 的原话："形状1和形状2都要显示RGB"）。
+        漫反射那格本来就已经是 RGB —— `AnnotationCanvas.image` 加载时` .convert("RGB")`，
+        而形状图两格早先按文件 mode 走（L 灰度就写「灰度 127」），两种形态并存。
+        现在参考窗一律给三元组，底栏那栏三格都写 `RGB r,g,b`。
+        """
+        if getattr(self, "_info_xy", None) is None:
+            return
+        if x < 0 or y < 0:
+            self._info_xy.setText("坐标 --")
+            self._info_rgb.setText("RGB --")
+            return
+        self._info_xy.setText("坐标 %d,%d" % (x, y))
+        v = self._pixel_at(source if source is not None else self.canvas, x, y)
+        if isinstance(v, (tuple, list)):
+            if len(v) >= 3:
+                self._info_rgb.setText("RGB %d,%d,%d" % (int(v[0]), int(v[1]), int(v[2])))
+            else:
+                self._info_rgb.setText("灰度 %d" % int(v[0]))
+        elif v is None:
+            self._info_rgb.setText("RGB --")
+        else:
+            self._info_rgb.setText("灰度 %d" % int(v))
+
+    @staticmethod
+    def _pixel_at(src, x, y):
+        """读某一格 (x, y) 处的像素。
+
+        形态（Arthur 2026-10-14 定的口径：三格统一 RGB）：
+        - 主画布（漫反射）：走 PIL `getpixel`。`AnnotationCanvas.image` 加载时已经
+          `.convert("RGB")` ⇒ 给 (r, g, b)；
+        - 参考窗（形状图1 / 形状图2）：面板自己的 `pixel_at()` **一律给 (r, g, b)**，
+          哪怕源文件是 L 灰度、三值相等。
+
+        ⇒ 底栏那条 `RGB r,g,b` 现在对三格都成立。`灰度 N` 那个分支留着：万一哪天
+        画布上真的放了 L 模式图（`mask_editor` 里切灰度视图那条路），它仍然是对的。
+
+        格式化逻辑只有一份（见 `_on_canvas_cursor_moved`）—— 谁给什么形态由数据源决定，
+        底栏只管照着渲染。
+        """
+        fn = getattr(src, "pixel_at", None)
+        if callable(fn):
+            try:
+                return fn(x, y)
+            except Exception:
+                return None
+        img = getattr(src, "image", None)
+        if img is None:
+            return None
+        try:
+            return img.getpixel((x, y))
+        except Exception:
+            return None
+
     def _create_right_panel(self):
+        # ★ 与左栏同款（2026-10-15）：把手条**常驻**，折叠只藏内容 ——
+        #   原来箭头在面板里面，一按就跟着消失，想展开只能去 View 菜单。
+        container = QWidget()
+        _cr = QHBoxLayout(container)
+        _cr.setContentsMargins(0, 0, 0, 0)
+        _cr.setSpacing(0)
+
         p = QWidget()
         outer_layout = QVBoxLayout(p)
         outer_layout.setContentsMargins(0, 0, 0, 0)
+        _cr.addWidget(p, 1)
+        self._right_content = p         # 折叠时被 setVisible(False) 的就是它
 
-        # Top row: collapse button
-        hh = QHBoxLayout()
-        hh.setContentsMargins(2, 2, 2, 2)
-        hh.addStretch()
-        btn_collapse = QPushButton("\u25b6"); btn_collapse.setFixedSize(22, 22); btn_collapse.setToolTip("Collapse right panel")
+        # 把手条贴在**最右端**（右栏的箭头在右边）
+        handle = QWidget()
+        _hr = QVBoxLayout(handle)
+        _hr.setContentsMargins(2, 2, 2, 2)
+        _hr.setSpacing(0)
+        btn_collapse = QPushButton("\u25b6")
+        btn_collapse.setFixedSize(20, 20)
+        btn_collapse.setToolTip("收起右栏（再点一下展开；Ctrl+]）")
         btn_collapse.clicked.connect(lambda: self._toggle_panel("right"))
-        hh.addWidget(btn_collapse)
-        outer_layout.addLayout(hh)
+        _hr.addWidget(btn_collapse)
+        _hr.addStretch()
+        _cr.addWidget(handle)
+        self._right_handle = handle
+        self._right_toggle_btn = btn_collapse
 
         # Horizontal layout: content (left) + tab bar (right)
         content_layout = QHBoxLayout()
@@ -967,7 +1909,7 @@ class MainWindow(QMainWindow):
         self._panel_split.setSizes([230, 160, 380])
         al.addWidget(self._panel_split, 1)         # 占满「标注管理」里这一块
         # 注意：**不要再往 _right_stack 里加这个 panel** ——
-        # 右侧页面统一在函数末尾按"4 个模块"组装（参照友商右栏）。
+        # 右侧页面统一在函数末尾按"3 个模块"组装（参照友商右栏）。
         # 这里若残留一行 addWidget，模块页的下标就会整体后移、页签指错页，
         # 而且错得很安静（点了没反应/跳到别的页），不会报错。
 
@@ -1213,6 +2155,17 @@ class MainWindow(QMainWindow):
         self.cls_early_stop_spin = QSpinBox(); self.cls_early_stop_spin.setRange(0, 200); self.cls_early_stop_spin.setValue(0)
         self.cls_early_stop_spin.setToolTip("Stop if val loss not improved for N epochs (0 = off)")
         cfl.addRow("Early Stop:", self.cls_early_stop_spin)
+
+        self.cls_select_metric_combo = QComboBox()
+        self.cls_select_metric_combo.addItems(["acc", "balanced_acc", "macro_f1", "ng_recall"])
+        self.cls_select_metric_combo.setToolTip(
+            "用哪个指标挑『最优模型』：\n"
+            "acc = 总体准确率（默认，口径不变）\n"
+            "balanced_acc = 类别召回的平均（类别不均衡时更稳）\n"
+            "macro_f1 = 逐类 F1 平均\n"
+            "ng_recall = 只看缺陷召回（最贴近『少漏检』）\n"
+            "验证集很小时建议用 balanced_acc 或 macro_f1")
+        cfl.addRow("Best Metric:", self.cls_select_metric_combo)
 
         ctl.addLayout(cfl)
         self.cls_recommend_btn = QPushButton("🧠 智能推荐训练参数", clicked=self._open_cls_recommend)
@@ -1461,8 +2414,8 @@ class MainWindow(QMainWindow):
         self._ti_split.setSizes([150, 640])
         til.addWidget(self._ti_split)
 
-        # ===== 右侧 4 个模块（参照友商 iSense 右栏：参数管理 / 标注管理 / 模型管理 / 图像管理）=====
-        #    友商的右栏不是"一堆并列工具页"，而是**4 个模块**，每个模块里竖着若干**区块**
+        # ===== 右侧 3 个模块（参照友商 iSense 右栏：参数管理 / 标注管理 / 模型管理）=====
+        #    友商的右栏不是"一堆并列工具页"，而是**模块**，每个模块里竖着若干**区块**
         #    （区块 = 左侧一条彩色竖条 + 标题 + 内容），区块可折叠、各按内容占高。
         #    这样既没有"某一块撑出大片空白"，也不用靠比例分配高度 —— 不看的折叠起来就行。
         # 「高度图参数」只对**有 TIF/高度图**的工程有意义（混合分类、3D 高度图），
@@ -1489,15 +2442,20 @@ class MainWindow(QMainWindow):
             ("模型列表", [self._make_model_list_section()]),
             ("版本历史", [panel_ver]),
         ])
-        page_image = self._make_module_page([
-            ("图像信息", [self._make_image_info_section()]),
-            ("数据集划分", [self._make_split_section()]),
-            ("输出与工程", [self._make_project_ops_section()]),
-        ])
-
-        for _page in (page_params, page_annot, page_model, page_image):
+        # ⚠️ 原来的第 4 页「图像管理」（图像信息 / 数据集划分 / 输出与工程）**已整页删除**
+        #    （2026-10-14 晚，Arthur：左栏有了「图像管理」之后"右侧的图像管理已经冗余了"）。
+        #    删前逐条核过"这项有没有第二处显示"，三块里两块半是**重复信息**，不是缺功能：
+        #      · 图像信息（当前图名/尺寸/标注块数）-> 底栏状态区已有
+        #        「文件: xxx.jpg 宽度 1160x3706 … 已标注1 已检出0」
+        #      · 数据集划分数量（训练/测试/验证）  -> 左栏图片列表底行已有
+        #        「Train: 28 | Val: 5 | Test: 3」（_filter_images 里算的那行）
+        #      · 导入图片…                        -> 左栏图片列表右键菜单已有
+        #      · 工程目录                          -> 工程树右键 Open in Explorer 已有
+        #    真正**只有这一处**能点的两个动作已搬到左栏「图像管理」页（见 _create_left_panel）：
+        #      「管理划分…」-> 底部计数行下方；「输出目录」-> 图片列表右键菜单 + 工程树右键菜单。
+        for _page in (page_params, page_annot, page_model):
             self._right_stack.addWidget(_page)
-        self._right_tab_index = {"params": 0, "annot": 1, "model": 2, "image": 3}
+        self._right_tab_index = {"params": 0, "annot": 1, "model": 2}
         content_layout.addWidget(self._right_stack)
 
         # ===== 右侧竖排页签（参照友商：文字**竖向排列**，4 块均分撑满整条竖栏）=====
@@ -1505,12 +2463,12 @@ class MainWindow(QMainWindow):
         tab_layout = QVBoxLayout(tab_bar); tab_layout.setContentsMargins(1, 2, 1, 2); tab_layout.setSpacing(2)
 
         self._right_tabs = QButtonGroup(self); self._right_tabs.setExclusive(True)
-        # 参照友商 iSense 右栏的 4 个模块（原来是 6 个并列工具页）
+        # 参照友商 iSense 右栏，但只留 **3 个模块**（原来是 6 个并列工具页，
+        # 2026-10-14 又砍掉冗余的「图像管理」——理由见上面 _right_stack 组装处）
         tab_defs = [
             ("参数管理", "训练参数 / 增强参数 / 高度图参数 / 推理参数", "params"),
             ("标注管理", "类别 / 标注统计 / 结果 / 检测工具", "annot"),
             ("模型管理", "模型列表 / 版本历史", "model"),
-            ("图像管理", "图像信息 / 数据集划分 / 输出与工程", "image"),
         ]
         self._right_tab_btns = {}
         for icon_text, tooltip, key in tab_defs:
@@ -1520,15 +2478,10 @@ class MainWindow(QMainWindow):
             btn.setCheckable(True)
             btn.setToolTip(tooltip + f"（{icon_text}）")
             btn.setMinimumHeight(56)
-            # 高度策略 Expanding + 布局 stretch=1 -> 4 块**均分并撑满**整条竖栏
+            # 高度策略 Expanding + 布局 stretch=1 -> 各块**均分并撑满**整条竖栏
             btn.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
-            btn.setStyleSheet(
-                "QPushButton { font-size: 12px; font-weight: bold; color: #D6E4FF;"
-                " padding: 2px 0; border: 1px solid transparent; border-radius: 3px; }"
-                "QPushButton:hover { border-color: #2A3A5C; }"
-                "QPushButton:checked { background-color: #0E3A52; color: #00E5FF;"
-                " border: 1px solid #00E5FF; }"
-            )
+            # 样式与左栏共用同一份（模块级 `_V_TAB_QSS`）：两边各写一份迟早漂移
+            btn.setStyleSheet(_V_TAB_QSS)
             btn.clicked.connect(lambda checked, k=key: self.show_right_tab(k))
             self._right_tabs.addButton(btn, idx)
             self._right_tab_btns[key] = btn
@@ -1540,7 +2493,7 @@ class MainWindow(QMainWindow):
         # Default: 打开工程后默认落在「标注管理」
         self.show_right_tab("annot")
 
-        return p
+        return container
 
     # ────────── 右侧模块/区块（参照友商右栏）──────────
 
@@ -1593,7 +2546,7 @@ class MainWindow(QMainWindow):
         sa.setWidget(inner)
         return sa
 
-    # ────────── 模型管理 / 图像管理 里的几个小区块 ──────────
+    # ────────── 模型管理 里的几个小区块 ──────────
 
     def _make_model_list_section(self):
         """模型列表：扫 models/*.pth（名称 / 类别数 / 大小 / 时间），双击即选为推理模型。"""
@@ -1666,42 +2619,11 @@ class MainWindow(QMainWindow):
         self.log(f"[模型] 推理将使用 {name}")
         self.show_right_tab("params")
 
-    def _make_image_info_section(self):
-        """图像信息：当前图的路径/尺寸/标注块数（导航时自动刷新）。"""
-        w = QWidget(); v = QVBoxLayout(w); v.setContentsMargins(0, 0, 0, 0); v.setSpacing(2)
-        self.img_info_name = QLabel("—"); self.img_info_name.setWordWrap(True)
-        self.img_info_name.setStyleSheet("color:#D6E4FF; font-size:11px;")
-        self.img_info_size = QLabel("—"); self.img_info_size.setStyleSheet("color:#8A93A6; font-size:11px;")
-        self.img_info_ann = QLabel("—"); self.img_info_ann.setStyleSheet("color:#8A93A6; font-size:11px;")
-        for lb in (self.img_info_name, self.img_info_size, self.img_info_ann):
-            v.addWidget(lb)
-        return w
-
-    def _make_split_section(self):
-        """数据集划分：训练/测试/验证 的数量 + 一键打开划分管理。"""
-        w = QWidget(); v = QVBoxLayout(w); v.setContentsMargins(0, 0, 0, 0); v.setSpacing(2)
-        self.split_count_label = QLabel("—")
-        self.split_count_label.setStyleSheet("color:#D6E4FF; font-size:11px;")
-        v.addWidget(self.split_count_label)
-        btn = QPushButton("管理划分…"); btn.clicked.connect(self._manage_split)
-        v.addWidget(btn)
-        return w
-
-    def _make_project_ops_section(self):
-        """输出与工程：打开工程目录 / 输出目录，并显示输出文件数。"""
-        w = QWidget(); v = QVBoxLayout(w); v.setContentsMargins(0, 0, 0, 0); v.setSpacing(2)
-        self.out_count_label = QLabel("—")
-        self.out_count_label.setStyleSheet("color:#8A93A6; font-size:11px;")
-        v.addWidget(self.out_count_label)
-        h = QHBoxLayout(); h.setSpacing(3)
-        b0 = QPushButton("导入图片…"); b0.setToolTip("与左侧图片列表右键的加图相同")
-        b0.clicked.connect(self._import_images)
-        b1 = QPushButton("工程目录"); b1.clicked.connect(lambda: self._open_dir(self._project_dir))
-        b2 = QPushButton("输出目录"); b2.clicked.connect(
-            lambda: self._open_dir(os.path.join(self._project_dir or "", "outputs")))
-        h.addWidget(b0); h.addWidget(b1); h.addWidget(b2)
-        v.addLayout(h)
-        return w
+    # ⚠️ 这里原来还有三个小区块工厂：`_make_image_info_section`（图像信息）/
+    #    `_make_split_section`（数据集划分）/ `_make_project_ops_section`（输出与工程）。
+    #    它们只服务于右栏那页「图像管理」，2026-10-14 该页整页删除后**已无任何引用**，
+    #    一并删掉 —— 留着就是"看着像能用、其实挂不上去"的死代码（`_make_annotation_ops_section`
+    #    是当时明确说"保留备用"的，另算）。
 
     def _make_annotation_ops_section(self):
         """标注操作：导出/清理 这些原先**只有英文菜单能点**的动作，补进「标注管理」。
@@ -1730,47 +2652,26 @@ class MainWindow(QMainWindow):
         else:
             self.log("目录不存在（先打开工程）")
 
+    def _open_output_dir(self, project_dir=None):
+        """打开工程的 `outputs/`（推理结果 + 各次训练输出）。
+
+        原先是右栏「图像管理」页里的一个按钮，该页 2026-10-14 删除后
+        改挂到**左栏图片列表底部**与**图片列表/工程树右键菜单**（同一函数，三处入口）。
+        传 `project_dir` 时用传入的那个（工程树右键 = 右键那个工程，不一定是当前打开的）。
+        """
+        pd = project_dir or self._project_dir
+        if not pd:
+            self.log("还没打开工程")
+            return
+        self._open_dir(os.path.join(pd, "outputs"))
+
     def _refresh_image_info(self):
-        """刷新「图像管理」里的三个小区块（导航/保存后调用）。双击模型也会走这里）。"""
-        try:
-            path = getattr(self.canvas, "current_image_path", "") or ""
-            if path:
-                self.img_info_name.setText(os.path.basename(path))
-                sz = getattr(self.canvas.image, "size", None)
-                self.img_info_size.setText(("尺寸 %dx%d" % (sz[0], sz[1])) if sz else "尺寸 —")
-                m = getattr(self.canvas, "mask", None)
-                if m is not None:
-                    import numpy as _np
-                    n = len([u for u in _np.unique(m).tolist() if u not in (0, 255)])
-                    self.img_info_ann.setText("标注块：%d 类" % n)
-                else:
-                    self.img_info_ann.setText("标注块：无掩膜")
-            else:
-                self.img_info_name.setText("—"); self.img_info_size.setText("—"); self.img_info_ann.setText("—")
-        except Exception:
-            pass
-        try:
-            pd = self._project_dir
-            if not pd:
-                self.split_count_label.setText("—"); self.out_count_label.setText("—"); return
-            sp = os.path.join(pd, "train_test_split.json")
-            tr = te = va = 0
-            if os.path.exists(sp):
-                with open(sp, "r", encoding="utf-8") as f:
-                    d = json.load(f)
-                for v in d.values():
-                    if v == "test": te += 1
-                    elif v == "val": va += 1
-                    else: tr += 1
-            self.split_count_label.setText("训练 %d / 测试 %d / 验证 %d" % (tr, te, va))
-            od = os.path.join(pd, "outputs")
-            n_out = 0
-            if os.path.isdir(od):
-                for _r, _d, fs in os.walk(od):
-                    n_out += len(fs)
-            self.out_count_label.setText("输出文件：%d 个" % n_out)
-        except Exception:
-            pass
+        """（原右栏「图像管理」页的刷新钩子，2026-10-14 该页已整页删除）
+
+        ⚠️ 现在**只剩一个职责**：顺带刷新「模型管理」的模型列表。
+        函数名与 3 处调用点（切图 / 保存 / 打开工程后）**故意不动** —— 改名要连带改调用点，
+        改动面越大越容易漏一处，漏了就是"模型列表不刷新"这种静默失效。
+        """
         self._refresh_model_list(force=False)   # 指纹没变就直接返回（切图/保存后也会走到这里）
 
     def _make_ti_section(self, title, stack):
@@ -1823,9 +2724,19 @@ class MainWindow(QMainWindow):
         面板刚显示时高度还是 0，这里会自己重试几次（不是轮询，最多 5 次就停）。
         """
         sp = getattr(self, "_ti_split", None)
-        if sp is None or sp.count() != 2:
+        if sp is None:
             return
         try:
+            # ⚠️ `sp.count()` / `sp.height()` 必须**在 try 里面**：
+            #    QSplitter 的 C++ 对象被销毁后，Python 这层 wrapper 还在
+            #    （`sp is None` 为 False），一碰就抛
+            #    `RuntimeError: wrapped C/C++ object of type QSplitter has been deleted`。
+            #    这个函数是 QTimer.singleShot 的回调 —— PyQt5 里槽函数抛异常会直接
+            #    终止整个进程，训练跑到一半也会被一起带走。
+            #    crash_log.txt 2026-10-13 两次实测都崩在原先的 `if sp is None or sp.count() != 2`
+            #    那一行（当时它在 try 外面），行号变了但结构没变，所以现在仍然会崩。
+            if sp.count() != 2:
+                return
             avail = sp.height()
             if avail < 80:
                 tries = getattr(self, "_ti_fit_tries", 0) + 1
@@ -2145,6 +3056,10 @@ class MainWindow(QMainWindow):
                 self.month_item.addChild(item)
             else:
                 self.older_item.addChild(item)
+        # 空分组不显示："Within 1 week" 没子项时只会占一行标题，纯噪声
+        # （而且会让人以为"还有内容没展开"）。
+        for _grp in (self.week_item, self.month_item, self.older_item):
+            _grp.setHidden(_grp.childCount() == 0)
         self.project_tree.expandAll()
         self.project_tree.resizeColumnToContents(0)
 
@@ -2158,6 +3073,12 @@ class MainWindow(QMainWindow):
         menu = QMenu(self)
         open_action = menu.addAction("Open in Explorer")
         open_action.triggered.connect(lambda: os.startfile(str(self.pm.get_project_dir(name))))
+        # 「输出目录」：右栏「图像管理」页删除（2026-10-14）后归到这里 ——
+        # 与"打开工程目录"并列，而且**不需要先在图片列表里选中一行**（图片列表右键
+        # 在没选中任何行时是不出菜单的，所以工程树这条才是随时可用的那个入口）。
+        act_out = menu.addAction("打开输出目录")
+        act_out.triggered.connect(
+            lambda _c=False, n=name: self._open_output_dir(str(self.pm.get_project_dir(n))))
         menu.addSeparator()
         del_action = menu.addAction("Delete Project")
         del_action.triggered.connect(lambda: self._delete_project(name, item))
@@ -2357,6 +3278,11 @@ class MainWindow(QMainWindow):
             # (task switching above may have moved it to inference/training).
             if hasattr(self, "_right_tabs"):
                 self.show_right_tab("annot")
+            # 左栏同理：默认落在「工程管理」了（Arthur 2026-10-15），所以打开工程
+            # 后**必须**切到「图像管理」，否则用户点开工程后还盯着一页空图片列表。
+            # 与右栏那一行是同一个道理：右侧切标注页，左侧就切图片列表。
+            if hasattr(self, "_left_stack"):
+                self.show_left_tab("img")
 
             self._load_image_list_async()
             self.log(f"Opened: {name}")
@@ -2719,8 +3645,15 @@ class MainWindow(QMainWindow):
         # 多视图信息在_这里_打日志（不能在 _filter_images 里打，会重入崩溃）
         if getattr(self, "_mv_mode_list", False):
             _meta = getattr(self, "_mv_view_meta", []) or []
-            self.log(f"多视图列表：{getattr(self, '_mv_group_count', 0)} 组 × {len(_meta)} 视图"
-                     f"（{'/'.join(v for v, _ in _meta)}），已按组成行")
+            _gn = getattr(self, '_mv_group_count', 0)
+            # 说清"一行 = 一颗电芯的 N 张视图"，否则人会以为列表少图了
+            # （2026-10-14 用户看到 33 行就去问"为什么只有 33 张"）
+            # ⚠️ 日志面板是 QTextEdit，不认 Markdown：这里只能写纯文本，
+            #    写 `**重点**` 会原样显示两个星号（截图里看到的）。
+            self.log(f"多视图列表：{_gn} 组 × {len(_meta)} 视图"
+                     f"（{' / '.join('%s %s' % (v, n) for v, n in _meta)}），已按组成行"
+                     f" —— 一行 = 一颗电芯的 {len(_meta)} 张视图，"
+                     f"共 {_gn * len(_meta)} 张图都在（展开看「图片名」列的多行文件名）")
         elif getattr(self, "_mv_list_note", ""):
             self.log(f"多视图识别/分组失败，按单图列表显示：{self._mv_list_note}")
         # Keep detection annotation state created by _set_task("detection")
@@ -2810,6 +3743,8 @@ class MainWindow(QMainWindow):
         self._suppress_cell_change = True
         self.image_list_widget.setRowCount(0)
         text_lower = text.lower().strip()
+        # 标记是"工程级"数据，按工程缓存读一次即可（列表刷新是热路径）
+        self._ensure_marks_loaded()
         sf_text = self.split_filter.currentText()
         annotated_only = self.annotated_check.isChecked()
         # 标注名字筛选：选项跟随工程类别（懒同步）
@@ -2935,6 +3870,18 @@ class MainWindow(QMainWindow):
                 height_path = ""
             fname = os.path.basename(path)
             base = os.path.splitext(fname)[0]
+
+            # ── 标记 / 缺陷类型 筛选：放在最前面，被筛掉的图后面的形状统计就不白算了 ──
+            mk_rec = marks_mod.get_mark(self._marks, base)
+            defect = marks_mod.defect_of(base)
+            # 缺陷类型用**文件名推断**（命名规范 {date}-{机号/料号}-{面?}-{缺陷}{N}_te_{n} 里
+            # 就带缺陷段），不用第一条标注的类别名 —— 否则统计面板显示的名字和筛选时比的名字
+            # 可能不是同一个（一个来自类别表、一个来自文件名），点了格子却筛不出东西。
+            if self._mark_filter and mk_rec["mark"] != self._mark_filter:
+                continue
+            if self._defect_filter and defect != self._defect_filter:
+                continue
+
             mask_path = os.path.join(ann_dir, base + "_mask.png")
             json_path = os.path.join(os.path.dirname(path), base + ".json")
             det_json_path = os.path.join(os.path.dirname(path), base + "_det.json")
@@ -3107,7 +4054,7 @@ class MainWindow(QMainWindow):
                 if isinstance(cls_data, dict) and "confidence" in cls_data:
                     score_str = f"{cls_data['confidence']:.2f}"
 
-            self._filtered_data.append({
+            rec = {
                 'path': path, 'fname': fname, 'base': base,
                 'img_w': img_w, 'img_h': img_h,
                 'split_status': split_status, 'shape_count': shape_count,
@@ -3116,12 +4063,22 @@ class MainWindow(QMainWindow):
                 'ocr_score': ocr_score, 'ocr_time': ocr_time,
                 'score_str': score_str, 'infer_ms': infer_ms,
                 'pred_cnt': pred_cnt,
+                # 标记（与 label 分离，不进训练集）
+                'mark': mk_rec["mark"], 'mark_note': mk_rec["note"],
+                'mark_by': mk_rec["by"], 'mark_at': mk_rec["at"],
+                'defect': defect,
+                'split': {"[Train]": "train", "[Val]": "val", "[Test]": "test"}.get(split_status, ""),
                 'height_path': height_path,
                 'height_fname': os.path.basename(height_path) if height_path else "",
                 # 多视图：这一组的所有视图文件（第 0 个是主标注视图）
                 'view_paths': list(_img_entry) if _mv else [],
                 'view_fnames': [os.path.basename(x) for x in _img_entry] if _mv else [],
-            })
+            }
+            # 条目式表达式筛选放在**记录搭好之后**：它要读分数/耗时/结果数量，
+            # 提前判会读到还没赋值的字段（不报错，但筛选结果是错的）。
+            if not self._filter_expr.evaluate(rec):
+                continue
+            self._filtered_data.append(rec)
 
             if split_status == " [Train]":
                 total_train += 1
@@ -3138,29 +4095,43 @@ class MainWindow(QMainWindow):
         self._render_page()
 
         # Update stats summary bar
-        parts = []
+        # ⚠️ 多视图工程里"一行 = 一颗电芯的 N 张视图"，**行数与张数不是一个量纲**。
+        #    老写法拿行数直接去比 len(self._all_images)（文件数），未筛选时也会显示
+        #    "Showing 33/99" —— 看上去像有 66 张图被藏掉了。用户 2026-10-14 就是被这行
+        #    数字问住（"为什么我图片列表只能看到33张"），实际是 33 组 × 3 视图 = 99 张，一张没少。
+        #    现在按 组/张 两个量纲分别报，并在计数后面带上单位"组"。
+        # ── 第一行（分页条内，紧贴列表）：只讲【列表范围】 ──
+        # ⚠️ 两行各司其职，别互相抄。2026-10-14 用户指出"这个地方信息冗余了"：
+        #    分页条这行与下面状态栏那行都在报 Total / Train / Ann，数字一字不差。
+        #    分工：这一行回答"我现在看到多少、被筛掉多少"（随筛选变化）
+        #          下一行回答"这批数据的划分与标注情况"（Train/Val/Ann/Blocks，不重复总量）
         total = len(self._filtered_data)
-        if total < len(self._all_images):
-            parts.append(f"Showing {total}/{len(self._all_images)}")
+        _mv_n = len(getattr(self, "_mv_view_meta", []) or [])
+        _mv_on = bool(getattr(self, "_mv_mode_list", False)) and _mv_n > 1
+        _f_all = len(self._all_images)
+        _g_all = getattr(self, "_mv_group_count", 0) or total
+        if _mv_on:
+            _f_shown = sum(max(1, len(r.get("view_fnames") or [])) for r in self._filtered_data)
+            if total < _g_all or _f_shown < _f_all:
+                self.stats_summary.setText(f"筛选 {total}/{_g_all} 组（{_f_shown}/{_f_all} 张）")
+            else:
+                self.stats_summary.setText(f"共 {_g_all} 组（{_f_all} 张）")
+        elif total < _f_all:
+            self.stats_summary.setText(f"筛选 {total}/{_f_all} 张")
         else:
-            parts.append(f"Total: {total}")
-        if total_train:
-            parts.append(f"Train: {total_train}")
-        if total_val:
-            parts.append(f"Val: {total_val}")
-        if total_test:
-            parts.append(f"Test: {total_test}")
-        parts.append(f"Ann: {total_annotated}")
-        self.stats_summary.setText(" | ".join(parts))
+            self.stats_summary.setText(f"共 {_f_all} 张")
 
-        parts2 = [f"Total: {len(self._all_images)} images"]
+        # ── 第二行（独立一行）：只讲【数据集统计】 ──
+        # 不再重复总量（上一行已经给了列表范围），只留划分 / 标注 / 标注块。
+        _u = " 组" if _mv_on else ""      # 多视图下 Train/Val/Test/Ann 数的都是"组"
+        parts2 = []
         if total_train:
-            parts2.append(f"Train: {total_train}")
+            parts2.append(f"Train: {total_train}{_u}")
         if total_val:
-            parts2.append(f"Val: {total_val}")
+            parts2.append(f"Val: {total_val}{_u}")
         if total_test:
-            parts2.append(f"Test: {total_test}")
-        parts2.append(f"Annotated: {total_annotated}")
+            parts2.append(f"Test: {total_test}{_u}")
+        parts2.append(f"Ann: {total_annotated}{_u}")
         if not self._cls_mode:
             parts2.append(f"Blocks: {total_shapes}")
         else:
@@ -3176,7 +4147,18 @@ class MainWindow(QMainWindow):
             img_count=len(self._all_images),
         )
 
+        # 标记相关：筛选条件回显 + 统计面板灌数据（统计用全量图，与筛选互不影响）
+        self._sync_mark_filter_label()
+        try:
+            self.mark_stats.set_records(self._mark_stats_records())
+        except Exception as e:
+            self.log(f"标记统计刷新失败: {type(e).__name__}: {e}")
+
         self._suppress_cell_change = False
+        # 记录刚被整批重建：信息栏的记录缓存作废，并跟着刷新一次
+        # （「已标注 / 已检出 / 耗时」三项就是从这里那条记录取的）
+        self._img_info_rec_cache = None
+        self._refresh_img_info()
 
     def _render_page(self):
         """Render current page from _filtered_data into the table."""
@@ -3209,6 +4191,10 @@ class MainWindow(QMainWindow):
                 (data['cls_text'] if self._cls_mode else (data['ocr_text'] if self._ocr_mode else (str(data['pred_cnt']) if data['pred_cnt'] > 0 else "")), True),
                 (data['ocr_score'] if self._ocr_mode else data['score_str'], True),
                 (data['ocr_time'] if self._ocr_mode else (str(data['infer_ms']) if data['infer_ms'] else ""), True),
+                # 第 9 列 = 标记。⚠️ 必须在这里一起建格子：只 setColumnCount(9) 而下面
+                #    再 item(row, 8) 取回来是 **None**（单元格从没被 insert 过），
+                #    标记列会永远空白 —— 这是真窗口探针抓出来的真 bug（AST 核验看不见）。
+                (marks_mod.kind_label(data.get('mark') or "") or "", True),
             ]
             for col, (val, center) in enumerate(items_data):
                 item = QTableWidgetItem(val)
@@ -3217,15 +4203,45 @@ class MainWindow(QMainWindow):
                 self.image_list_widget.setItem(row, col, item)
             # Store path in first column
             self.image_list_widget.item(row, 0).setData(Qt.UserRole, data['path'])
+            # 标记列（第 8 列）：文字 + 该格底色 —— 行色标一眼能扫出来
+            mkind = data.get('mark') or ""
+            mit = self.image_list_widget.item(row, 8)
+            if mit is not None:
+                mit.setText(marks_mod.kind_label(mkind) or "")
+                mit.setTextAlignment(Qt.AlignCenter)
+                if mkind:
+                    # 只给这一个格子上底色（不改整行）：整行底色会和交替行色/主题表打架，
+                    # 而标记是"这一格的属性"，格子底色反而更好定位。
+                    mit.setBackground(QColor(marks_mod.kind_color(mkind)))
+                    mit.setForeground(QColor("#FFFFFF"))
+                    tip = marks_mod.MARK_HINTS.get(mkind, "")
+                    if data.get('mark_note'):
+                        tip += "\n备注：" + str(data['mark_note'])
+                    if data.get('mark_by'):
+                        tip += "\n标记人：%s（%s）" % (data['mark_by'], data.get('mark_at', ''))
+                    mit.setToolTip(tip)
+                    # ⚠️ 标记列在最右侧：左栏默认宽度装不下 9 列，人**不横向滚动就看不见它**
+                    #    （真窗口截图确认过）。序号列永远在可视区里，同步上同色底，
+                    #    这样"扫一眼看出哪些图有标记"在不滚动的默认视野里也成立。
+                    sit = self.image_list_widget.item(row, 0)
+                    if sit is not None:
+                        sit.setBackground(QColor(marks_mod.kind_color(mkind)))
+                        sit.setForeground(QColor("#FFFFFF"))
+                        sit.setToolTip(marks_mod.MARK_LABELS.get(mkind, "") +
+                                       (("｜" + data['mark_note']) if data.get('mark_note') else ""))
             # 默认整行白色；「标注」「结果」两列的类别名用 Class 表对应的类别颜色
             if getattr(self, "_mixed_cls_mode", False) and data.get('height_fname'):
                 self.image_list_widget.setRowHeight(row, 40)
             elif data.get('view_fnames'):
                 self.image_list_widget.setRowHeight(row, 16 * len(data['view_fnames']) + 10)
-            for col in range(8):
-                item = self.image_list_widget.item(row, col)
-                if item:
-                    item.setForeground(QColor(255, 255, 255))
+            # ⚠️ 这里**不能**再给整行 setForeground(QColor(255,255,255))：
+            #    内联前景色的优先级**高于应用级 QSS**，主题表改不动它 ——
+            #    切浅色主题后就是"白字压白底"，整个列表一行都看不见
+            #    （用户实测反馈：「换成浅色主题后包括图片列表等地方都看不清文字」）。
+            #    默认行色改由主题表按 objectName=imageList 下发：
+            #      深色主题 base 表给 #FFFFFF（与原来逐像素一致），浅色主题给深字；
+            #    这样**切换主题时 QSS 立即生效**，不需要重刷列表。
+            #    类别色仍走 _apply_class_color()（那是语义色，必须随类别走，保留内联）。
             if self._cls_mode:
                 labels = getattr(self, "_cached_classes", []) or []
                 # 标注列（第 4 列）
@@ -3249,7 +4265,10 @@ class MainWindow(QMainWindow):
 
         # Update pagination controls
         if getattr(self, "_page_size", 50) >= 10 ** 8:
-            self.page_info_label.setText(f"全部 {total}")
+            # 不分页 = 整批一页装下。这里不再报行数：左边那行已经写了"共 N 组（M 张）"，
+            # 是同一个数字的第二遍；而且窄面板下会被截成"全部 3"（2026-10-14 用户截图
+            # 上就是这个样子）。只保留"没分页"这个状态提示。
+            self.page_info_label.setText("全部")
         else:
             self.page_info_label.setText(f"Page {self._current_page + 1}/{total_pages}")
         self.page_prev_btn.setEnabled(self._current_page > 0)
@@ -3268,6 +4287,8 @@ class MainWindow(QMainWindow):
                     break
 
         self._suppress_cell_change = False
+        # 行数变了 ⇒ 表格该多高也跟着变（行少时收成内容高度，不留大片空白）
+        self._schedule_fit_list_height()
 
     def _apply_class_color(self, row, col, class_name, labels):
         """给某单元格按类别名着色为 Class 表对应的类别颜色。"""
@@ -3310,6 +4331,12 @@ class MainWindow(QMainWindow):
         if selected > 0:
             current_text += f" | Selected: {selected}"
         self.list_status.setText(current_text)
+        try:
+            # 标记按钮的作用域是"当前选中的行"，选中数必须让用户看得见
+            # （点了没反应的头号原因是没选中，而不是按钮坏了）
+            self.mark_toolbar.set_scope_text(selected)
+        except Exception:
+            pass
 
     def _on_current_cell_changed(self, currentRow, currentColumn, previousRow, previousColumn):
         """Handle mouse click and keyboard navigation in image list."""
@@ -3484,6 +4511,10 @@ class MainWindow(QMainWindow):
                         avg_gray = float(img_gray[region].mean())
                     except IndexError:
                         avg_gray = 0.0
+                # 三视图工程：同一块在**三张图**上的灰度并列显示（"，"隔开）
+                gray_text = self._gray_text_for_region(region)
+                if not gray_text.strip():
+                    gray_text = "%.1f" % avg_gray
                 # IoU: 与标注里"最匹配的那个类"求交并比
                 iou_val = 0.0
                 if mask is not None and mask.shape == arr.shape:
@@ -3506,7 +4537,7 @@ class MainWindow(QMainWindow):
                         prob_mean = float(prob_map[region].mean())
                     except Exception:
                         prob_mean = None
-                rows.append((cls_name, iou_val, area, bw, bh, perimeter, radius, avg_gray,
+                rows.append((cls_name, iou_val, area, bw, bh, perimeter, radius, gray_text,
                              iou_val, prob_mean))
 
         # 排序：跟随推理参数面板里的"排序"（默认面积降序）
@@ -3528,11 +4559,100 @@ class MainWindow(QMainWindow):
             (cls_name, sc, area, bw, bh, perim, rad, gray, iou, prob_mean) = r
             sc_txt = ("%.1f%%" % (prob_mean * 100)) if prob_mean is not None else ("%.1f%%" % (sc * 100))
             items = [str(i + 1), cls_name, sc_txt, str(area), str(bw), str(bh),
-                     str(perim), str(rad), "%.1f" % gray, "%.3f" % iou]
+                     str(perim), str(rad), gray, "%.3f" % iou]
             for j, val in enumerate(items):
                 item = QTableWidgetItem(val)
                 item.setTextAlignment(Qt.AlignCenter)
                 self.stats_table.setItem(i, j, item)
+
+    # ────────── 「平均灰度」：三视图工程按视图并列（2026-10-15）──────────
+    def _view_paths_of_current_image(self):
+        """当前图所在**组**的全部视图路径（单视图工程 = 只有当前这一张）。
+
+        数据源：`_filtered_data` 每条记录带 `view_paths`（第 0 个是主标注视图）。
+        为什么不在这里现去 glob：同一组的三视图名是 `xxx_te_0/1/2`，
+        现 glob 会把"别的组同名前缀"也捞进来。
+        """
+        path = getattr(self.canvas, "current_image_path", "") or ""
+        if not path:
+            return []
+        base = os.path.splitext(os.path.basename(path))[0]
+        for r in getattr(self, "_filtered_data", []) or []:
+            vps = list(r.get("view_paths") or [])
+            if not vps:
+                continue
+            for vp in vps:
+                if os.path.splitext(os.path.basename(vp))[0] == base:
+                    return vps
+            # 画布拿到的可能是组名而不是某一视图名（如 xxx 对应 xxx_te_0）
+            gpre = base.split("_te_")[0]
+            if any(os.path.splitext(os.path.basename(v))[0].split("_te_")[0] == gpre
+                   for v in vps):
+                return vps
+        return [path]
+
+    def _load_gray_cached(self, path):
+        """读一张图的灰度图（np.float64），**按 (路径, mtime, 大小) 缓存**。
+
+        为什么必须缓存：这两张统计表在切图/改标注时都会刷新，而三视图工程
+        一次刷新要读 3 张 1160×3706 的图 —— 不缓存就是每刷一次读 3 张全尺寸图，
+        页面上会明显卡。缓存键带 mtime/size ⇒ 用户替换了同名图也不会读到旧的。
+        """
+        import numpy as _np
+        try:
+            st = os.stat(path)
+            key = (path, int(st.st_mtime), int(st.st_size))
+        except Exception:
+            return None
+        cache = getattr(self, "_gray_cache", None)
+        if cache is None:
+            cache = {}
+            self._gray_cache = cache
+        hit = cache.get(key)
+        if hit is not None:
+            return hit
+        try:
+            from PIL import Image
+            arr = _np.array(Image.open(path).convert("RGB"))
+            # ⚠️ 口径必须与 `mask_editor._cached_gray` **完全一致**：
+            #    那里是 `np.mean(arr, axis=2)`（三通道等权平均），不是 PIL 的 `convert("L")`
+            #    （那是 ITU-R 601-2 亮度加权）。两处口径不同 ⇒ 同一块区域算出的灰度
+            #    差几级，**用户会拿着这一列的数字去卡灰度差阈值**（现场标准是 15-20），
+            #    口径一漂，阈值就废了。所以这里也走等权平均。
+            arr = (_np.mean(arr.astype(_np.float64), axis=2)
+                   if arr.ndim == 3 else arr.astype(_np.float64))
+        except Exception:
+            return None
+        if len(cache) > 12:                      # 简单上限，别让缓存无脑长
+            cache.clear()
+        cache[key] = arr
+        return arr
+
+    def _gray_text_for_region(self, region, view_paths=None):
+        """一个区域在各视图上的平均灰度，**用「，」并列**（单视图就一个值）。
+
+        · 区域（region）来自当前视图的掩膜/预测；同一组三视图分辨率一致，
+          所以**同一个 region 直接套到另外两张图上**算灰度（这正是用户要的：
+          同一块缺陷在漫反射 / 形状图1 / 形状图2 上各是多少灰）。
+        · 尺寸对不上的视图**跳过**而不是填 0 —— 填 0 会被误读成"纯黑区域"。
+        · 尺寸对不上时返回单值（退化成从前行为），不抛错。
+        """
+        import numpy as _np
+        if view_paths is None:
+            view_paths = self._view_paths_of_current_image()
+        vals = []
+        ref_shape = region.shape[:2]
+        for p in view_paths:
+            g = self._load_gray_cached(p)
+            if g is None or g.shape[:2] != ref_shape:
+                continue
+            try:
+                vals.append(float(g[region].mean()))
+            except Exception:
+                continue
+        if not vals:
+            return "—"
+        return "，".join("%.1f" % v for v in vals)
 
     def _update_ann_stats(self):
         """Update per-annotation-block statistics table (segmentation or detection)."""
@@ -3603,8 +4723,12 @@ class MainWindow(QMainWindow):
                     avg_gray = float(img_gray[region].mean())
                 except IndexError:
                     avg_gray = 0.0
+            # 三视图工程：同一类在三张图上的灰度并列（"，"隔开）
+            gray_text = self._gray_text_for_region(region)
+            if not gray_text.strip() or gray_text == "—":
+                gray_text = "%.1f" % avg_gray
             cls_name = classes[int(cid)] if int(cid) < len(classes) else f"Class{int(cid)}"
-            rows.append((cls_name, str(area), str(perimeter), str(radius), "%.1f" % avg_gray))
+            rows.append((cls_name, str(area), str(perimeter), str(radius), gray_text))
 
         self.ann_table.setRowCount(len(rows))
         for i, (cls_name, area, perim, rad, gray) in enumerate(rows):
@@ -3697,11 +4821,13 @@ class MainWindow(QMainWindow):
                         self._auto_load_heatmap_for_current()
                 self._update_height_controls()
                 self._refresh_versions()
-                img = self.mixed_viewer._gray_image if _mixed else self.canvas.image
-                if img:
-                    w, h = img.width, img.height
-                    self.statusBar().showMessage(
-                        f"Image: {os.path.basename(path)}  |  {w}x{h}")
+                # 这里原来往**临时**状态栏打一条 "Image: xxx.jpg | WxH"（几秒后自己消失）。
+                # 它与新的底部信息栏讲的是同一件事，且那个尺寸还是**图像自身**的、
+                # 与列表「大小」列可能不同源。删掉，只留底栏这一份。
+                self._refresh_img_info()
+                # 换图后视图模式可能刚变（单图 <-> 多视图），底栏右端要重算一次：
+                # 「视图布局」按钮只在多视图出现、−/滑块/+ 要看还放不放得下。
+                self._schedule_fit_img_info_bar()
                 self._stats_timer.start(150)
                 self._load_det_annotations()
 
@@ -3740,12 +4866,45 @@ class MainWindow(QMainWindow):
         split_map, _ = get_train_test_split(project_dir)
 
         menu = QMenu(self)
+        # ── 条目式筛选（原为面板上的「筛选…」按钮，2026-10-15 收进这里） ──
+        a_filter = menu.addAction("筛选（条件构建器）…")
+        a_filter.setToolTip("条目式筛选：字段 / 条件 / 值 + AND·OR（含「标记」字段）")
+        a_filter.triggered.connect(self._open_filter_builder)
+        a_clear = menu.addAction("清除筛选")
+        a_clear.triggered.connect(self._clear_mark_filters)
+        menu.addSeparator()
+        # ── 标记（四态）：右键直接改，支持多选批量 ──
+        m_menu = menu.addMenu("标记")
+        for k in marks_mod.MARK_KINDS:
+            a = m_menu.addAction("标记为「%s」" % marks_mod.MARK_LABELS[k])
+            a.setToolTip(marks_mod.MARK_HINTS[k])
+            a.triggered.connect(lambda _c=False, kk=k: self._on_mark_requested(kk))
+        m_menu.addSeparator()
+        a_note = m_menu.addAction("写备注…")
+        a_note.triggered.connect(self._on_mark_note)
+        a_clr = m_menu.addAction("清空标记")
+        a_clr.triggered.connect(lambda: self._on_mark_requested(""))
+        m_menu.addSeparator()
+        a_conv = m_menu.addAction("结果转标注（按标记闭环）…")
+        a_conv.setToolTip("过杀→扣成背景（负样本）；漏杀→重建掩膜（正样本）；正常→固化 AI 检出")
+        a_conv.triggered.connect(self._run_convert_by_mark)
+        menu.addSeparator()
         for label, key in [("Set as Train", "train"), ("Set as Val", "val"), ("Set as Test", "test")]:
             action = menu.addAction(label)
             action.triggered.connect(lambda checked, k=key: self._set_selected_split(selected_rows, k, project_dir, split_map))
 
         action4 = menu.addAction("Open JSON Location")
         action4.triggered.connect(lambda: self._open_json_location(selected_rows, project_dir))
+        # 「输出目录」原先在右栏「图像管理」页里（该页 2026-10-14 删除），挂到这里 ——
+        # 与上面那条同属"打开某个目录"，放一起最顺。
+        a_out = menu.addAction("打开输出目录")
+        a_out.triggered.connect(lambda: self._open_output_dir(project_dir))
+        # 「管理划分…」：原为左栏图片列表底部的一个按钮，Arthur 2026-10-14 晚判定
+        # 面板上那行冗余 ⇒ 删按钮、动作挂到这里（和上面的 Set as Train/Val/Test 同源，
+        # 都是"划分"；也补上了它作为**唯一入口**不能丢的那条命）。
+        a_split = menu.addAction("管理数据集划分…")
+        a_split.setToolTip("按比例 / 手动把当前工程的图片划进 训练 / 验证 / 测试")
+        a_split.triggered.connect(self._manage_split)
         menu.addSeparator()
         # 全选（列表已默认不分页，全选后可一次性批量操作/批量导入 JSON）
         act_all = menu.addAction("Select All (全选)")
@@ -3891,6 +5050,198 @@ class MainWindow(QMainWindow):
         self._filter_images(self.search_input.text())
         self._refresh_class_ui()
         self.log(f"Set {len(selected_rows)} image(s) to {split_key}")
+
+    # ---------- 标记（四态：正常/过杀/漏杀/存疑，见 core/marks.py） ----------
+
+    def _marks_dir(self):
+        """当前工程目录（标记的落盘位置）。没打开工程返回 ''。"""
+        if not self.current_project:
+            return ""
+        try:
+            return str(self.pm.get_project_dir(self.current_project["name"]))
+        except Exception:
+            return ""
+
+    def _ensure_marks_loaded(self, force=False):
+        """按工程缓存标记，避免每次刷新列表都读盘（列表刷新是热路径）。"""
+        pd = self._marks_dir()
+        if not pd:
+            self._marks, self._marks_project = {}, None
+            return self._marks
+        if force or self._marks_project != pd:
+            self._marks = marks_mod.load_marks(pd)
+            self._marks_project = pd
+        return self._marks
+
+    def _flush_marks(self):
+        pd = self._marks_project or self._marks_dir()
+        if pd:
+            marks_mod.save_marks(pd, self._marks)
+            self._marks_project = pd
+        return pd
+
+    def _selected_bases(self):
+        """当前选中行对应的 base 名列表（多视图行取该组主视图的 base）。"""
+        rows = sorted(set(i.row() for i in self.image_list_widget.selectedIndexes()))
+        return self._row_bases(rows)
+
+    def _refresh_after_mark_change(self):
+        """标记改动后只刷列表与统计（不重扫磁盘 —— 标记不影响图片/标注文件）。"""
+        self._filter_images(self.search_input.text())
+
+    def _on_mark_requested(self, kind):
+        if not self.current_project:
+            return QMessageBox.information(self, "标记", "先打开一个工程。")
+        bases = self._selected_bases()
+        if not bases:
+            return QMessageBox.information(self, "标记", "先在图片列表里选中一张或多张图。")
+        self._ensure_marks_loaded()
+        if kind:
+            marks_mod.set_mark(self._marks, bases, kind)
+            self.log(f"标记「{marks_mod.kind_label(kind)}」：{len(bases)} 张")
+        else:
+            n = marks_mod.clear_marks(self._marks, bases)
+            self.log(f"清空标记：{n} 张")
+        self._flush_marks()
+        self._refresh_after_mark_change()
+
+    def _on_mark_note(self):
+        if not self.current_project:
+            return QMessageBox.information(self, "备注", "先打开一个工程。")
+        bases = self._selected_bases()
+        if not bases:
+            return QMessageBox.information(self, "备注", "先选中图片。")
+        self._ensure_marks_loaded()
+        marked = [b for b in bases if marks_mod.get_mark(self._marks, b)["mark"]]
+        if not marked:
+            return QMessageBox.information(
+                self, "备注",
+                "选中的图还没有标记。\n\n先打标记再写理由 —— 没有标记的备注会成为孤儿数据，"
+                "统计和筛选中都看不到它。")
+        cur = marks_mod.get_mark(self._marks, marked[0])["note"] if len(marked) == 1 else ""
+        title = "标记备注" + ("" if len(marked) == 1 else "（将应用到 %d 张）" % len(marked))
+        text, ok = QInputDialog.getMultiLineText(
+            self, title, "理由（现场经验最难传承，写清楚为什么这么判）：", cur)
+        if not ok:
+            return
+        n = marks_mod.set_note(self._marks, marked, text)
+        self._flush_marks()
+        self._refresh_after_mark_change()
+        self.log(f"写入标记备注：{n} 张")
+
+    def _on_mark_kind_filter(self, kind):
+        """统计面板点四态计数按钮 -> 只看该标记。"""
+        self._mark_filter = marks_mod.normalize_kind(kind)
+        self._defect_filter = ""
+        self._switch_accordion(0)
+        self._refresh_after_mark_change()
+
+    def _on_mark_cell_filter(self, defect, kind):
+        """统计面板点交叉表格子 -> 只看「这个缺陷 + 这个标记」。"""
+        self._defect_filter = "" if defect in ("", "(无缺陷名)") else str(defect)
+        self._mark_filter = marks_mod.normalize_kind(kind)
+        self._switch_accordion(0)
+        self._refresh_after_mark_change()
+
+    def _clear_mark_filters(self):
+        self._mark_filter = ""
+        self._defect_filter = ""
+        self._filter_expr = FilterExpr()
+        self._refresh_after_mark_change()
+        self.log("已清除标记/表达式筛选")
+
+    def _open_filter_builder(self):
+        dlg = FilterBuilderDialog(self, expr=self._filter_expr)
+        if dlg.exec_() != QDialog.Accepted:
+            return
+        self._filter_expr = dlg.result_expr()
+        self._refresh_after_mark_change()
+        t = self._filter_expr.describe()
+        self.log("筛选条件：" + (t if t else "（空）"))
+
+    def _sync_mark_filter_label(self):
+        """把当前生效的筛选条件写在列表上方（不显示的话用户会以为图丢了）。"""
+        bits = []
+        if self._defect_filter:
+            bits.append("缺陷类型=%s" % self._defect_filter)
+        if self._mark_filter:
+            bits.append("标记=%s" % marks_mod.kind_label(self._mark_filter))
+        t = self._filter_expr.describe()
+        if t:
+            bits.append(t)
+        if bits:
+            self.mark_filter_label.setText("筛选中：" + " 且 ".join(bits) + "（点「清除筛选」复位）")
+            self.mark_filter_label.setVisible(True)
+        else:
+            self.mark_filter_label.setVisible(False)
+
+    def _mark_stats_records(self):
+        """给统计面板喂数据：用**全量**图片（不是筛选后的），否则筛选一开统计就自己变了。"""
+        self._ensure_marks_loaded()
+        recs = []
+        for p in (self._all_images or []):
+            base = os.path.splitext(os.path.basename(p))[0]
+            m = marks_mod.get_mark(self._marks, base)
+            recs.append({"base": base, "mark": m["mark"], "note": m["note"],
+                         "defect": self._defect_of_base(base)})
+        return recs
+
+    def _defect_of_base(self, base):
+        """缺陷类型：优先用类别表里的标注类别，退回从文件名猜（命名规范里有缺陷段）。"""
+        for r in getattr(self, "_filtered_data", []) or []:
+            if r.get("base") == base and r.get("shape_labels"):
+                return str(r["shape_labels"][0])
+        return marks_mod.defect_of(base)
+
+    def _run_convert_by_mark(self):
+        """难例闭环一键入口：把标记过的图按语义转成训练数据。"""
+        pd = self._marks_dir()
+        if not pd:
+            return QMessageBox.information(self, "结果转标注", "先打开一个工程。")
+        self._ensure_marks_loaded()
+        bases = self._selected_bases()
+        if not bases:
+            # 没选就作用于当前筛选出来的全部
+            bases = [r.get("base") for r in (self._filtered_data or []) if r.get("base")]
+        bases = [b for b in bases if marks_mod.get_mark(self._marks, b)["mark"]]
+        if not bases:
+            return QMessageBox.information(
+                self, "结果转标注",
+                "选中范围里没有带标记的图。\n\n先给图打标记（正常/过杀/漏杀），再执行这个动作。")
+        cnt = marks_mod.count_marks({b: self._marks[b] for b in bases})
+        msg = ("将对 %d 张带标记的图执行闭环动作：\n\n"
+               "  · 过杀 %d 张 → 把与 AI 输出重叠的自有标注扣掉，该区域回退成**背景**（负样本）\n"
+               "  · 漏杀 %d 张 → 由标注 JSON 重建掩膜，并输出漏检区域图（确保正样本完整）\n"
+               "  · 正常 %d 张 → 把 AI 检出固化成标注（省人工，幂等）\n"
+               "  · 存疑 %d 张 → 跳过（按设计不进训练集）\n\n"
+               "处理完会把参与的图归入训练集（已在 Val/Test 的不动）。\n"
+               "原标注会先经版本快照，可回滚。是否继续？"
+               % (len(bases), cnt.get("overkill", 0), cnt.get("escape", 0),
+                  cnt.get("normal", 0), cnt.get("doubt", 0)))
+        if QMessageBox.question(self, "确认结果转标注", msg,
+                                QMessageBox.Yes | QMessageBox.No,
+                                QMessageBox.Yes) != QMessageBox.Yes:
+            return
+        try:
+            from annotation.convert import convert_by_mark, summarize_report
+        except Exception as e:
+            return QMessageBox.critical(self, "结果转标注", "模块加载失败：%s" % e)
+        src = "segment" if not self._detection_mode else "detect"
+        rep = convert_by_mark(pd, bases, self._marks, source=src)
+        self.log("[结果转标注] " + summarize_report(rep))
+        for r in rep.get("results", []):
+            if r.get("detail"):
+                self.log("  · %s：%s" % (r.get("base"), r["detail"]))
+        self._pred_count_cache_key = None
+        self._refresh_after_annotation_import()
+        title = "完成"
+        body = summarize_report(rep)
+        if rep.get("failures"):
+            body += "\n\n失败 %d 张：\n%s" % (
+                len(rep["failures"]),
+                "\n".join("  · %s：%s" % (f["base"], f["detail"]) for f in rep["failures"][:8]))
+            title = "完成（部分失败）"
+        QMessageBox.information(self, title, body)
 
     def _import_json_for_selected(self, selected_rows, project_dir):
         """把选中图片（多视图则含该组全部视图）的 JSON 从外部目录批量导入。
@@ -4077,7 +5428,7 @@ class MainWindow(QMainWindow):
         """Refresh version history list for current image."""
         if not hasattr(self, "version_list"):
             return
-        # 顺带刷新「图像管理」里的图像信息/划分/输出，以及「模型管理」的模型列表 ——
+        # 顺带刷新「模型管理」的模型列表 ——
         # 这个函数已经在切图、保存标注、打开工程时被调用，挂在这里不用再加触发点。
         self._refresh_image_info()
         self.version_list.clear()
@@ -4219,23 +5570,73 @@ class MainWindow(QMainWindow):
         self.log(f"[Class] Added: {name}")
 
     def _delete_class(self):
-        """Delete selected class from the project."""
+        """删除选中的类别。
+
+        ⚠️ 掩膜里的类别是**按编号**存的（= 类别表里的位置），不是按名字存的
+        —— 见 `annotation/convert.py`：`background` 占 0 号位，`255` = ignore 不占号。
+        实测这个工程也严格对得上：编号 1..4 的掩膜文件数分别 3/28/2/5，
+        正是类别表里 Zw/Ys/Zz/Hh 各自的数量。
+
+        由此这个动作有两件事必须做对，少一件都是**静默错**：
+
+        1. **删完必须让画布重读类别表**（`_reload_canvas_classes`）。
+           画布的 `label_manager.classes` 只是 `load()` 时抓到的一份普通 list，
+           不重读就一直停在旧表上。若用户刚才选中的正是被删的那个类别，
+           `current_class_id` 就成了一个**已经不存在的编号**，继续画会把
+           未定义的类别号写进掩膜（2026-10-14 实测：删掉 `Atd` 后画布仍是 6 张表、
+           `current_class_id` 仍停在 5，而 project.json 只剩 0..4）。
+        2. **弹窗必须说实话**。删最后一个类别：谁都不用重新编号，安全；
+           删中间那个：它后面所有类别前移一位，而已有掩膜里的数字不会跟着改
+           ⇒ 那些区域此后被解释成**别的类别**。旧文案一律写
+           "Existing annotations will keep their class index" ——
+           对后者这句话恰好把最危险的后果说成了"没事"。
+        """
         row = self.class_list.currentRow()
-        if row < 1:  # protect background (index 0)
+        if row < 0:
+            # 什么都没选中时**不能**说成"background 不能删" —— 那是两回事，
+            # 而删除是静默 no-op 的话，用户只会觉得"点了没反应"。
+            self.log("[Class] 没有选中要删除的类别（先在类别表里点一行）")
+            return
+        if row == 0:  # protect background (index 0)
             self.log("[Class] Cannot delete background")
             return
         classes = list(self._cached_classes)
         if row >= len(classes):
             return
         name = classes[row]
-        reply = QMessageBox.question(self, "Delete Class",
-            f"Delete class \u2018{name}\u2019? Existing annotations will keep their class index.",
-            QMessageBox.Yes | QMessageBox.No)
+        n_tail = len(classes) - row - 1
+        if n_tail == 0:
+            warn = ("『%s』是最后一个类别，其余类别的编号一个都不变，"
+                    "已有标注不受影响。" % name)
+        else:
+            warn = ("⚠️ 『%s』后面还有 %d 个类别，删掉它们会**整体前移一位**；"
+                    "而已有标注是按编号存的、不会跟着改，"
+                    "编号 ＞ %d 的区域此后会被当成别的类别（界面上看不出来）。"
+                    % (name, n_tail, row))
+        reply = QMessageBox.question(self, "删除类别",
+            "确定删除类别『%s』？\n\n%s\n\n（掩膜文件本身不会被改动；background 不能删）"
+            % (name, warn),
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         if reply != QMessageBox.Yes:
             return
+        # 先记下当前选中类别：删除会让编号前移，它得跟着挪
+        cid = int(getattr(self.canvas, "current_class_id", 1) or 0)
         del classes[row]
         self._cached_classes = classes
         self._save_classes_to_project(classes)
+        self._reload_canvas_classes()   # 画布重读类别表（含越界夹取）
+        # 被删的在选中项之前 ⇒ 选中项编号减 1；再夹回合法范围（含"删的就是它自己"）
+        if cid > row:
+            cid -= 1
+        self.canvas.set_class(max(0, min(cid, len(classes) - 1)))
+        # 推理参数里那条同名记录要跟着摘掉，否则 JSON 里留一个点不开的残项
+        try:
+            from inference.params import drop_class_params
+            pd = self._project_dir_or_none()
+            if pd and drop_class_params(pd, name):
+                self.log(f"[Class] 清理推理参数里的残项: {name}")
+        except Exception as e:
+            self.log(f"[Class] 推理参数清理失败: {type(e).__name__}: {e}")
         self._refresh_class_ui()
         self.log(f"[Class] Deleted: {name}")
 
@@ -4258,6 +5659,18 @@ class MainWindow(QMainWindow):
         classes[row] = new_name
         self._cached_classes = classes
         self._save_classes_to_project(classes)
+        # 推理参数那条记录要**跟着搬家**：面板按名字查参数，不搬的话新名字查不到
+        # ⇒ 悄悄给一组默认值，用户调好的八维阈值就没了（静默错）。
+        try:
+            from inference.params import rename_class_params
+            pd = self._project_dir_or_none()
+            if pd and rename_class_params(pd, old_name, new_name):
+                self.log(f"[Class] 推理参数已迁移: {old_name} -> {new_name}")
+        except Exception as e:
+            self.log(f"[Class] 推理参数迁移失败: {type(e).__name__}: {e}")
+        # 画布的 label_manager 拿着的是**名字**（编号 -> 名字的映射），也必须重读，
+        # 否则工具栏与画布会各说各的（一个显示新名字、一个显示旧名字）。
+        self._reload_canvas_classes()
         self._refresh_class_ui()
         self.log(f"[Class] Renamed: {old_name} -> {new_name}")
 
@@ -4298,6 +5711,11 @@ class MainWindow(QMainWindow):
         classes[row], classes[new_row] = classes[new_row], classes[row]
         self._cached_classes = classes
         self._save_classes_to_project(classes)
+        # ⚠️ 上移/下移换的是**位置**，而位置就是掩膜的类别号 —— 已有标注的编号
+        #    不会跟着走（它们此后会被解释成别的类别）。这一点目前只在文档/日志里
+        #    交代，没有拦人；但画布的 label_manager 必须重读，否则它手里的
+        #    "编号 -> 名字"还是旧的那套（工具栏与画布会各说各的）。
+        self._reload_canvas_classes()
         self._refresh_class_ui()
         if 0 <= new_row < self.class_list.count():
             self.class_list.setCurrentRow(new_row, emit=False)
@@ -4322,6 +5740,21 @@ class MainWindow(QMainWindow):
         if hasattr(self, "class_list"):
             self.class_list.set_project_dir(self._project_dir_or_none())
             self.class_list.set_classes(classes)
+        # ★ 选中行也要跟上画布的当前类别（2026-10-15 补）：
+        #    工具栏那格「类别:xx」删掉之后，**右栏这张表的选中行就是"当前类别"的唯一显示处**
+        #    （单图模式画布状态行也显示，但多视图模式画布叠加是关的）。
+        #    实测原来这里不同步：打开工程后 `class_list.currentRow()` 是 -1，
+        #    而 canvas.current_class_id 已经是 1 —— 表里空着选中行，多视图下就没法
+        #    知道正在标哪个类别（静默不同步，不报任何错）。
+        #    emit=False：不让它反过来发 currentRowChanged 去改画布（那是键盘那条路的事）。
+        try:
+            if hasattr(self, "class_list"):
+                _cur = getattr(self.canvas, "current_class_id", None)
+                _n = len(classes or [])
+                self.class_list.setCurrentRow(
+                    _cur if (isinstance(_cur, int) and 0 <= _cur < _n) else -1, emit=False)
+        except Exception:
+            pass
         self._update_class_count_label(len(classes or []))
         # 推理参数面板按类别组织：类别表一变，它的下拉也要跟着重建
         try:
@@ -4329,6 +5762,11 @@ class MainWindow(QMainWindow):
                 self.infer_params.set_project(self._project_dir_or_none(), classes)
         except Exception:
             pass
+        # 工具栏那个「类别」格 2026-10-15 已删（当前类别由**右栏类别表的选中行**承担，
+        # 选类别走数字键 1-9 / 右栏类别表）。这里因此**不再**需要重建工具栏菜单 ——
+        # 原来那段留着会一直给一个不存在的控件喂数据，看着正常其实空转。
+        # 右栏类别表自己的 set_classes(classes) 已在上面调用，它的选中行由
+        # `_on_canvas_class_select` 同步（见那里的 setCurrentRow）。
 
     # ============ UI Panel Toggles ============
 
@@ -4383,6 +5821,7 @@ class MainWindow(QMainWindow):
         ("lr_scheduler", "cls_scheduler_combo", "text"),
         ("warmup_epochs", "cls_warmup_spin", "int"),
         ("early_stop_patience", "cls_early_stop_spin", "int"),
+        ("select_metric", "cls_select_metric_combo", "text"),
     ]
 
     def _save_cls_train_settings(self):
@@ -4567,6 +6006,8 @@ class MainWindow(QMainWindow):
             self.cls_scheduler_combo.setCurrentText("none")
             self.cls_warmup_spin.setValue(0)
             self.cls_early_stop_spin.setValue(20)
+            if hasattr(self, "cls_select_metric_combo"):
+                self.cls_select_metric_combo.setCurrentText("acc")
             self._set_augment_level("none")
             self.cls_tta_check.setChecked(False)
             self.log_signal.emit(
@@ -4655,6 +6096,7 @@ class MainWindow(QMainWindow):
                     class_balanced=self.cls_balanced_check.isChecked(),
                     ema=self.cls_ema_check.isChecked(),
                     keep_aspect=keep_aspect,
+                    select_metric=self.cls_select_metric_combo.currentText(),
                     progress_callback=epoch_cb, stop_check=stop_check,
                     log_callback=lambda msg: self.log_signal.emit(msg),
                     plot_callback=lambda h: self.chart_signal.emit(h),
@@ -5896,17 +7338,31 @@ class MainWindow(QMainWindow):
         self.log(f"CM click: {gt_cls}->{pred_cls} = {len(matched)} images")
 
     def _toggle_panel(self, side):
-        """Toggle left or right panel visibility."""
-        if side == "left":
-            v = not self._left_panel.isVisible()
-            self._left_panel.setVisible(v)
-            self._saved_left = v
-            self._save_ui_setting("left_panel_visible", v)
-        elif side == "right":
-            v = not self._right_panel.isVisible()
-            self._right_panel.setVisible(v)
-            self._saved_right = v
-            self._save_ui_setting("right_panel_visible", v)
+        """折叠/展开左栏或右栏。
+
+        ★ 2026-10-15 改版（Arthur 两轮反馈）：
+          第一版问题：折叠按钮在面板**里面**，一按跟着消失 ⇒ 只能去 View 菜单展开。
+          第二版问题：折叠 = 收窄成 26px 把手条 ⇒ 画布**没占满整宽**，两侧各留一条空白
+                      （Arthur："折叠后，预览窗口直接占满左右栏就好"）。
+          现在：**折叠 = 整个面板藏起来**（宽度归零，画布吃满），恢复按钮是**贴在画布
+          边缘的浮层小按钮**（不进布局 ⇒ 不占宽度），面板内那枚箭头只在展开态可见。
+        """
+        panel = self._left_panel if side == "left" else self._right_panel
+        edge = getattr(self, "_edge_left_btn" if side == "left" else "_edge_right_btn", None)
+        inner = getattr(self, "_left_toggle_btn" if side == "left"
+                        else "_right_toggle_btn", None)
+        expand = not panel.isVisible()
+        panel.setVisible(expand)
+        if inner is not None:
+            inner.setVisible(expand)             # 展开态才显示面板内那枚箭头
+        if edge is not None:
+            edge.setVisible(not expand)          # 折叠态显示边缘恢复按钮
+        self._save_ui_setting("%s_panel_visible" % side, expand)
+        # 画布宽度变了：底栏读数、图片信息栏排版都要重量
+        # （延后一轮 —— 点击处理中布局几何还没落定，立刻量拿到的是旧值）
+        QTimer.singleShot(0, lambda: (self._layout_edge_buttons(),
+                                      self._on_toolbar_collapsed(expand)))
+        self._on_toolbar_collapsed(expand)
 
 
 
@@ -6353,7 +7809,12 @@ class MainWindow(QMainWindow):
                     self._pred_count[base] = n_blocks
                     if not hasattr(self, "_infer_times") or self._infer_times is None:
                         self._infer_times = {}
-                    self._infer_times[base] = round(time.time() - _t_infer, 2)
+                    # ⚠️ 单位必须是**毫秒**：这里以前存的是"秒"（round(x, 2)），
+                    #    而消费它的两端都按毫秒理解 —— 筛选字段名 infer_ms / 中文名「推理耗时」
+                    #    （core/filter_expr.py），列表列头「耗时」又不带单位。后果是很静默的：
+                    #    按 "推理耗时 < 1000"（1000ms = 1s）筛，**每一张图都命中**
+                    #    （值是 1.23 这种），既不报错也看不出错。
+                    self._infer_times[base] = round((time.time() - _t_infer) * 1000.0, 1)
                 self.log(f"本图预测块数：{n_blocks}（已回填图片列表「结果」列）")
                 self._pred_count_cache_key = None
                 self._filter_images(self.search_input.text())

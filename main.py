@@ -155,6 +155,11 @@ def main():
         }
         QTableCornerButton::section { background-color: #0F1728; border: none; }
 
+        /* 图片列表的**默认行文字色**：故意用 ID 选择器（优先级高于任何类型选择器），
+           以便主题表——而不是 main_window._render_page 里的 setForeground(白)——决定行色。
+           内联前景色优先级高于 QSS，之前深色主题写死纯白，切浅色后就成了"白字白底"。 */
+        QTableWidget#imageList { color: #FFFFFF; }
+
         /* ---------- 分组框 ---------- */
         QGroupBox {
             color: #00E5FF;

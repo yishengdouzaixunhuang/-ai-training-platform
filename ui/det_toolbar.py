@@ -5,7 +5,8 @@
 极简 SVG 线条图标；画框开关互斥高亮、Hover 反馈、禁用置灰、中文 Tooltip。
 """
 from PyQt5.QtCore import QSize, Qt, pyqtSignal
-from PyQt5.QtWidgets import QFrame, QHBoxLayout, QToolButton, QWidget
+from PyQt5.QtGui import QKeySequence
+from PyQt5.QtWidgets import QFrame, QHBoxLayout, QVBoxLayout, QToolButton, QWidget
 
 from ui import icons
 
@@ -43,12 +44,42 @@ class DetToolbar(QWidget):
     cancel_requested = pyqtSignal()
     undo_requested = pyqtSignal()
     redo_requested = pyqtSignal()
+    # 工具行展开/折叠（与分割工具栏同步，2026-10-15）
+    tools_toggled = pyqtSignal(bool)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setStyleSheet(_QSS)
-        lay = QHBoxLayout(self)
-        lay.setContentsMargins(6, 3, 6, 3)
+        # ★ 2026-10-15 与分割工具栏同步（Arthur 拍板"同样处理"）：
+        #   常驻条 —— 「▣ 标注」展开开关 + 类别/图层区（由主窗口挂右侧，这里留 stretch）
+        #   工具行 —— 画框开关 + 清除/删除/取消 + 撤销/重做（**默认折叠**）
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(6, 3, 6, 3)
+        outer.setSpacing(2)
+
+        # ---- 常驻条：展开/折叠开关 ----
+        chrome = QHBoxLayout(); chrome.setContentsMargins(0, 0, 0, 0); chrome.setSpacing(4)
+        outer.addLayout(chrome)
+        self.tools_toggle = QToolButton()
+        self.tools_toggle.setObjectName("toolsToggle")
+        self.tools_toggle.setCheckable(True)
+        self.tools_toggle.setChecked(False)          # 默认折叠
+        self.tools_toggle.setText("标注")
+        self.tools_toggle.setToolTip("显示 / 隐藏目标检测工具栏（画框 + 撤销重做）\n快捷键 Ctrl+B")
+        # QToolButton 默认 IconOnly ⇒ 不设这句就只有图标、没有「标注」两个字（同分割工具栏）
+        self.tools_toggle.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.tools_toggle.setIcon(icons.make_icon("rect"))
+        self.tools_toggle.setIconSize(QSize(16, 16))
+        self.tools_toggle.setCursor(Qt.PointingHandCursor)
+        self.tools_toggle.toggled.connect(self._on_tools_toggled)
+        self.tools_toggle.setShortcut(QKeySequence("Ctrl+B"))
+        chrome.addWidget(self.tools_toggle)
+        chrome.addStretch()
+
+        # ---- 可折叠工具行 ----
+        self.tools_box = QWidget(self)
+        lay = QHBoxLayout(self.tools_box)
+        lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(4)
 
         # ---- 画矩形框（开关按钮，默认点亮） ----
@@ -97,6 +128,33 @@ class DetToolbar(QWidget):
             lay.addWidget(btn)
 
         lay.addStretch()
+        outer.addWidget(self.tools_box)
+        self.tools_box.setVisible(False)             # 默认折叠
+
+    # ---- 工具行展开 / 折叠 ----
+    def _on_tools_toggled(self, on):
+        self.tools_box.setVisible(bool(on))
+        self.tools_toggled.emit(bool(on))
+
+    def set_tools_visible(self, on):
+        on = bool(on)
+        if self.tools_toggle.isChecked() != on:
+            self.tools_toggle.setChecked(on)
+        else:
+            self.tools_box.setVisible(on)
+
+    def tools_visible(self):
+        """工具行**有没有被折叠**（不是"此刻看不看得见"）。
+
+        ⚠️ 必须用 `not isHidden()` 而不是 `isVisible()`：`isVisible()` 要求**所有祖先**
+        都可见，而本工具栏在**分割工程里整体是隐藏的**（det/annot 两栏互斥）⇒
+        哪怕用户把工具行展开了，`isVisible()` 也恒为 False。
+        用错的后果很具体：分割工程里展开工具行后，这个 API 仍报"没展开"。
+        """
+        return not self.tools_box.isHidden()
+
+    def toggle_tools(self):
+        self.tools_toggle.setChecked(not self.tools_toggle.isChecked())
 
     def set_draw_active(self, active):
         """外部同步画框开关（不触发 draw_toggled）。"""
