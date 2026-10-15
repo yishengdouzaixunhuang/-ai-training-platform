@@ -50,7 +50,7 @@ class DetToolbar(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setStyleSheet(_QSS)
-        # ★ 2026-10-15 与分割工具栏同步（Arthur 拍板"同样处理"）：
+        # ★ 2026-10-15 与分割工具栏同步（维护者 拍板"同样处理"）：
         #   常驻条 —— 「▣ 标注」展开开关 + 类别/图层区（由主窗口挂右侧，这里留 stretch）
         #   工具行 —— 画框开关 + 清除/删除/取消 + 撤销/重做（**默认折叠**）
         outer = QVBoxLayout(self)

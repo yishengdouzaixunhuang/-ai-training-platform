@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """「主题清扫」回归测试：确认清掉的是**颜色**，不是**度量**。
 
-背景（Arthur 实测报的「显示不全」）：
+背景（维护者 实测报的「显示不全」）：
   左栏 `Image List (99)` 按钮在浅色主题下**文字上下被切掉**。
   根因不是布局，是 `ui.themes.sweep_inline_styles` 旧实现把整段内联样式
   `setStyleSheet("")` 清空 —— 于是 `font-size:10px; padding:1px 6px` 跟着颜色一起没了，

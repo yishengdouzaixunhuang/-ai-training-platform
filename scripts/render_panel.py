@@ -67,7 +67,7 @@ from PyQt5.QtWidgets import QApplication  # noqa: E402
 
 #: 右栏页签名 —— **以 MainWindow._right_tab_index 为准**：
 #:     {"params": 0, "annot": 1, "model": 2}
-#:  ⚠️ 旧名字（annot/ver/train/det/hm/aug 那 6 个）已经废弃：右栏参照友商 iSense
+#:  ⚠️ 旧名字（annot/ver/train/det/hm/aug 那 6 个）已经废弃：右栏参照友商 友商平台
 #:     重构成模块页了，训练/推理参数挪进了 params 页。
 #:     2026-10-14 又砍掉 "image"（右栏「图像管理」与左栏新页重名且内容重复，整页删除）。
 #:     用旧名字调 show_right_tab() 会**静默 return 不报错**，于是你会对着 annot 页

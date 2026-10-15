@@ -2,7 +2,7 @@
 """类别表发现与合并：**图片的标注 JSON 才是类别的唯一真源**。
 
 背景（真实工程踩过的坑）：
-    新松_233_赣州孚能 工程建好后 project.json 里是 "classes": []，
+    集成商_233_客户 工程建好后 project.json 里是 "classes": []，
     用户把 JSON 标注批量导入 images/ 后，类别表始终是空的：
       · Class 表一行都没有；
       · 画布 LabelManager 只有 ["background"]，手工标注**选不到缺陷类别**；

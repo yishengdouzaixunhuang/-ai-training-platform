@@ -242,7 +242,7 @@ def _mw_no_dead_image_props():
         return False, "读不了 ui/main_window.py: %s: %s" % (type(e).__name__, e)
     props = {"img_info_name", "img_info_size", "img_info_ann",
              "split_count_label", "out_count_label",
-             # 2026-10-14 晚追加：它们在左栏底部短暂存在过一行，Arthur 判该行冗余后删除
+             # 2026-10-14 晚追加：它们在左栏底部短暂存在过一行，维护者 判该行冗余后删除
              "split_manage_btn", "open_out_btn"}
     funcs = {"_make_image_info_section", "_make_split_section", "_make_project_ops_section"}
     hits = []
@@ -282,7 +282,7 @@ def _mw_menu_has_output_dir():
 def _mw_manage_split_entrypoints():
     """AST：`_manage_split`（数据集划分对话框）必须仍有**多个**入口活着。
 
-    为什么单独钉它：它先前只挂在左栏那个小按钮上，Arthur 判定"那一行冗余"要删 ——
+    为什么单独钉它：它先前只挂在左栏那个小按钮上，维护者 判定"那一行冗余"要删 ——
     一删，这个功能在界面上就**一个入口都不剩**（`SplitDialog` 再也打不开），
     而且不会有任何报错，只是"某个功能静默消失"。所以删按钮的同时必须补右键/菜单入口，
     这条断言就是钉"补上了"。
@@ -614,7 +614,7 @@ def build_mv_project(name, groups=2, views=("te_0", "te_1", "te_2")):
     """造一个**真·多视图工程**。
 
     判据就一条：`project.json` 里声明了 `views`（`is_multiview_project()` 只认这个）。
-    这里刻意按孚能现场那张截图的结构造：N 组 × 3 视图，文件名 `{组名}_te_{n}.png`。
+    这里刻意按客户现场那张截图的结构造：N 组 × 3 视图，文件名 `{组名}_te_{n}.png`。
     """
     d = os.path.join(tempfile.gettempdir(), "probe_mark_ui_%d" % int(time.time()), name)
     for sub in ("images", "annotations", "models", "outputs"):
@@ -977,7 +977,7 @@ def main():
 
     stage("闭环已验完")
     # ── 多视图工程：列表"按组成行"，计数必须分「组 / 张」两个量纲 ──
-    #    背景（2026-10-14 用户实测）：孚能三视图工程 99 张 = 33 组，列表 33 行，
+    #    背景（2026-10-14 用户实测）：客户三视图工程 99 张 = 33 组，列表 33 行，
     #    状态栏写 "Showing 33/99" ⇒ 用户以为少了 66 张。根因是拿**行数**去除**文件数**。
     stage("开始验多视图列表")
     pd2, gbases, nviews = build_mv_project("probe_mv")
@@ -1260,7 +1260,7 @@ def main():
                 with _PILImage.open(_path) as _im:
                     _pv = _im.getpixel((_mx, _my))
                 _from = os.path.basename(_path)
-            # 值**形态**（产品口径，Arthur 2026-10-14："形状1和形状2都要显示RGB"）：
+            # 值**形态**（产品口径，维护者 2026-10-14："形状1和形状2都要显示RGB"）：
             #   三格**统一 RGB**。主画布那格本来就是 —— `AnnotationCanvas.image` 加载时
             #   就 `.convert("RGB")` 了；参考窗那两格早先按文件 mode 走（L 灰度写「灰度 N」），
             #   本次改成一律三元组。
@@ -1371,7 +1371,7 @@ def main():
         # 判据不是"按钮还在不在"，是三件量化的事：
         #   ① 默认折叠；② 点一次真展开、再点真收起；③ **折叠后画布真的变高**
         #      （折叠一个布局兄弟控件，画布理应把这 30px 拿走 —— 不变高 = 折叠是假的）
-        ck("★ 工具行默认折叠（Arthur 拍板的默认态）", not tb.tools_visible(),
+        ck("★ 工具行默认折叠（维护者 拍板的默认态）", not tb.tools_visible(),
            "tools_visible=%s" % tb.tools_visible())
         _h0 = win.canvas.height()
         tb.tools_toggle.click(); pump(app, 0.4)
@@ -1808,7 +1808,7 @@ def main():
              所以断言的是"它不再改变当前页"，而不是"它不报错"——静默本身就是约定）；
           ③ 那两个**唯一入口**（管理划分… / 输出目录）没搬走 ⇒ 功能丢了还没人发现，
              这是删页真正的风险点（其余内容在底栏/计数行/右键菜单里各有一份）。
-             随后 Arthur 又判"面板上那一行按钮本身冗余"（2026-10-14 20:39）⇒ 按钮删掉、
+             随后 维护者 又判"面板上那一行按钮本身冗余"（2026-10-14 20:39）⇒ 按钮删掉、
              动作改挂右键/菜单 ⇒ 所以下面既断言"按钮属性不存在"，也断言"两个槽函数还活着"；
           ④ 渲染脚本的 ALL_TABS 还留着 "image" ⇒ 出图时对着别的页分析（见 AST 那条）。
         """
@@ -1833,7 +1833,7 @@ def main():
         win.show_right_tab("annot")
         pump(app, 0.3)
 
-        # ① 那行按钮**已按 Arthur 要求删掉**（2026-10-14 晚实机反馈："这两个按钮冗余的"）
+        # ① 那行按钮**已按 维护者 要求删掉**（2026-10-14 晚实机反馈："这两个按钮冗余的"）
         for attr in ("split_manage_btn", "open_out_btn"):
             ck("★ 左栏那行小按钮已删干净（win 上不该再有 %s）" % attr,
                not hasattr(win, attr), "hasattr=%s" % hasattr(win, attr))
@@ -1874,7 +1874,7 @@ def main():
         旧实现 `del classes[row]` 之后只刷新了 Class 表与菜单，**没让画布重读类别表**：
         画布的 `label_manager.classes` 是 `load()` 时抓的一份普通 list，于是它还拿着旧表、
         `current_class_id` 停在已失效的编号上 ⇒ 继续画就把**不存在的类别号**写进掩膜。
-        实测（真工程 新松_233…，删 Atd）：project.json 只剩 0..4，
+        实测（真工程 集成商_233…，删 Atd）：project.json 只剩 0..4，
         而画布仍是 6 张表、当前编号 5、工具栏按钮还写着「类别:Atd」、菜单 5 项一个都没勾
         —— **界面上看不出任何异常**，这是典型的静默错。
 

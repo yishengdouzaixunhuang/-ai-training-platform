@@ -155,15 +155,15 @@ def group_A():
 
     marks = {}
     bases = ["cell_001_te_0", "cell_002_te_0"]
-    mk.set_mark(marks, bases, "overkill", note="凹点，人工判为背景", by="Arthur")
-    mk.set_mark(marks, ["cell_003_te_0"], "escape", by="Arthur")
+    mk.set_mark(marks, bases, "overkill", note="凹点，人工判为背景", by="me")
+    mk.set_mark(marks, ["cell_003_te_0"], "escape", by="me")
     ck("A2 set_mark 写入内存", set(marks) == set(bases + ["cell_003_te_0"]))
     ck("A3 set_mark 落盘", mk.save_marks(pd, marks))
     back = mk.load_marks(pd)
     ck("A4 save/load 往返内容一致", back == marks, "back=%s" % sorted(back))
     ck("A5 备注与人/时间都在", all(back[b]["note"] == "凹点，人工判为背景" or b == "cell_003_te_0"
                                  for b in back)
-       and all(back[b]["by"] == "Arthur" and back[b]["at"] for b in back))
+       and all(back[b]["by"] == "me" and back[b]["at"] for b in back))
     ck("A6 原子落盘无 .tmp 残留", not os.path.exists(mk.marks_path(pd) + ".tmp"))
 
     # note=None 必须保留原备注（只改标记时不想把理由冲掉）
@@ -211,7 +211,7 @@ def group_A():
        cross["凹点"]["overkill"] == 2 and cross["划痕"]["escape"] == 1 and cross["划痕"][""] == 1)
     ck("A17 交叉表按已标记数降序", list(cross)[0] == "凹点", list(cross))
 
-    # suggest_mark：Arthur 2026-10-14 口径
+    # suggest_mark：维护者 2026-10-14 口径
     ck("A18 干净背景被检出 -> 过杀", mk.suggest_mark(3, 0) == "overkill")
     ck("A19 标注前景没抓出 -> 漏杀", mk.suggest_mark(0, 2) == "escape")
     ck("A20 两者都有但不给 overlap -> 不猜 normal", mk.suggest_mark(3, 2) == "")
@@ -246,7 +246,7 @@ def group_B():
     from core.filter_expr import FilterExpr, match_one, value_of, FIELD_KINDS, new_condition
 
     r = _rec(fname="20260910-4号机-凹点3_te_0.png", base="20260910-4号机-凹点3_te_0",
-             defect="凹点", mark="overkill", mark_note="背景干净", mark_by="Arthur",
+             defect="凹点", mark="overkill", mark_note="背景干净", mark_by="me",
              split="train", split_status=" [Train]", shape_labels=["凹点", "划痕"],
              shape_count=2, pred_cnt=5, score_str="0.87", infer_ms="42",
              img_w=160, img_h=120)

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """三图（多视图）语义分割 —— 早融合 in_channels = 3视图 × 3通道 = 9
 
-孚能场景：xxx_te_0.jpg = 漫反射, xxx_te_1.jpg = 形状图1, xxx_te_2.jpg = 形状图2
+客户场景：xxx_te_0.jpg = 漫反射, xxx_te_1.jpg = 形状图1, xxx_te_2.jpg = 形状图2
 三张图**同尺寸、同裁剪区域**，标注只画在对比度最高的那张上、其余同步 —— 
 因此可以直接按通道堆叠做"早融合"，只需把分割 backbone 的首层卷积改成 9 通道。
 
@@ -28,7 +28,7 @@ import torch.nn.functional as F
 from PIL import Image
 from torch.utils.data import Dataset, DataLoader
 
-# 视图顺序：te_0=漫反射, te_1=形状图1, te_2=形状图2（孚能约定）
+# 视图顺序：te_0=漫反射, te_1=形状图1, te_2=形状图2（客户约定）
 DEFAULT_VIEWS = ("te_0", "te_1", "te_2")
 VIEW_NAMES = {"te_0": "漫反射", "te_1": "形状图1", "te_2": "形状图2"}
 IMAGENET_MEAN = [0.485, 0.456, 0.406]
@@ -84,7 +84,7 @@ class MultiViewSegDataset(Dataset):
         #   改成在**原分辨率**上裁 tile，缺陷像素一个不丢。
         self.tile_size = int(tile_size or 0)
         self.neg_ratio = float(neg_ratio if neg_ratio is not None else 1.5)
-        # 取样方式（对齐友商 iSense 的「分块」）：
+        # 取样方式（对齐友商 友商平台 的「分块」）：
         #   slide  —— **均匀滑窗**：滑窗大小 × 步长(%)，全图遍历、25% 重叠时不漏任何区域
         #   defect —— 缺陷居中 + 按比例抽纯背景负样本（对小缺陷、类别极不均衡的数据更省算力）
         self.tile_mode = str(tile_mode or "slide")

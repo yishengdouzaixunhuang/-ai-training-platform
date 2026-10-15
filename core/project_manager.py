@@ -42,7 +42,7 @@ class ProjectManager:
                        views=None, view_names=None):
         """创建工程。
 
-        views/view_names：多视图（如孚能三视图 漫反射/形状图1/形状图2）声明。
+        views/view_names：多视图（如客户三视图 漫反射/形状图1/形状图2）声明。
         声明后会写进 project.json，训练端据此决定输入通道数：
             单张图像 → 3 通道；三视图 → 9 通道。
         不声明则按单张图像处理（与既有行为一致）。

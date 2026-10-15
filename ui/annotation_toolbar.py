@@ -160,7 +160,7 @@ class AnnotationToolbar(QWidget):
         self.tools_toggle = QToolButton()
         self.tools_toggle.setObjectName("toolsToggle")
         self.tools_toggle.setCheckable(True)
-        self.tools_toggle.setChecked(False)          # 默认折叠（Arthur 拍板）
+        self.tools_toggle.setChecked(False)          # 默认折叠（维护者 拍板）
         self.tools_toggle.setText("标注")
         self.tools_toggle.setToolTip("显示 / 隐藏标注工具栏（形状工具 + 撤销重做）\n快捷键 Ctrl+B")
         # ⚠️ QToolButton 默认是 ToolButtonIconOnly ⇒ 光设 setText("标注") **一个字都不会显示**
@@ -230,7 +230,7 @@ class AnnotationToolbar(QWidget):
             self._right_lay.addWidget(chk)
 
         # ⚠️ 这里原来还有一格「类别:xx▾」（下拉菜单 = 选类别入口 + 当前类别显示）。
-        #    2026-10-15 Arthur 判定冗余，删除。删之前逐条核过"别处还有没有"：
+        #    2026-10-15 维护者 判定冗余，删除。删之前逐条核过"别处还有没有"：
         #      · 选类别：数字键 1-9（`_on_canvas_class_select`）、右栏「标注管理 → 类别」表
         #        （`class_list.setCurrentRow` 本来就被 `_on_canvas_class_select` 同步）——
         #        `_on_canvas_class_select` 里那句 setCurrentRow 正是"两处同源"的保证。

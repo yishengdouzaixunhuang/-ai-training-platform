@@ -315,7 +315,7 @@ class TrainSettingsDialog(QDialog):
         else:
             self.unet_base_spin = None
             self.unet_depth_spin = None
-        # ── 分块训练（对齐友商 iSense：分块 / 滑窗大小 / 步长(%)）──
+        # ── 分块训练（对齐友商 友商平台：分块 / 滑窗大小 / 步长(%)）──
         #    大图（本项目 3860×1480）**以前被整图 resize 到 512 宽**，中位 234px 的 Atd
         #    缩完只剩 ~4px、127px 的 Zw 剩 ~2px —— 缺陷在数据加载阶段就被抹掉了。
         #    勾上「分块」后改成在**原分辨率**上按滑窗裁剪，缺陷像素一个不丢。
@@ -739,7 +739,7 @@ class MainWindow(QMainWindow):
     def _create_left_panel(self):
         # ★ 2026-10-15 改成「**常驻把手条 + 可折叠内容**」：
         #   原来折叠按钮在面板**里面**，一按就跟着面板一起消失 ⇒ 想再展开只能去 View 菜单，
-        #   而鼠标明明就停在刚才那个位置（Arthur 反馈"这很不方便"）。
+        #   而鼠标明明就停在刚才那个位置（维护者 反馈"这很不方便"）。
         #   现在把手条（只放那一枚箭头）**永远可见**，收起时只藏内容：
         #     展开态 = 把手 + 内容；折叠态 = 只剩把手、箭头反向 ⇒ 点它就展开。
         #   `self._left_panel` 现在是这个**容器**（splitter 里放的仍是它，引用不用改）。
@@ -871,7 +871,7 @@ class MainWindow(QMainWindow):
         self.search_input.textChanged.connect(self._filter_images)
         ft.addWidget(self.search_input, 1)
         self.split_filter = QComboBox()
-        # 对标友商 iSense 的筛选下拉：除数据集外，还要能按"是否标注 / 是否有结果"筛。
+        # 对标友商 友商平台 的筛选下拉：除数据集外，还要能按"是否标注 / 是否有结果"筛。
         # 后半段这几项在 _filter_images 里实现。
         self.split_filter.addItems(["All Sets", "Train Only", "Val Only", "Test Only",
                                     "Annotated Only", "Unannotated Only",
@@ -982,7 +982,7 @@ class MainWindow(QMainWindow):
         pag_bar.addWidget(QLabel("Per page:"))
         self.page_size_combo = QComboBox()
         # "全部" = 不分页，一次列出所有图片（滑块会随数量变短），方便直接全选。
-        # 对标友商 iSense：列表不分页，一眼能看全并 Ctrl+A。
+        # 对标友商 友商平台：列表不分页，一眼能看全并 Ctrl+A。
         self.page_size_combo.addItems(["50", "100", "200", "500", "全部"])
         self.page_size_combo.setCurrentText("全部")
         self.page_size_combo.setToolTip("每页显示数量；选「全部」不分页，便于全选（图片很多时会略慢）")
@@ -1003,7 +1003,7 @@ class MainWindow(QMainWindow):
 
         # ⚠️ 这行位置**曾短暂放过**两个小按钮（「管理划分…」「输出目录」）：右栏「图像管理」
         #    页整页删除时，把这两个"别处没有入口"的动作搬到了这里。
-        #    Arthur 当晚看到实机后判定**这一行本身冗余**（面板上多一行视觉噪音），已删。
+        #    维护者 当晚看到实机后判定**这一行本身冗余**（面板上多一行视觉噪音），已删。
         #    现在两个动作都只在**右键菜单 / 菜单栏**里，面板上不占位：
         #      · 打开输出目录     -> 图片列表右键 + 工程树右键（`_open_output_dir`）
         #      · 管理数据集划分…  -> 图片列表右键 + 顶部 Tools（`_manage_split`）
@@ -1044,7 +1044,7 @@ class MainWindow(QMainWindow):
         self._list_page = imglist_page
         self._list_layout = il
 
-        # Default: 落在「工程管理」（Arthur 2026-10-15 拍板：重启后先看工程列表）。
+        # Default: 落在「工程管理」（维护者 2026-10-15 拍板：重启后先看工程列表）。
         # 为什么这样更合理：没打开工程时图片列表**本来就是空的**，落在一个空列表页
         # 等于"右侧画布是灰的、左边也是空的"，用户第一眼无事可做；
         # 落在工程列表则一眼看到"有哪些工程、上次做到哪儿"。
@@ -1327,7 +1327,7 @@ class MainWindow(QMainWindow):
 
         # ── 折叠后的「边缘恢复按钮」（2026-10-15 改版）──
         # 上一版：折叠 = 面板收窄成 26px 把手条 ⇒ 画布**没有占满整宽**，两侧各留一条空白
-        #   （Arthur："折叠后，预览窗口直接占满左右栏就好"）。
+        #   （维护者："折叠后，预览窗口直接占满左右栏就好"）。
         # 这一版：折叠 = **整个面板藏起来**（宽度归零，画布吃满），
         #   恢复按钮改成**贴在画布左右边缘的浮层小按钮**，用 move() 定位、不进布局 ⇒
         #   不占任何布局宽度，同时又满足"随时能点回来"（上一版的需求）。
@@ -1782,7 +1782,7 @@ class MainWindow(QMainWindow):
     def _pixel_at(src, x, y):
         """读某一格 (x, y) 处的像素。
 
-        形态（Arthur 2026-10-14 定的口径：三格统一 RGB）：
+        形态（维护者 2026-10-14 定的口径：三格统一 RGB）：
         - 主画布（漫反射）：走 PIL `getpixel`。`AnnotationCanvas.image` 加载时已经
           `.convert("RGB")` ⇒ 给 (r, g, b)；
         - 参考窗（形状图1 / 形状图2）：面板自己的 `pixel_at()` **一律给 (r, g, b)**，
@@ -1955,7 +1955,7 @@ class MainWindow(QMainWindow):
         self.infer_result_label = QLabel(""); hil.addWidget(self.infer_result_label)
         il.addLayout(hil)
 
-        # 推理参数（对标友商 iSense）：按类别过滤连通域 + 全局后处理。
+        # 推理参数（对标友商 友商平台）：按类别过滤连通域 + 全局后处理。
         # 放在推理控件下面、同一个滚动区里，改完即存到 <工程>/inference_params.json。
         from ui.infer_params import InferParamsPanel
         self.infer_params = InferParamsPanel()
@@ -2414,7 +2414,7 @@ class MainWindow(QMainWindow):
         self._ti_split.setSizes([150, 640])
         til.addWidget(self._ti_split)
 
-        # ===== 右侧 3 个模块（参照友商 iSense 右栏：参数管理 / 标注管理 / 模型管理）=====
+        # ===== 右侧 3 个模块（参照友商 友商平台 右栏：参数管理 / 标注管理 / 模型管理）=====
         #    友商的右栏不是"一堆并列工具页"，而是**模块**，每个模块里竖着若干**区块**
         #    （区块 = 左侧一条彩色竖条 + 标题 + 内容），区块可折叠、各按内容占高。
         #    这样既没有"某一块撑出大片空白"，也不用靠比例分配高度 —— 不看的折叠起来就行。
@@ -2443,7 +2443,7 @@ class MainWindow(QMainWindow):
             ("版本历史", [panel_ver]),
         ])
         # ⚠️ 原来的第 4 页「图像管理」（图像信息 / 数据集划分 / 输出与工程）**已整页删除**
-        #    （2026-10-14 晚，Arthur：左栏有了「图像管理」之后"右侧的图像管理已经冗余了"）。
+        #    （2026-10-14 晚，维护者：左栏有了「图像管理」之后"右侧的图像管理已经冗余了"）。
         #    删前逐条核过"这项有没有第二处显示"，三块里两块半是**重复信息**，不是缺功能：
         #      · 图像信息（当前图名/尺寸/标注块数）-> 底栏状态区已有
         #        「文件: xxx.jpg 宽度 1160x3706 … 已标注1 已检出0」
@@ -2463,7 +2463,7 @@ class MainWindow(QMainWindow):
         tab_layout = QVBoxLayout(tab_bar); tab_layout.setContentsMargins(1, 2, 1, 2); tab_layout.setSpacing(2)
 
         self._right_tabs = QButtonGroup(self); self._right_tabs.setExclusive(True)
-        # 参照友商 iSense 右栏，但只留 **3 个模块**（原来是 6 个并列工具页，
+        # 参照友商 友商平台 右栏，但只留 **3 个模块**（原来是 6 个并列工具页，
         # 2026-10-14 又砍掉冗余的「图像管理」——理由见上面 _right_stack 组装处）
         tab_defs = [
             ("参数管理", "训练参数 / 增强参数 / 高度图参数 / 推理参数", "params"),
@@ -3278,7 +3278,7 @@ class MainWindow(QMainWindow):
             # (task switching above may have moved it to inference/training).
             if hasattr(self, "_right_tabs"):
                 self.show_right_tab("annot")
-            # 左栏同理：默认落在「工程管理」了（Arthur 2026-10-15），所以打开工程
+            # 左栏同理：默认落在「工程管理」了（维护者 2026-10-15），所以打开工程
             # 后**必须**切到「图像管理」，否则用户点开工程后还盯着一页空图片列表。
             # 与右栏那一行是同一个道理：右侧切标注页，左侧就切图片列表。
             if hasattr(self, "_left_stack"):
@@ -4899,7 +4899,7 @@ class MainWindow(QMainWindow):
         # 与上面那条同属"打开某个目录"，放一起最顺。
         a_out = menu.addAction("打开输出目录")
         a_out.triggered.connect(lambda: self._open_output_dir(project_dir))
-        # 「管理划分…」：原为左栏图片列表底部的一个按钮，Arthur 2026-10-14 晚判定
+        # 「管理划分…」：原为左栏图片列表底部的一个按钮，维护者 2026-10-14 晚判定
         # 面板上那行冗余 ⇒ 删按钮、动作挂到这里（和上面的 Set as Train/Val/Test 同源，
         # 都是"划分"；也补上了它作为**唯一入口**不能丢的那条命）。
         a_split = menu.addAction("管理数据集划分…")
@@ -7340,10 +7340,10 @@ class MainWindow(QMainWindow):
     def _toggle_panel(self, side):
         """折叠/展开左栏或右栏。
 
-        ★ 2026-10-15 改版（Arthur 两轮反馈）：
+        ★ 2026-10-15 改版（维护者 两轮反馈）：
           第一版问题：折叠按钮在面板**里面**，一按跟着消失 ⇒ 只能去 View 菜单展开。
           第二版问题：折叠 = 收窄成 26px 把手条 ⇒ 画布**没占满整宽**，两侧各留一条空白
-                      （Arthur："折叠后，预览窗口直接占满左右栏就好"）。
+                      （维护者："折叠后，预览窗口直接占满左右栏就好"）。
           现在：**折叠 = 整个面板藏起来**（宽度归零，画布吃满），恢复按钮是**贴在画布
           边缘的浮层小按钮**（不进布局 ⇒ 不占宽度），面板内那枚箭头只在展开态可见。
         """
@@ -8069,7 +8069,7 @@ class MainWindow(QMainWindow):
                     shutil.copy2(src, dest)
                     count += 1
                     base = os.path.splitext(img_name)[0]
-                    # Extract classification label and split from iSenseFlow format
+                    # Extract classification label and split from 友商平台Flow format
                     base_data = data.get("baseData", [])
                     if base_data and isinstance(base_data, list):
                         cat = base_data[0].get("category", "")

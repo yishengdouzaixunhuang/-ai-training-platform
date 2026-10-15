@@ -251,6 +251,6 @@ class MultiViewTrainer:
         m = self.metrics or {}
         L(f"训练完成: best epoch={m.get('best_epoch')}  "
           f"前景 mIoU={m.get('best_mIoU_fg')}  模型: models/best_model.pth")
-        L("注意: 三视图模型的推理入口当前在「孚能三视图工具.bat → [4] 整图滑窗评估」，"
+        L("注意: 三视图模型的推理入口当前在「三视图工具.bat → [4] 整图滑窗评估」，"
           "平台自带的 Run Inference 是单图 3 通道模型，不适用于本工程。")
         return self.metrics

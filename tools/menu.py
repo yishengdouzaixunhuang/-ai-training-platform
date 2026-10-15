@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
-"""孚能 三视图语义分割 工具菜单
+"""客户 三视图语义分割 工具菜单
 
 为什么菜单用 Python 而不是 .bat：
   .bat 里的中文必须存成 GBK 才能在 cmd 下正常显示，改一次就要转一次编码，
   极易踩坑（本工程已踩过一次）。这里让 .bat 保持纯 ASCII 只负责启动，
   所有中文界面放在 Python 里，UTF-8 原生，永不乱码。
 
-启动：双击同目录的「孚能三视图工具.bat」
+启动：双击同目录的「三视图工具.bat」
 """
 from __future__ import annotations
 import json
@@ -294,7 +294,7 @@ def main():
     while True:
         clear()
         hr()
-        print("    孚能 三视图（漫反射 / 形状图1 / 形状图2）语义分割 工具集")
+        print("    客户 三视图（漫反射 / 形状图1 / 形状图2）语义分割 工具集")
         hr()
         print(f"  工程目录 : {DS}")
         print(f"  程序目录 : {APP}")

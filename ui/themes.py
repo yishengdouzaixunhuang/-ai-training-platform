@@ -362,7 +362,7 @@ def strip_colors(qss):
       `QPushButton { font-size: 10px; padding: 1px 6px; border: 1px solid #2A3A5C; }`
       这句话里，颜色该让位给主题表，**度量不该**。整段清掉后控件回落到应用级
       `QPushButton { padding: 5px 12px }` + 默认 13px 字号 —— 对一个
-      `setFixedHeight(22)` 的小按钮就是"文字上下被切掉"（Arthur 实测报的
+      `setFixedHeight(22)` 的小按钮就是"文字上下被切掉"（维护者 实测报的
       「显示不全」：按钮 111x22，字号需要 19px，扣掉 padding 后内容区只剩 10px）。
       平台上共 **19 个**控件的内联样式会被清扫，都受这个影响。
 
