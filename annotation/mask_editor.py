@@ -21,6 +21,10 @@ class AnnotationCanvas(QWidget):
     # 视图状态变化（缩放/平移/标注显示开关）。多视图预览靠它即时同步参考窗，
     # 不再依赖轮询：轮询最快也要等到下一个周期，看着就是"窗口 2/3 慢一拍"。
     view_changed = pyqtSignal()
+    # 光标在**图像上**的像素坐标（x, y）。底部「图片信息栏」的"坐标/RGB"两项靠它。
+    # 只在整数像素真的变了才发：鼠标每动一下都发信号，等于让信息栏跟着重排，
+    # 比重绘画布还贵。光标不在图内（出图 / 离开控件）发 (-1, -1) 表示"无坐标"。
+    cursor_moved = pyqtSignal(int, int)
 
     MODE_BRUSH = "brush"
     MODE_POLYGON = "polygon"
@@ -44,6 +48,7 @@ class AnnotationCanvas(QWidget):
 
         self.image = None
         self.mask = None
+        self._cursor_pt = None      # 上次上报的光标像素坐标（节流用，None = 不在图内）
         self._cached_qimage = None
         self._cached_gray = None  # cached grayscale numpy array
         # Mixed classification dual-image support
@@ -603,10 +608,16 @@ class AnnotationCanvas(QWidget):
             self._draw_status_overlay(painter)
 
     def status_info_text(self):
-        """状态信息文本（如 "1175x3739 | Pan | Class: ? | Annot:ON | ... | Width: 8"）。
+        """状态信息文本（`1175x3739 | Pan | Class: Zw | Annot:ON | Ignore:ON | Pred:OFF | Zoom: 100% | Brush: 15`）。
 
-        画布自己的叠加层和多视图模式的顶部信息栏**共用这一份**，
-        不要在两处各拼一遍字符串——两边格式一漂移就是两个互相矛盾的显示。
+        只有**画布自己的叠加层**在用（`_draw_status_overlay`），多视图模式下由
+        `set_status_overlay(False)` 关掉 —— 那种模式下这些状态改由**标注工具栏右侧**
+        承载（三个可点开关 + 一个类别格，都是控件，不是这个函数拼的字符串）。
+
+        2026-10-14：原先这里还有个 `full=False` 分支（去掉尺寸与缩放）专门给多视图顶栏用。
+        顶栏整行拆掉之后它**一个调用者都没有了**，索性删掉 —— 留一条没人走的路，
+        下一个人想接就会直接接上，于是又多出一处"同一个状态显示两遍"，
+        而那正是这次重构要消掉的毛病。
         """
         zoom_pct = 100
         try:
@@ -624,14 +635,17 @@ class AnnotationCanvas(QWidget):
             pred_status = "Pred:ON" if self._show_pred_boxes else "Pred:OFF"
         else:
             pred_status = "Pred:ON" if self._show_prediction else "Pred:OFF"
-        res = "%dx%d" % (self.image.size[0], self.image.size[1]) if self.image else "N/A"
         cls_name = "?"
         if self.label_manager is not None and 0 <= self.current_class_id < len(self.label_manager.classes):
             cls_name = self.label_manager.classes[self.current_class_id]
-        return "%s | %s | Class: %s | %s | %s | %s | Zoom: %d%% | Width: %d" % (
-            res,
-            mode_names.get(self._mode, self._mode),
-            cls_name, ann_status, ign_status, pred_status, zoom_pct, self.brush_size)
+        parts = ["%dx%d" % (self.image.size[0], self.image.size[1]) if self.image else "N/A",
+                 mode_names.get(self._mode, self._mode),
+                 "Class: %s" % cls_name, ann_status, ign_status, pred_status,
+                 "Zoom: %d%%" % zoom_pct]
+        # 笔宽：这里以前写 "Width"，而 mask_editor_part1 里同一件事写 "Brush" ——
+        # 同一个产品两个名字，用户看到会以为是两个参数。统一成 Brush。
+        parts.append("Brush: %d" % self.brush_size)
+        return " | ".join(parts)
 
     def set_status_overlay(self, enabled):
         """是否把状态信息叠加画在图像左下角（多视图模式下改由顶部信息栏显示）。"""
@@ -764,63 +778,31 @@ class AnnotationCanvas(QWidget):
         self._pred_stats_cache = stats
 
     def _draw_class_labels(self, painter):
-        """Draw class name labels at top-left corner of each annotation region."""
-        if not self._show_annotation:
+        """在每个标注区域左上角画类别名（忽略区画 IGNORE）。
+
+        实现已抽到 `core/label_overlay.paint_shape_labels` —— **多视图参考窗用的是同一份**。
+        两边各写一套必然漂移（同 `core/mask_overlay.py` 的理由），症状是"同一个标注在
+        窗口 1 和窗口 2 字号/配色不一样"。
+
+        两个开关的归属与掩膜层保持一致：
+          Ctrl+Space(_show_annotation) -> 缺陷类别标签
+          Ctrl+Alt  (_show_ignore)     -> 忽略区 IGNORE 标签
+        历史实现是"一刀切"（`_show_annotation` 一关全不画），会出现"忽略区掩膜都隐藏了、
+        IGNORE 字样还挂在图上"。
+        """
+        if not (self._show_annotation or getattr(self, "_show_ignore", True)):
             return
         if not self.current_image_path or not self.label_manager:
             return
         try:
-            json_path = os.path.splitext(self.current_image_path)[0] + ".json"
+            json_path = get_json_path(self.current_image_path)
             shapes, _ = load_labelme_json(json_path)
             if not shapes:
                 return
-            for shape in shapes:
-                try:
-                    label = shape.get("label", "")
-                    points = shape.get("points", [])
-                    if not points or len(points) < 2:
-                        continue
-                    if "ignore" in label.lower() or "gnore" in label.lower():
-                        # Draw gray "IGNORE" label instead of skipping
-                        pts = np.array(points, dtype=np.float32)
-                        cx = int(pts[:, 0].min())
-                        cy = int(pts[:, 1].min())
-                        pt = self._image_to_widget(cx, cy)
-                        wx, wy = pt.x(), pt.y()
-                        font_size = max(8, int(10 * self.zoom_level))
-                        font = QFont("Sans", font_size, QFont.Bold)
-                        painter.setFont(font)
-                        fm = QFontMetrics(font)
-                        label_text = "IGNORE"
-                        tw = fm.horizontalAdvance(label_text) + 8
-                        th = fm.height() + 4
-                        bg_rect = QRectF(wx - 2, wy - th, tw, th)
-                        painter.setPen(Qt.NoPen)
-                        painter.setBrush(QColor(80, 80, 80, 180))
-                        painter.drawRoundedRect(bg_rect, 3, 3)
-                        painter.setPen(QColor(200, 200, 200))
-                        painter.drawText(bg_rect, Qt.AlignCenter, label_text)
-                        continue
-                    # Use first point as top-left anchor
-                    pts = np.array(points, dtype=np.float32)
-                    cx = int(pts[:, 0].min())
-                    cy = int(pts[:, 1].min())
-                    pt = self._image_to_widget(cx, cy)
-                    wx, wy = pt.x(), pt.y()
-                    font_size = max(8, int(10 * self.zoom_level))
-                    font = QFont("Sans", font_size, QFont.Bold)
-                    painter.setFont(font)
-                    fm = QFontMetrics(font)
-                    tw = fm.horizontalAdvance(label) + 8
-                    th = fm.height() + 4
-                    bg_rect = QRectF(wx - 2, wy - th, tw, th)
-                    painter.setPen(Qt.NoPen)
-                    painter.setBrush(QColor(0, 0, 0, 170))
-                    painter.drawRoundedRect(bg_rect, 3, 3)
-                    painter.setPen(QColor(255, 255, 255))
-                    painter.drawText(bg_rect, Qt.AlignCenter, label)
-                except Exception:
-                    pass
+            from core.label_overlay import paint_shape_labels
+            paint_shape_labels(painter, shapes, self._image_to_widget, self.zoom_level,
+                               show_classes=bool(self._show_annotation),
+                               show_ignore=bool(getattr(self, "_show_ignore", True)))
         except Exception:
             pass
 
@@ -982,7 +964,33 @@ class AnnotationCanvas(QWidget):
         elif self._mode == self.MODE_SAM:
             self._handle_sam_click(event)
 
+    def _emit_cursor_pos(self, pos):
+        """把光标像素坐标推给底部信息栏（坐标没变就不发）。
+
+        放在 mouseMoveEvent 的**最前面**：下面几条分支（平移 / 检测层 / 未使能）都会
+        early-return，放在后面就会出现"平移时坐标不刷新"。
+        """
+        try:
+            pt = self._window_to_image(pos)
+        except Exception:
+            pt = None
+        if pt == self._cursor_pt:
+            return
+        self._cursor_pt = pt
+        if pt is None:
+            self.cursor_moved.emit(-1, -1)
+        else:
+            self.cursor_moved.emit(int(pt[0]), int(pt[1]))
+
+    def leaveEvent(self, event):
+        """光标离开控件：清掉坐标读数。留着"最后一次"的值会像是当前光标位置。"""
+        if self._cursor_pt is not None:
+            self._cursor_pt = None
+            self.cursor_moved.emit(-1, -1)
+        super().leaveEvent(event)
+
     def mouseMoveEvent(self, event):
+        self._emit_cursor_pos(event.pos())
         if self._panning:
             if self._pan_start_mouse is None:
                 return
@@ -1310,6 +1318,28 @@ class AnnotationCanvas(QWidget):
             self._show_annotation = not self._show_annotation
             self._overlay_dirty = True
             self.status_message.emit("Annotation: %s" % ("ON" if self._show_annotation else "OFF"))
+        self.update()
+        self.view_changed.emit()
+
+    def toggle_prediction_visibility(self):
+        """预测结果显示开关（与上面那个标注开关对称）。
+
+        本来是 Space 的活儿（`keyPressEvent` 里就地改字段）。抽成方法是因为
+        2026-10-14 顶栏并进底栏之后，工具栏上多了一个「预测」按钮要调它 ——
+        同一件事有两处入口时，**必须都走同一个方法**，否则"按钮亮了但状态没变"
+        或者反过来（按钮切了框、快捷键切了掩膜）迟早出现。
+        """
+        if self._det_overlay is not None:
+            self._show_pred_boxes = not self._show_pred_boxes
+            self.status_message.emit("Prediction boxes: %s"
+                                     % ("ON" if self._show_pred_boxes else "OFF"))
+        elif getattr(self, "_cls_mode", False):
+            self._show_heatmap = not getattr(self, "_show_heatmap", True)
+            self.status_message.emit("Heatmap: %s" % ("ON" if self._show_heatmap else "OFF"))
+        else:
+            self._show_prediction = not self._show_prediction
+            self.status_message.emit("Prediction: %s"
+                                     % ("ON" if self._show_prediction else "OFF"))
         self.update()
         self.view_changed.emit()
 
