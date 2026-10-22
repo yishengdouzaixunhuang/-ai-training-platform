@@ -246,14 +246,18 @@ def main():
     # ⚠️ 清扫必须等**主窗口构造完**再跑：main 这里调 apply_theme 时一个控件都还没有，
     #    那一轮清扫等于空转（已踩：启动日志里一条 swept 都没有）。
     #    用 singleShot(0) 排到事件循环第一拍，那时 UI 已经全部建好。
-    from PyQt5.QtCore import QTimer as _QTimer
     from ui.themes import sweep_inline_styles as _sweep
-    _QTimer.singleShot(0, lambda: _sweep(app, restore=False))
-    _QTimer.singleShot(1200, lambda: _sweep(app, restore=False))   # 兜底：晚建的控件
 
-    
     sys.excepthook = _write_crash
     window = MainWindow()
+    # ★★ 2026-10-22 修「启动一闪一闪」：原来用 QTimer 在 0ms 和 1200ms 各扫一次，
+    #   1200ms 那次是在**窗口已经显示之后**重新给所有控件套一遍样式 ⇒ 整窗重绘，
+    #   用户看到的就是"一闪一闪"。改成在 show() **之前**同步扫一次 ——
+    #   此时 MainWindow 已构造完、所有控件都在，扫完再显示，用户完全看不见。
+    try:
+        _sweep(app, restore=False)
+    except Exception:
+        pass
     window.show()
     sys.exit(app.exec_())
 
