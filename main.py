@@ -1,4 +1,4 @@
-﻿"""AI训练平台 - 主入口"""
+"""AI训练平台 - 主入口"""
 import sys
 import os
 import traceback
@@ -258,7 +258,14 @@ def main():
         _sweep(app, restore=False)
     except Exception:
         pass
+    # ★★ 2026-10-22 修「双击 exe 后屏幕中间一闪一闪」：
+    #   窗口 show() 之后，异步加载（图片列表 / 统计 / 各面板刷新）会陆续到达，
+    #   每一次都触发重排 ⇒ 用户看到中间那块在闪。先把窗口重绘关掉，
+    #   等这些首屏加载跑完再打开，用户看到的就是"一次成型"。
+    window.setUpdatesEnabled(False)
     window.show()
+    from PyQt5.QtCore import QTimer as _QT
+    _QT.singleShot(280, lambda: window.setUpdatesEnabled(True))
     sys.exit(app.exec_())
 
 if __name__ == "__main__":
