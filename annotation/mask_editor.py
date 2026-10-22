@@ -175,6 +175,17 @@ class AnnotationCanvas(QWidget):
         self._heatmap_qimage = None
         self._ocr_overlay = None
         self._heatmap_qimage = None
+        # ★★ 2026-10-22：换图/换工程时清掉**上一张的推理结果**
+        #   原来只清热图/OCR，`_prediction_mask` 一直留着 ⇒ 新建工程后
+        #   预览窗口还画着上个工程的预测掩膜，右侧 Result 表也是旧数据。
+        self._prediction_mask = None
+        self._prediction_qimage = None
+        self._pred_stats_cache = {}
+        try:
+            self._pred_overlay_cache.clear()
+        except Exception:
+            self._pred_overlay_cache = {}
+        self._show_prediction = False
         w, h = self.image.size
 
         # Load class names for label mapping
