@@ -2096,6 +2096,11 @@ class MainWindow(QMainWindow):
         _sync_tile_enabled()
 
         tl.addLayout(fl)
+        # 2026-10-22：面板参数持久化（用户反馈重启后参数不保留）
+        #   原来只有 Training Settings 对话框读写 .train_settings.json，
+        #   而且它的 SETTINGS_FILE 多算了一层目录（指到不存在的 AI_Training_Platform），
+        #   面板上的控件更是从没跟设置文件挂钩。
+        self._load_panel_train_settings()
         tl.addStretch()
 
         # Panel 4: Detection Tools
@@ -6042,6 +6047,103 @@ class MainWindow(QMainWindow):
         ("select_metric", "cls_select_metric_combo", "text"),
     ]
 
+    # ---------- 训练参数持久化（面板 <-> .train_settings.json）----------
+    def _train_settings_path(self):
+        return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                            ".train_settings.json")
+
+    def _load_panel_train_settings(self):
+        """把 .train_settings.json 的参数灌回面板控件（重启后保留用户设置）。"""
+        try:
+            import json as _json
+            _p = self._train_settings_path()
+            if not os.path.exists(_p):
+                return
+            with open(_p, "r", encoding="utf-8") as _f:
+                s = _json.load(_f) or {}
+            if hasattr(self, "epochs_spin"):
+                self.epochs_spin.setValue(int(s.get("epochs", 200)))
+            if hasattr(self, "batch_spin"):
+                self.batch_spin.setValue(int(s.get("batch_size", 8)))
+            if hasattr(self, "kfold_spin"):
+                self.kfold_spin.setValue(int(s.get("k_folds", 1)))
+            if hasattr(self, "resume_check"):
+                self.resume_check.setChecked(bool(s.get("resume", False)))
+            if hasattr(self, "tr_model_combo"):
+                _m = str(s.get("model", "deeplabv3"))
+                if self.tr_model_combo.findText(_m) < 0:
+                    self.tr_model_combo.addItem(_m)
+                self.tr_model_combo.setCurrentText(_m)
+            if hasattr(self, "tr_size_combo"):
+                self.tr_size_combo.setCurrentText(str(s.get("image_size", 256)))
+            if hasattr(self, "tr_loss_combo"):
+                _l = str(s.get("loss", "ce+lovasz"))
+                if self.tr_loss_combo.findText(_l) < 0:
+                    self.tr_loss_combo.addItem(_l)
+                self.tr_loss_combo.setCurrentText(_l)
+            if hasattr(self, "tr_mode_combo"):
+                self.tr_mode_combo.setCurrentIndex(
+                    0 if str(s.get("infer_mode", "fine")) == "fine" else 1)
+            if hasattr(self, "tr_tile_check"):
+                self.tr_tile_check.setChecked(bool(s.get("tile", False)))
+            if hasattr(self, "tr_tile_spin"):
+                self.tr_tile_spin.setValue(int(s.get("tile_size", 256)))
+            if hasattr(self, "tr_tile_stride_spin"):
+                self.tr_tile_stride_spin.setValue(int(s.get("tile_stride", 75)))
+        except Exception:
+            pass
+
+    def _save_panel_train_settings(self):
+        """把面板上的参数写回 .train_settings.json（关窗 / 开始训练时调用）。"""
+        try:
+            import json as _json
+            _p = self._train_settings_path()
+            s = {}
+            if os.path.exists(_p):
+                try:
+                    with open(_p, "r", encoding="utf-8") as _f:
+                        s = _json.load(_f) or {}
+                except Exception:
+                    s = {}
+            if hasattr(self, "epochs_spin"):
+                s["epochs"] = int(self.epochs_spin.value())
+            if hasattr(self, "batch_spin"):
+                s["batch_size"] = int(self.batch_spin.value())
+            if hasattr(self, "kfold_spin"):
+                s["k_folds"] = int(self.kfold_spin.value())
+            if hasattr(self, "resume_check"):
+                s["resume"] = bool(self.resume_check.isChecked())
+            if hasattr(self, "tr_model_combo"):
+                s["model"] = self.tr_model_combo.currentText()
+            if hasattr(self, "tr_size_combo"):
+                try:
+                    s["image_size"] = int(self.tr_size_combo.currentText())
+                except Exception:
+                    pass
+            if hasattr(self, "tr_loss_combo"):
+                s["loss"] = self.tr_loss_combo.currentText()
+            if hasattr(self, "tr_mode_combo"):
+                s["infer_mode"] = ("fast" if "快速" in self.tr_mode_combo.currentText()
+                                   else "fine")
+            if hasattr(self, "tr_tile_check"):
+                s["tile"] = bool(self.tr_tile_check.isChecked())
+            if hasattr(self, "tr_tile_spin"):
+                s["tile_size"] = int(self.tr_tile_spin.value())
+            if hasattr(self, "tr_tile_stride_spin"):
+                s["tile_stride"] = int(self.tr_tile_stride_spin.value())
+            with open(_p, "w", encoding="utf-8") as _f:
+                _json.dump(s, _f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
+    def closeEvent(self, event):
+        """关窗前把训练参数存盘（下次打开保留）。"""
+        try:
+            self._save_panel_train_settings()
+        except Exception:
+            pass
+        super().closeEvent(event)
+
     def _save_cls_train_settings(self):
         """Save ALL classification training settings to project dir (.cls_train_settings.json)."""
         if not self._project_dir:
@@ -7673,6 +7775,10 @@ class MainWindow(QMainWindow):
             self.tr_model_combo.setCurrentText(_keep if _keep in _want else _want[0])
             self.tr_model_combo.blockSignals(False)
 
+        try:
+            self._save_panel_train_settings()
+        except Exception:
+            pass
         settings = {
             "epochs": self.epochs_spin.value(),
             "batch_size": self.batch_spin.value(),
