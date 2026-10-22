@@ -3818,7 +3818,19 @@ class MainWindow(QMainWindow):
                     try:
                         mask = _np.array(Image.open(os.path.join(out_dir, f)))
                         unique = _np.unique(mask)
-                        pred_count[base] = len([u for u in unique if u not in (0, 255)])
+                        # ★ 2026-10-22 用户要求：这里要**块数**（连通域个数），不是类别数
+                        #   （原来 len(unique) 只有 2，而 Result 表有 39 行，两边对不上）
+                        _n = 0
+                        try:
+                            import cv2 as _cv
+                            for _c in unique:
+                                if _c in (0, 255):
+                                    continue
+                                _nl, _ = _cv.connectedComponents((mask == _c).astype(_np.uint8), 8)
+                                _n += max(0, _nl - 1)
+                        except Exception:
+                            _n = len([u for u in unique if u not in (0, 255)])
+                        pred_count[base] = _n
                         mp = os.path.join(ann_dir, base + "_mask.png")
                         if os.path.exists(mp):
                             ann = _np.array(Image.open(mp)).astype(_np.uint8)
@@ -4719,6 +4731,11 @@ class MainWindow(QMainWindow):
         #   ≈ 15000 次 item 访问 + 390 次重排 ⇒ 主线程被占死，界面白屏转圈。
         #   （py-spy dump 抓到的现场就是 MainThread 停在 _fit_stat_columns 里）
         self._fit_stat_columns(self.stats_table, headers, stretch_col=1)
+        # ★ 2026-10-22：Result(n) 用**当前这张图**的块数（原来用整个列表的 total_shapes）
+        try:
+            self._update_block_counts(result_count=len(rows))
+        except Exception:
+            pass
 
     # ────────── 统计表的列宽策略（三张表共用） ──────────
     def _fit_stat_columns(self, table, headers, stretch_col=None, min_extra=10):
@@ -5014,6 +5031,18 @@ class MainWindow(QMainWindow):
                 # 它与新的底部信息栏讲的是同一件事，且那个尺寸还是**图像自身**的、
                 # 与列表「大小」列可能不同源。删掉，只留底栏这一份。
                 self._refresh_img_info()
+                # ★ 2026-10-22：Annotation(n) 用**当前这张图**的标注形状数
+                try:
+                    _jp = os.path.splitext(path)[0] + ".json"
+                    if os.path.exists(_jp):
+                        import json as _json
+                        with open(_jp, "r", encoding="utf-8") as _jf:
+                            _ns = len((_json.load(_jf) or {}).get("shapes") or [])
+                    else:
+                        _ns = 0
+                    self._update_block_counts(ann_count=_ns)
+                except Exception:
+                    pass
                 # 换图后视图模式可能刚变（单图 <-> 多视图），底栏右端要重算一次：
                 # 「视图布局」按钮只在多视图出现、−/滑块/+ 要看还放不放得下。
                 self._schedule_fit_img_info_bar()
