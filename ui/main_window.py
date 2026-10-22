@@ -4272,11 +4272,11 @@ class MainWindow(QMainWindow):
 
         # Update accordion header counts
         self._update_hm_section_visibility()      # 列表扫完后才能确知有没有 TIF
-        self._update_accordion_counts(
-            result_count=total_shapes,
-            ann_count=total_annotated,
-            img_count=len(self._all_images),
-        )
+        # 2026-10-22：**不要**用列表级计数覆盖右侧 Result(n)/Annotation(n)
+        #   这两个数表示"当前这张图"的块数与标注数，由 _update_stats /
+        #   _load_image_by_index 单独维护。原来这里传 total_shapes/total_annotated，
+        #   列表一刷新就把当前图的值盖成全列表的值（用户看到 Result(240) 但其实 Pred:OFF）。
+        self._update_accordion_counts(img_count=len(self._all_images))
 
         # 标记相关：筛选条件回显 + 统计面板灌数据（统计用全量图，与筛选互不影响）
         self._sync_mark_filter_label()
@@ -5037,14 +5037,14 @@ class MainWindow(QMainWindow):
                 # 与列表「大小」列可能不同源。删掉，只留底栏这一份。
                 self._refresh_img_info()
                 # ★ 2026-10-22：Annotation(n) 用**当前这张图**的标注形状数
+                # Annotation(n) 用**列表里同一行的「标注」列**，保证和左栏数字一致
+                # （左栏的标注数是平台自己扫出来的，可能来自 json 也可能是 mask.png，
+                #   这里不重复实现，直接读同一份结果）
                 try:
-                    _jp = os.path.splitext(path)[0] + ".json"
-                    if os.path.exists(_jp):
-                        import json as _json
-                        with open(_jp, "r", encoding="utf-8") as _jf:
-                            _ns = len((_json.load(_jf) or {}).get("shapes") or [])
-                    else:
-                        _ns = 0
+                    _ns = 0
+                    _it = self.image_list_widget.item(idx, 4)
+                    if _it is not None and _it.text().strip():
+                        _ns = int(str(_it.text()).strip())
                     self._update_block_counts(ann_count=_ns)
                 except Exception:
                     pass
