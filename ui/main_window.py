@@ -946,6 +946,14 @@ class MainWindow(QMainWindow):
         self.image_list_widget.setColumnCount(9)
         self.image_list_widget.setHorizontalHeaderLabels(
             ["序号", "图片名", "大小", "数据集", "标注", "结果", "分数", "耗时ms", "标记"])
+        # 「分数」= 该图所有检出块的**平均模型置信度**（与 Result 表同口径），
+        # 没有置信度图（<base>_prob.png）时留空 —— 别让人误以为是 IoU。
+        try:
+            self.image_list_widget.horizontalHeaderItem(6).setToolTip(
+                "分数：本图所有检出块的平均模型置信度（0-100%）\n"
+                "没有置信度图时留空（它不再表示与标注的 IoU）")
+        except Exception:
+            pass
         # ⚠️ 不要让「标记」列当拉伸列：stretchLastSection 会把它在宽面板下拉成一大条，
         #    而它承载的是"一个色块 + 两个字"，宽度固定 54px 才是它的正确形态。
         #    多余宽度交给「图片名」（它本来就是最长的字段）。
@@ -1974,6 +1982,11 @@ class MainWindow(QMainWindow):
         il.addLayout(sl)
         self.tiled_check = QCheckBox("Tiled")
         # ★ 默认不勾 Tiled：200×200 的小图分块纯属开销（实测 PyTorch 7.1ms → 带 Tiled 8.7ms，慢 22%）
+        # ★★ 2026-10-22：**大图现在无论如何都会分块**（不勾也一样）——
+        #   "整图前向"对大图意味着先缩成一个方形，456×7041 的细长条会被压扁 7 倍，
+        #   实测焊印检出 40 → **0 块**。所以勾选框现在只决定"小图要不要也分块"。
+        self.tiled_check.setToolTip("大图始终分块（原分辨率滑窗，块=训练裁剪尺寸）；\n"
+                                    "不勾只影响小图：小图整图一次前向更快")
         saved_tiled2 = self._load_ui_setting("tiled", False)
         self.tiled_check.setChecked(saved_tiled2)
         self.tiled_check.toggled.connect(lambda v: self._save_ui_setting("tiled", v))
@@ -2627,12 +2640,19 @@ class MainWindow(QMainWindow):
             "QPushButton:!checked { color:#8A93A6; border-left:3px solid #2A3A5C; }"
         )
         lay.addWidget(head)
-        body = QWidget(); bl = QVBoxLayout(body)
+        # ★★ 2026-10-22 修「双击 exe 后屏幕中间一闪一闪」的**真凶**：
+        #    原来写的是 `body = QWidget()`（无父 ⇒ 它本身就是一个**顶层窗口**），
+        #    后面又跟了一句 `body.setVisible(True)` —— 对顶层窗口来说那等于 show()，
+        #    于是一个小窗在当前屏幕中心弹出来；紧接着 `lay.addWidget(body)` 把它收进布局
+        #    （reparent ⇒ 自动 hide），小窗又消失。每个区块闪一次，右栏 7 个区块
+        #    = 启动瞬间屏幕中间连闪 7 下（探针 _probe_startup_flash.py 实测 7 组 SHOW/HIDE）。
+        #    两处都治：构造时就带上父对象（它天生不该是窗口），并删掉那句多余的 setVisible
+        #    —— 子控件随父显示，本来就不需要单独 show。
+        body = QWidget(box); bl = QVBoxLayout(body)
         bl.setContentsMargins(7, 4, 2, 6); bl.setSpacing(3)
         for w in (widgets or []):
             if w is not None:
                 bl.addWidget(w)
-        body.setVisible(True)
         lay.addWidget(body)
         head.toggled.connect(body.setVisible)
         box._head = head
@@ -3816,6 +3836,7 @@ class MainWindow(QMainWindow):
             from detection.coco_io import load_coco_json
             pred_count = {}
             img_scores = {}
+            img_conf = {}          # base -> 平均置信度（0~1），来自 <base>_prob.png
             for f in os.listdir(out_dir):
                 # Segmentation: _pred.png masks
                 if f.endswith("_pred.png"):
@@ -3850,6 +3871,22 @@ class MainWindow(QMainWindow):
                                 if union > 0:
                                     ious.append(inter / union)
                             img_scores[base] = round(sum(ious) / len(ious), 4) if ious else 0.0
+                        # ★★ 2026-10-22 用户要求：列表「分数」列统一成**平均置信度**，
+                        #   与 Result 表「分数」同一口径（模型概率，不是与标注的 IoU）。
+                        #   置信度图由批量推理落盘（<base>_prob.png，uint8 = 概率×255）；
+                        #   没有这张图（老结果）就留空，绝不拿 IoU 冒充 0 分。
+                        pp = os.path.join(out_dir, base + "_prob.png")
+                        if os.path.exists(pp):
+                            try:
+                                prob = _np.array(Image.open(pp)).astype(_np.float32) / 255.0
+                                if prob.shape[:2] == mask.shape[:2]:
+                                    fg = (mask != 0) & (mask != 255)
+                                    if bool(fg.any()):
+                                        img_conf[base] = round(float(prob[fg].mean()), 4)
+                                    else:
+                                        img_conf[base] = 0.0
+                            except Exception:
+                                pass
                     except Exception:
                         pred_count[base] = 0
                 # Detection: _det.json boxes
@@ -3864,6 +3901,7 @@ class MainWindow(QMainWindow):
             # Update on main thread
             self._pred_count = pred_count
             self._img_scores = img_scores
+            self._img_conf = img_conf
             self._pred_count_cache_key = project_dir
             self.refresh_list_signal.emit()
         except Exception:
@@ -4178,9 +4216,11 @@ class MainWindow(QMainWindow):
             # Inference time
             infer_ms = getattr(self, "_infer_times", {}).get(base, "")
 
-            # Score
-            raw_score = getattr(self, "_img_scores", {}).get(base, None)
-            score_str = f"{raw_score:.2f}" if raw_score is not None else ""
+            # Score = 该图所有检出块的**平均模型置信度**（与 Result 表「分数」同一口径）
+            # ⚠️ 别退回用 IoU：IoU 是"和标注比"的指标，没标注的图恒为 0，
+            #    摆在这一列会被读成"模型没把握"（2026-10-22 用户实拍）。
+            _raw_conf = getattr(self, "_img_conf", {}).get(base, None)
+            score_str = ("%.1f%%" % (_raw_conf * 100.0)) if _raw_conf is not None else ""
             if self._cls_mode and cls_data is not None:
                 if isinstance(cls_data, dict) and "confidence" in cls_data:
                     score_str = f"{cls_data['confidence']:.2f}"
@@ -4649,6 +4689,17 @@ class MainWindow(QMainWindow):
             for _ac in _ann_cls:
                 _ann_bin[_ac] = (mask == _ac)
 
+        # ★★ 2026-10-22：置信度图要在**循环外**取一次。
+        #   以前循环里直接读 `canvas._pred_prob` —— 那是**单张推理**才赋值的；
+        #   批量推理走 flow，从不写这个属性 ⇒ 批量跑完 Result 表「分数」整列 0.0%
+        #   （用户实拍："推理结果应该都有分数的吧"）。
+        #   现在退化顺序：内存概率图 → outputs/<base>_prob.png（批量推理产物）。
+        _prob_map = getattr(self.canvas, "_pred_prob", None)
+        if _prob_map is None or getattr(_prob_map, "shape", None) != arr.shape:
+            _lp = self._load_prob_for_current(arr.shape[:2])
+            if _lp is not None:
+                _prob_map = _lp
+
         rows = []
         for cid in sorted(set(_np.unique(arr).tolist()) - {0, 255}):
             cls_name = (pred_classes[int(cid)] if pred_classes and int(cid) < len(pred_classes)
@@ -4676,9 +4727,7 @@ class MainWindow(QMainWindow):
                     except IndexError:
                         avg_gray = 0.0
                 # 三视图工程：同一块在**三张图**上的灰度并列显示（"，"隔开）
-                gray_text = self._gray_text_for_region(region)
-                if not gray_text.strip():
-                    gray_text = "%.1f" % avg_gray
+                gray_text = self._gray_cell_text(region, avg_gray)
                 # IoU: 与标注里"最匹配的那个类"求交并比
                 iou_val = 0.0
                 if _ann_bin:
@@ -4697,7 +4746,7 @@ class MainWindow(QMainWindow):
                 # 分数：优先用**模型置信度**（概率图里该块的平均值），
                 # 没有概率图时退回"与标注的 IoU"（并在表头体现不出来，只能靠数值判断）
                 prob_mean = None
-                prob_map = getattr(self.canvas, "_pred_prob", None)
+                prob_map = _prob_map
                 if prob_map is not None and getattr(prob_map, "shape", None) == region.shape:
                     try:
                         prob_mean = float(prob_map[region].mean())
@@ -4837,6 +4886,52 @@ class MainWindow(QMainWindow):
         cache[key] = arr
         return arr
 
+    def _load_prob_for_current(self, ref_shape):
+        """读当前图对应的**置信度图**（批量推理保存的 `outputs/<base>_prob.png`）。
+
+        为什么需要：`canvas._pred_prob` 只在**单张推理**时被赋值；批量推理走 flow，
+        结果只落盘（mask/overlay），内存里没有概率图 ⇒ Result 表「分数」退化成 IoU，
+        没标注的图上就整列 0.0%（用户实拍："推理结果应该都有分数的吧"）。
+
+        `_prob.png` 按 uint8 存的（概率 ×255），这里还原成 0~1 并缩放到统计用的显示尺寸。
+        """
+        try:
+            import numpy as _np
+            from PIL import Image as _Image
+            cur = getattr(self.canvas, "current_image_path", "") or ""
+            if not cur or not self.current_project:
+                return None
+            pd_ = str(self.pm.get_project_dir(self.current_project["name"]))
+            base = os.path.splitext(os.path.basename(cur))[0]
+            p = os.path.join(pd_, "outputs", base + "_prob.png")
+            if not os.path.exists(p):
+                return None
+            arr = _np.array(_Image.open(p))
+            if arr.ndim == 3:
+                arr = arr[:, :, 0]
+            if arr.shape[:2] != tuple(ref_shape):
+                arr = _np.array(_Image.fromarray(arr).resize(
+                    (int(ref_shape[1]), int(ref_shape[0])), _Image.BILINEAR))
+            return arr.astype(_np.float32) / 255.0
+        except Exception:
+            return None
+
+    def _gray_cell_text(self, region, avg_gray):
+        """两张统计表共用的「平均灰度」单元格文本。
+
+        ★★ 2026-10-22 用户实测反馈：**20MP 大图上整列显示「—」**。
+           原因是 `_gray_text_for_region()` 在"视图尺寸与 region 不一致"时返回的是
+           字符串 `"—"`（不是空串），而调用处写的是 `if not gray_text.strip()` ——
+           `"—"` 非空 ⇒ 回退永远不触发 ⇒ 明明 `avg_gray` 已经按显示尺寸的灰度算好了，
+           却整列不显示。
+
+           判空必须把 `"—"` 也算进去。两张表都走这里，避免又一次各写一套判断。
+        """
+        txt = self._gray_text_for_region(region)
+        if not txt or not txt.strip() or txt == "—":
+            return "%.1f" % (avg_gray or 0.0)
+        return txt
+
     def _gray_text_for_region(self, region, view_paths=None):
         """一个区域在各视图上的平均灰度，**用「，」并列**（单视图就一个值）。
 
@@ -4845,6 +4940,13 @@ class MainWindow(QMainWindow):
           同一块缺陷在漫反射 / 形状图1 / 形状图2 上各是多少灰）。
         · 尺寸对不上的视图**跳过**而不是填 0 —— 填 0 会被误读成"纯黑区域"。
         · 尺寸对不上时返回单值（退化成从前行为），不抛错。
+
+        ★★ 2026-10-22 切图卡顿：**先用文件头判断尺寸，别急着解码**。
+           统计表是在**显示尺寸**（≤2048）上算 region 的，而这些视图是原图尺寸
+           （现场那张是 4096×9320）⇒ 尺寸必然对不上、每个视图都会被 skip。
+           旧代码是"先 `_load_gray_cached()` 解码 38MB 图（实测 0.6s）→ 再发现
+           形状不匹配 → 丢掉"，一次切图白扔 0.6 秒。
+           `Image.open(...).size` 只读文件头（毫秒级），先比尺寸、对上了才解码。
         """
         import numpy as _np
         if view_paths is None:
@@ -4852,6 +4954,16 @@ class MainWindow(QMainWindow):
         vals = []
         ref_shape = region.shape[:2]
         for p in view_paths:
+            # ① 只读文件头拿尺寸（不解码）
+            try:
+                from PIL import Image as _Image
+                with _Image.open(p) as _im:
+                    _sz = _im.size
+                if (_sz[1], _sz[0]) != ref_shape:
+                    continue
+            except Exception:
+                continue
+            # ② 尺寸对得上才真正解码
             g = self._load_gray_cached(p)
             if g is None or g.shape[:2] != ref_shape:
                 continue
@@ -4910,44 +5022,222 @@ class MainWindow(QMainWindow):
         if mask is None:
             return
         import numpy as _np
-        img_gray = None
-        if self.canvas.image is not None:
-            img_arr = _np.array(self.canvas.image)
-            img_gray = _np.mean(img_arr, axis=2) if img_arr.ndim == 3 else img_arr.astype(_np.float64)
-
-        # Get class names from project
-        classes = (getattr(self, "_cached_classes", None) or ["background"])
         import cv2
+
+        classes = (getattr(self, "_cached_classes", None) or ["background"])
+        h, w = mask.shape[:2]
         rows = []
-        for cid in sorted(set(_np.unique(mask)) - {0, 255}):
-            region = (mask == cid)
-            area = int(region.sum())
-            binary = region.astype(_np.uint8) * 255
-            contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            perimeter = sum(int(cv2.arcLength(c, True)) for c in contours)
-            radius = int(_np.sqrt(area / _np.pi))
-            avg_gray = 0.0
-            if img_gray is not None and img_gray.shape[:2] == region.shape[:2]:
-                try:
-                    avg_gray = float(img_gray[region].mean())
-                except IndexError:
-                    avg_gray = 0.0
-            # 三视图工程：同一类在三张图上的灰度并列（"，"隔开）
-            gray_text = self._gray_text_for_region(region)
-            if not gray_text.strip() or gray_text == "—":
-                gray_text = "%.1f" % avg_gray
-            cls_name = classes[int(cid)] if int(cid) < len(classes) else f"Class{int(cid)}"
-            rows.append((cls_name, str(area), str(perimeter), str(radius), gray_text))
+
+        # ★★ 2026-10-22 修「标了 40 个 Hy，Annotation 表只有 1 行」：
+        #    原来这里是 `for cid in sorted(set(np.unique(mask)) - {0, 255})`
+        #    —— **一个类别一行**，把同类 40 块的面积/周长**求和**成一行
+        #    （实测那行 面积 228936 = 40 块之和，半径 269 也是按总面积反推的，
+        #     一块缺陷的真实尺寸全被抹掉了）。而「已标注 40」是 JSON 里的 shape 数，
+        #    两边口径不同 ⇒ 数字对不上，用户以为是丢标注。
+        #
+        #    现在逐**块**出行，且优先用 labelme JSON 的 shape 列表：
+        #    图片列表「标注」列、底栏「已标注 N」都是 JSON shape 数
+        #    （见 _filter_images 的 shape_count），表格必须与它们**同源**才可能永远相等。
+        #    没有 JSON 时（只有掩膜的老工程）退回"一个连通域一行"，
+        #    与右侧 Result 表的口径一致。
+        shapes = self._current_json_shapes()
+        if shapes:
+            rows = self._ann_rows_from_shapes(shapes, mask, classes)
+        if not rows:
+            rows = self._ann_rows_from_mask(mask, classes)
 
         self.ann_table.setRowCount(len(rows))
         for i, (cls_name, area, perim, rad, gray) in enumerate(rows):
-            items = [str(i+1), cls_name, area, perim, rad, gray]
+            items = [str(i + 1), cls_name, str(area), str(perim), str(rad), gray]
             for j, val in enumerate(items):
                 item = QTableWidgetItem(val)
                 item.setTextAlignment(Qt.AlignCenter)
                 self.ann_table.setItem(i, j, item)
-                # 列宽按**内容**重算一次：上面那次只按表头算，而「平均灰度」装的是三段并列值
-                self._fit_stat_columns(self.ann_table, headers, stretch_col=1)
+        # ★ 列宽只在**所有行填完**之后算一次（逐行重算会把主线程占死，见 Result 表那次白屏）
+        self._fit_stat_columns(self.ann_table, headers, stretch_col=1)
+        # 表头计数直接取行数：表格与标题再也不可能各说各话
+        try:
+            self._update_block_counts(ann_count=len(rows))
+        except Exception:
+            pass
+
+    # ────────── 标注统计的两种取数来源 ──────────
+
+    @staticmethod
+    def _is_real_shape(sh):
+        """算一条真实标注：跳过 background / ignore / 空 label。"""
+        lab = str((sh or {}).get("label", "") or "")
+        if not lab or lab == "background":
+            return False
+        low = lab.lower()
+        if "ignore" in low or "gnore" in low:
+            return False
+        return True
+
+    def _current_json_shapes(self):
+        """当前图 labelme JSON 里的真实 shape 列表（没有就返回 []）。"""
+        try:
+            from annotation.labelme_io import load_labelme_json, get_json_path
+            cur = getattr(self.canvas, "current_image_path", "") or ""
+            if not cur:
+                return []
+            jp = get_json_path(cur)
+            if not jp or not os.path.exists(jp):
+                return []
+            shapes, _info = load_labelme_json(jp)
+            return [s for s in (shapes or []) if self._is_real_shape(s)]
+        except Exception:
+            return []
+
+    def _gray_text_for_crop(self, x, y, sub, view_paths=None):
+        """一块区域内各视图的平均灰度（按 bbox 裁切后取均值）。
+
+        `_gray_text_for_region(region)` 要一整幅同尺寸的布尔图，逐块调用会为 40 块 ×
+        3 视图各扫一遍整幅图（几千万像素，必卡）。这里只用 bbox 那一小块，
+        语义不变：**尺寸对不上的视图跳过**，不填 0（填 0 会被误读成"纯黑区域"）。
+        """
+        if view_paths is None:
+            view_paths = self._view_paths_of_current_image()
+        vals = []
+        for p in view_paths:
+            g = self._load_gray_cached(p)
+            if g is None:
+                continue
+            try:
+                gs = g[y:y + sub.shape[0], x:x + sub.shape[1]]
+                if gs.shape[:2] != sub.shape[:2] or not sub.any():
+                    continue
+                vals.append(float(gs[sub].mean()))
+            except Exception:
+                continue
+        return "，".join("%.1f" % v for v in vals) if vals else "—"
+
+    def _gray_from_display(self, x, y, sub):
+        """大图（显示图已被降采样）时，按**显示图灰度**算一块的均值。
+
+        为什么不去读原图：38MP 的原图解码要 0.6s，而这一列只是给人看的量级参考。
+        显示图灰度就是 `canvas._cached_gray`（= np.mean(显示图 RGB)），
+        与 `_update_stats` 里 avg_gray 用的是**同一份数据、同一套口径**。
+        """
+        import numpy as _np
+        g = getattr(self.canvas, "_cached_gray", None)
+        sc = float(getattr(self.canvas, "_cached_qimage_scale", 1.0) or 1.0)
+        if g is None or sc <= 0 or sub is None or sub.size == 0:
+            return None
+        h, w = sub.shape[:2]
+        x0, y0 = int(round(x * sc)), int(round(y * sc))
+        wd, hd = max(1, int(round(w * sc))), max(1, int(round(h * sc)))
+        if x0 < 0 or y0 < 0 or y0 + hd > g.shape[0] or x0 + wd > g.shape[1]:
+            return None
+        try:
+            from PIL import Image as _I
+            subd = _np.array(_I.fromarray(sub.astype(_np.uint8)).resize(
+                (wd, hd), _I.NEAREST)) > 0
+            if not subd.any():
+                return None
+            return float(g[y0:y0 + hd, x0:x0 + wd][subd].mean())
+        except Exception:
+            return None
+
+    def _ann_rows_from_shapes(self, shapes, mask, classes):
+        """一个 shape 一行：面积/周长/半径/灰度 全部按**这一块**算。
+
+        一次 `shapes_to_mask` 就把所有 shape 光栅化成**各自独立的编号**
+        （临时类别名 `__s0/__s1/...`），所以只需要一次全图绘制，不用逐块重绘。
+        重叠时后来的覆盖先前的 —— 与保存掩膜时的规则完全一致。
+        """
+        import numpy as _np
+        import cv2
+        from annotation.labelme_io import shapes_to_mask
+
+        h, w = mask.shape[:2]
+        tmp = []
+        uniq = ["background"]
+        for i, sh in enumerate(shapes):
+            d = dict(sh)
+            d["label"] = "__s%d" % i
+            tmp.append(d)
+            uniq.append("__s%d" % i)
+        try:
+            idmap = shapes_to_mask(tmp, uniq, (h, w))
+        except Exception:
+            return []
+        if idmap is None:
+            return []
+
+        # bbox 一次算全：只扫一遍全图取非零像素，再按编号分组求 min/max。
+        # ⚠️ **不能用 scipy.ndimage.find_objects**（跑了才知道 aitp_venv 里没装 scipy），
+        #    也**不能逐块 np.nonzero(idmap == cid)** —— 那是每块扫一遍 6MP 全图，
+        #    40 块 = 2.4 亿次比较，实测 0.45s，切一张图就卡一下。
+        flat = idmap.reshape(-1)
+        nz = _np.flatnonzero(flat)
+        boxes = {}
+        if nz.size:
+            ids_flat = flat[nz]
+            ys_flat, xs_flat = _np.divmod(nz, w)
+            order = _np.argsort(ids_flat, kind="stable")
+            ids_flat = ids_flat[order]
+            ys_flat = ys_flat[order]
+            xs_flat = xs_flat[order]
+            bounds = _np.searchsorted(ids_flat, _np.arange(1, len(shapes) + 2))
+            for i in range(len(shapes)):
+                lo, hi = int(bounds[i]), int(bounds[i + 1])
+                if hi > lo:
+                    boxes[i + 1] = (int(xs_flat[lo:hi].min()), int(ys_flat[lo:hi].min()),
+                                    int(xs_flat[lo:hi].max()) + 1, int(ys_flat[lo:hi].max()) + 1)
+
+        rows = []
+        for i, sh in enumerate(shapes):
+            cid = i + 1
+            box = boxes.get(cid)
+            if box is None:
+                # 点 / 线这类没有面积的 shape：仍然出一行（计数要跟"我标了几个"对上）
+                rows.append((str(sh.get("label", "")), 0, 0, 0, "—"))
+                continue
+            x0, y0, x1, y1 = box
+            sub = (idmap[y0:y1, x0:x1] == cid)
+            area = int(sub.sum())
+            if area <= 0:
+                rows.append((str(sh.get("label", "")), 0, 0, 0, "—"))
+                continue
+            cnts, _ = cv2.findContours((sub.astype(_np.uint8) * 255),
+                                       cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            perimeter = sum(int(cv2.arcLength(c, True)) for c in cnts)
+            radius = int(_np.sqrt(area / _np.pi))
+            gray = self._gray_text_for_crop(x0, y0, sub)
+            if not gray or gray == "—":
+                # 大图被降采样显示时，视图尺寸与这一块对不上 ⇒ 用显示图灰度兜底
+                # （以前这里去解码原图全尺寸灰度，38MB 一张要 0.6s，纯属找死）
+                gd = self._gray_from_display(x0, y0, sub)
+                gray = ("%.1f" % gd) if gd is not None else "—"
+            rows.append((str(sh.get("label", "")), area, perimeter, radius, gray))
+        return rows
+
+    def _ann_rows_from_mask(self, mask, classes):
+        """没有 JSON 时的兜底：一个连通域一行（与 Result 表同口径）。"""
+        import numpy as _np
+        import cv2
+
+        rows = []
+        for cid in sorted(set(_np.unique(mask).tolist()) - {0, 255}):
+            cls_name = classes[int(cid)] if int(cid) < len(classes) else "Class%d" % int(cid)
+            binary = (mask == cid).astype(_np.uint8)
+            n_lab, _lab, stats, _cents = cv2.connectedComponentsWithStats(binary, 8)
+            for i in range(1, n_lab):
+                x, y, bw, bh, area = (int(v) for v in stats[i])
+                if area <= 0:
+                    continue
+                sub = (_lab[y:y + bh, x:x + bw] == i)
+                cnts, _ = cv2.findContours((sub.astype(_np.uint8) * 255),
+                                           cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                perimeter = sum(int(cv2.arcLength(c, True)) for c in cnts)
+                radius = int(_np.sqrt(area / _np.pi))
+                gray = self._gray_text_for_crop(x, y, sub)
+                if not gray or gray == "—":
+                    gd = self._gray_from_display(x, y, sub)
+                    gray = ("%.1f" % gd) if gd is not None else "—"
+                rows.append((cls_name, area, perimeter, radius, gray or "—"))
+        return rows
 
 
     def _toggle_detection_mode(self):
@@ -7752,6 +8042,27 @@ class MainWindow(QMainWindow):
         images_dir = os.path.join(project_dir, "images")
         if not os.path.exists(images_dir):
             return QMessageBox.warning(self, "Warning", "No images directory found")
+
+        # ★★ 2026-10-22：已经有训练在排队/执行时，别再起第二个。
+        #   平台只有一个 self.trainer 槽位，同时开两个必然互相顶掉
+        #   （用户实拍：点停止后下一个任务报 NoneType ... has no attribute 'train'）。
+        #   与其让它半路炸，不如在这里说清楚。
+        _q0 = getattr(self, "_task_queue", None)
+        if _q0 is not None:
+            try:
+                from ui.task_queue import TaskKind as _TK0
+                _busy = [t for t in _q0.active_tasks()
+                         if getattr(t, "kind", None) == _TK0.TRAIN]
+            except Exception:
+                _busy = []
+            if _busy:
+                return QMessageBox.information(
+                    self, "已有训练任务",
+                    "训练任务「%s」还在排队或执行中。\n\n"
+                    "平台同一时间只挂一个训练器，同时开两个会互相顶掉"
+                    "（表现就是 NoneType object has no attribute train）。\n\n"
+                    "等它跑完，或先在「任务队列」里取消它，再开始新的训练。"
+                    % _busy[0].title)
         # ★ 不再弹「Training Settings」窗（用户要求）：参数直接读面板上那几个控件。
         #   要回退成弹窗模式：把下面这段换回
         #   dlg = TrainSettingsDialog(self, project_dir=project_dir)
@@ -7831,6 +8142,14 @@ class MainWindow(QMainWindow):
         else:
             self.trainer = Trainer(project_dir, model_name=model_name)
 
+        # ★★ 2026-10-22 修「点停止后报 'NoneType' object has no attribute 'train'」：
+        #    `self.trainer` 是**共享属性**，而"上一个任务收尾清空它"和"下一个任务开始用它"
+        #    是两条并发路径。用户在一次训练还没收尾时又起了/停了任务，收尾那句
+        #    `self.trainer = None` 就把**新任务刚建好的实例**抹掉了，
+        #    新任务线程走到 `self.trainer.train()` 时自然是 None。
+        #    ⇒ 线程里必须用**局部快照**，不能到调用那一刻再去读 self.trainer。
+        _trainer_ref = self.trainer
+
         resume = settings.get("resume", False)
         self.log(f"Starting training: {model_name}, {epochs} epochs, batch={batch_size}"
                  + (f", {cv_folds}-fold CV" if cv_folds > 1 else "")
@@ -7868,7 +8187,10 @@ class MainWindow(QMainWindow):
             _cb = (lambda c, t: (_qctx.progress(c, t), self.progress_signal.emit(c, t))) \
                 if _qctx is not None else (lambda c, t: self.progress_signal.emit(c, t))
             try:
-                self.trainer.train(
+                if _trainer_ref is None:
+                    raise RuntimeError(
+                        "训练器未就绪（被上一次任务的收尾清理掉了）。请重新点「开始训练」。")
+                _trainer_ref.train(
                     epochs=epochs, batch_size=batch_size,
                     image_size=image_size, loss_name=loss_name,
                     augment=augment, k_folds=cv_folds, resume=resume,
@@ -7892,7 +8214,8 @@ class MainWindow(QMainWindow):
                 self._stop_flag = False
                 self.btn_train_stop.setEnabled(False)
                 self.train_progress.setVisible(False)
-                self._cleanup_trainer()
+                # ★ 带上本次任务的实例：别把"下一个任务刚建好的 trainer"清掉
+                self._cleanup_trainer(_trainer_ref)
 
         # ★ 进任务队列（2026-10-16）：队列串行执行，因此"再点一次训练"不会并发抢显存，
         #   而是排队；每行可单独取消。原来是直接起线程 -> 第二个任务把 self.trainer 顶掉。
@@ -7998,10 +8321,23 @@ class MainWindow(QMainWindow):
         self.det_train_progress.setVisible(False)
         self.det_train_status.setText("Ready")
 
-    def _cleanup_trainer(self):
-        if self.trainer is not None:
-            self.trainer.cleanup()
-        self.trainer = None
+    def _cleanup_trainer(self, trainer=None):
+        """收尾：释放训练器与显存。
+
+        ★★ 2026-10-22：必须**能指定是哪个实例**。原来无条件 `self.trainer = None`，
+        而"停止后收尾"和"下一个任务开始"并发 —— 上一个任务的 finally 会把
+        下一个任务刚建好的 trainer 清成 None，下一个任务随即
+        `'NoneType' object has no attribute 'train'`（用户实拍）。
+        只有"当前挂着的还是我这个实例"时才置空，别人的不动。
+        """
+        target = trainer if trainer is not None else self.trainer
+        if target is not None and hasattr(target, "cleanup"):
+            try:
+                target.cleanup()
+            except Exception as e:
+                self.log(f"[Train] 训练器清理出错（忽略）: {type(e).__name__}: {e}")
+        if self.trainer is target:
+            self.trainer = None
         import gc
         gc.collect()
         if torch.cuda.is_available():
@@ -8669,7 +9005,14 @@ class MainWindow(QMainWindow):
         pd = str(self.pm.get_project_dir(self.current_project["name"]))
         dlg = ClassDialog(pd, self)
         if dlg.exec_():
-            self._load_classes()
+            # ★ 这里**不能**用 `_load_classes()`：它会"从标注 JSON 补类别"
+            #   （`merge_classes`）。用户在对话框里删掉的类别，只要标注 JSON 里
+            #   还写着那个 label，就会被原样补回来 —— 表现是"删除无效"，
+            #   而且日志里轻描淡写一句「从标注 JSON 补入 1 个类别」，根本看不出是它干的。
+            #   对话框已经把最终表落盘了，这里只吃它交回来的那份。
+            self._cached_classes = list(getattr(dlg, "_classes", None) or self._cached_classes)
+            self._reload_canvas_classes()
+            self._refresh_class_ui()
 
     # ============ Settings ============
 

@@ -159,10 +159,12 @@ class ClassTableView(QWidget):
             header.setSectionResizeMode(col, QHeaderView.Fixed)
         self.table.setColumnWidth(0, 32)
         self.table.setColumnWidth(2, 36)
-        self.table.setColumnWidth(3, 42)
-        self.table.setColumnWidth(4, 42)
-        self.table.setColumnWidth(5, 42)
-        self.table.setColumnWidth(6, 42)
+        # ⚠️ 数字列原来一律钉 42px，但表头是「训练集/测试集/验证集」**三个汉字**
+        #    （实测需要 47px）⇒ 字被截一截。宽度该由**表头文字实际宽度**决定，不是拍整数。
+        #    为什么不在这里一次量好：构造期字体**还没定型**（主题清洗在之后才跑），
+        #    实测构造期量出 36px、清洗后需要 39px ⇒ 差 3px 又被截。
+        #    ⇒ 抽成方法，构造期 + set_classes（工程打开后字体已定型）各调一次。
+        self._fit_numeric_columns()
 
         self.table.verticalHeader().setDefaultSectionSize(28)
         self.table.currentCellChanged.connect(self._on_current_cell_changed)
@@ -215,11 +217,34 @@ class ClassTableView(QWidget):
         if self._classes:
             self.set_classes(self._classes)
 
+    def _fit_numeric_columns(self):
+        """四个数字列（训练集/测试集/验证集/空集）按**表头实际文字宽**定宽。
+
+        判据是"表头放得下"，不是拍一个整数：三个汉字在 11px 字体下需要 47px，
+        而原来一律 42px ⇒ 字被截（探针按 QFontMetrics 量出来钉住）。
+        必须在**字体定型后**调用（构造期量到的偏小），所以构造期与 set_classes 各调一次。
+        """
+        from PyQt5.QtGui import QFontMetrics as _FM
+        fm = _FM(self.table.horizontalHeader().font())
+        need = 0
+        for c in (3, 4, 5, 6):
+            it = self.table.horizontalHeaderItem(c)
+            if it is not None:
+                need = max(need, fm.horizontalAdvance(it.text()))
+        # ⚠️ 下限 48 不是随便拍的：字体在**主题清洗之后**还会变大（实测构造期量到 36px、
+        #    清洗后要39px）⇒ 只按当下字体 +8 给 44px 仍然差 3px 被截。
+        #    四个列一共多占不到 30px（类别名是Stretch，会自动收），换取"任何时候都不截"。
+        w = max(48, need + 10)
+        for c in (3, 4, 5, 6):
+            self.table.setColumnWidth(c, w)
+
     def set_classes(self, classes, colors=None):
         """Rebuild the table from a list of class names."""
         prev = self._current_idx
         self.clear()
         self._classes = list(classes)
+        # 此时字体已定型（主题清洗在窗口构造之后才跑）⇒ 这里重量一次数字列宽
+        self._fit_numeric_columns()
         counts = self._compute_counts()
         self.table.setRowCount(len(classes))
         for i, name in enumerate(classes):

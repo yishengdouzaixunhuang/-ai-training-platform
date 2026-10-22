@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>分类训练算法优化说明 · DL Studio</title>
+<style>
+:root{
+  --bg:#F4F6FA; --panel:#FFFFFF; --line:#E2E8F0; --ink:#16213A; --mut:#5C6B85;
+  --blue:#2F6FED; --green:#12855A; --amber:#B87413; --red:#C6362C; --violet:#6A4CD1;
+  --tint:#EDF2FB;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);padding:30px 34px 70px;
+  font:14px/1.7 -apple-system,"Segoe UI","Microsoft YaHei","PingFang SC",sans-serif;}
+h1{font-size:25px;margin:0 0 6px;letter-spacing:-.01em}
+h2{font-size:17px;margin:36px 0 14px;padding-left:11px;border-left:4px solid var(--blue)}
+h3{font-size:14.5px;margin:22px 0 10px;color:#2A3A5C}
+.sub{color:var(--mut);font-size:13px}
+.wrap{max-width:1180px;margin:0 auto}
+.hero{background:linear-gradient(135deg,#FFFFFF 0%,#F0F5FF 100%);border:1px solid var(--line);
+  border-radius:14px;padding:20px 24px;margin-bottom:6px;box-shadow:0 1px 3px rgba(16,24,40,.05)}
+.hero .meta{color:var(--mut);font-size:12.5px;margin-top:8px}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-top:16px}
+.kpi{background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:13px 15px}
+.kpi .t{font-size:12px;color:var(--mut);margin-bottom:5px}
+.kpi .n{font-size:21px;font-weight:680;font-variant-numeric:tabular-nums}
+.kpi .d{font-size:11.5px;color:var(--mut);margin-top:3px}
+.kpi.bad{border-left:4px solid var(--red)} .kpi.bad .n{color:var(--red)}
+.kpi.good{border-left:4px solid var(--green)} .kpi.good .n{color:var(--green)}
+.kpi.warn{border-left:4px solid var(--amber)} .kpi.warn .n{color:var(--amber)}
+table{border-collapse:separate;border-spacing:0;width:100%;background:var(--panel);font-size:13px;
+  border:1px solid var(--line);border-radius:10px;overflow:hidden}
+th,td{padding:9px 11px;border-bottom:1px solid var(--line);text-align:center;vertical-align:top}
+th{background:#EBF0F8;font-weight:640;color:#2E3E60;font-size:12.5px;white-space:nowrap}
+td:first-child,th:first-child{text-align:left}
+tr:last-child td{border-bottom:none}
+td.l{text-align:left}
+code{background:#F0F3F9;border:1px solid #E1E7F1;border-radius:4px;padding:1px 5px;
+  font:12px/1.5 "Consolas","Courier New",monospace;color:#25406E}
+.mono{font-family:"Consolas","Courier New",monospace;font-variant-numeric:tabular-nums}
+pre{background:#0F1729;color:#D7E3F7;border-radius:10px;padding:14px 16px;overflow:auto;
+  font:12px/1.62 "Consolas","Courier New",monospace}
+pre .c{color:#7C8CA8}
+pre .k{color:#7ED0FF}
+pre .w{color:#FFC46B}
+pre .g{color:#7CE0A5}
+.box{background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:14px 16px;margin:12px 0}
+.box.warn{border-left:4px solid var(--amber);background:#FFFBF3}
+.box.bad{border-left:4px solid var(--red);background:#FFF6F5}
+.box.ok{border-left:4px solid var(--green);background:#F4FBF7}
+.box .h{font-weight:660;margin-bottom:6px}
+.pill{display:inline-block;font-size:11.5px;padding:2px 8px;border-radius:20px;margin-right:5px;
+  border:1px solid var(--line);background:#F6F8FC;color:var(--mut)}
+.pill.g{background:#EAF7F0;color:var(--green);border-color:#C8E8D8}
+.pill.r{background:#FDEEEC;color:var(--red);border-color:#F5D2CE}
+.pill.a{background:#FFF6E8;color:var(--amber);border-color:#F2E0BE}
+ul{margin:8px 0 8px 20px;padding:0} li{margin:4px 0}
+.foot{margin-top:40px;color:var(--mut);font-size:12px;border-top:1px solid var(--line);padding-top:14px}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+@media(max-width:900px){.two{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<div class="hero">
+  <h1>分类训练算法优化说明</h1>
+  <div class="sub">项目：柳州国轩_3期_正面铝极_区域2_极耳分类（2 类 NG/OK · train 157 · val 53 · test 353）</div>
+  <div class="meta">对象：<code>classification/trainer.py</code> · <code>classification/dataset.py</code> · <code>ui/main_window.py</code>
+  　·　核验：<code>scripts/verify_cls_opt.py</code> <b>65/65 PASS</b>　·　2026-10-13</div>
+  <div class="kpis">
+    <div class="kpi bad"><div class="t">训练实际跑在</div><div class="n">CPU</div>
+      <div class="d">RTX 3080 = 幽灵设备（Present=False）</div></div>
+    <div class="kpi warn"><div class="t">实测单轮耗时</div><div class="n">39.0 s</div>
+      <div class="d">200 轮 ≈ 130 分钟（448×192 / bs32）</div></div>
+    <div class="kpi bad"><div class="t">「死开关」</div><div class="n">3 个</div>
+      <div class="d">LR 调度 / AMP / 增强总开关</div></div>
+    <div class="kpi bad"><div class="t">早停让训练腰斩</div><div class="n">100 / 200</div>
+      <div class="d">存档设置下只跑一半轮数</div></div>
+    <div class="kpi good"><div class="t">验证指标</div><div class="n">2 → 11</div>
+      <div class="d">加混淆矩阵/逐类/漏检/过杀</div></div>
+    <div class="kpi good"><div class="t">每轮白丢样本</div><div class="n">29 / 157</div>
+      <div class="d">18.5% → 已改为 0</div></div>
+  </div>
+</div>
+
+<h2>一、先说要紧的：比算法更影响结果的两件事</h2>
+
+<div class="box bad">
+<div class="h">1. 这张 RTX 3080 现在是「幽灵设备」，训练全程在 CPU 上跑</div>
+<table>
+<tr><th>探测项</th><th>实测值</th><th>含义</th></tr>
+<tr><td>PCI 设备记录</td><td class="mono">VEN_10DE&amp;DEV_2206&nbsp;SUBSYS_00007377</td><td class="l">NVIDIA GeForce RTX 3080（七彩虹）记录 <b>存在</b></td></tr>
+<tr><td>设备存在性</td><td class="mono">Present = False</td><td class="l">系统当前 <b>枚举不到这张卡</b></td></tr>
+<tr><td>问题码</td><td class="mono">CM_PROB_PHANTOM</td><td class="l">驱动挂着一个「曾经装过、现在不在」的残影</td></tr>
+<tr><td>torch 视角</td><td class="mono">is_available() = False</td><td class="l">训练必然走 CPU 分支</td></tr>
+<tr><td>驱动侧</td><td class="mono">cuDriverGetVersion = 12060</td><td class="l">NVIDIA 驱动包在位（CUDA 12.6），<b>不是没装驱动</b></td></tr>
+<tr><td>Win32_VideoController</td><td class="l">Intel HD Graphics 530、OrayIddDriver</td><td class="l">只有核显 + 向日葵虚拟显示器，没有 3080</td></tr>
+<tr><td>CPU</td><td class="l">Intel i7-6700（4C/8T，Skylake）</td><td class="l">无 AVX-512，无 bf16 加速</td></tr>
+</table>
+<div class="sub" style="margin-top:8px">实测：resnet18 / 448×192 / batch 32 / 157 张 → <b>单轮 39.0 s</b>，一次验证 5.0 s。
+200 轮约 <b>130 分钟</b>；若 3080 可用，同规模通常只要几分钟。</div>
+<div class="sub" style="margin-top:6px">建议先查：显卡供电/插槽是否松动、BIOS 里 Above-4G Decoding、设备管理器是否显示为未知设备或彻底消失。这是目前性价比最高的一步，不解决它，算法层优化都只是零头。</div>
+</div>
+
+<div class="box warn">
+<div class="h">2. 预训练权重缓存有两个目录，GUI 用的那个原本一个分类权重都没有</div>
+<div class="sub"><code>training/models.py</code> 里有一行
+<code>os.environ.setdefault("TORCH_HOME", ~/Documents/Codex/.torch_cache)</code>。
+于是 GUI 里训练去 <code>~/Documents/Codex/.torch_cache/hub/checkpoints</code> 找权重，
+而命令行脚本去 <code>~/.cache/torch/hub/checkpoints</code> —— 两边不通。</div>
+<table style="margin-top:10px">
+<tr><th>目录</th><th>改动前</th><th>改动后</th></tr>
+<tr><td class="l"><code>~/Documents/Codex/.torch_cache/…</code>（<b>GUI 用这个</b>）</td>
+    <td class="l">只有 1 个分割模型 <span class="mono">lraspp_mobilenet_v3_large</span></td>
+    <td class="l">resnet18 / resnet34 / resnet50 / mobilenet_v3_small / mobilenet_v3_large / efficientnet_b0</td></tr>
+<tr><td class="l"><code>~/.cache/torch/…</code>（命令行用）</td>
+    <td class="l">resnet50、mobilenet_v3_large + 2 个中断的 .partial</td>
+    <td class="l">+ resnet18</td></tr>
+</table>
+<div class="sub" style="margin-top:8px">全盘搜索 <code>resnet18*.pth</code>：改动前<b>一个都没有</b>。
+也就是说，<b>用你存档的 resnet18 + 预训练，点开始会先去 download.pytorch.org 下 45 MB</b>——
+现场网络受限时就是卡住或直接失败。现已补齐并逐个用 torchvision 的 sha256 校验通过。</div>
+<div class="sub">新增 <code>scripts/precache_cls_weights.py</code>：换模型前先跑一次
+<code>--list</code> 看状态、不带参数补齐常用 6 个、<code>--all</code> 补齐全部。</div>
+</div>
+
+<h2>二、算法层：确认「有优化空间」，已改 8 处</h2>
+
+<table>
+<tr><th style="width:15%">类别</th><th style="width:30%">问题（改动前）</th><th style="width:29%">会造成什么</th><th>已改成</th></tr>
+
+<tr>
+<td><span class="pill r">死开关</span>LR 调度</td>
+<td class="l"><code>lr_scheduler</code> / <code>warmup_epochs</code> 一路传进 <code>train()</code>、
+k-fold 转发、还写进版本归档，但<b>训练循环里从未创建调度器</b></td>
+<td class="l">UI 选 <code>cosine</code> 等于没选；
+「智能推荐训练参数」推的就是 <code>cosine + warmup 5</code> ⇒ 推了个不存在的功能</td>
+<td class="l">新增 <code>_build_scheduler()</code>：<code>none/step/cosine/plateau</code> + 线性 warmup；
+用 LambdaLR 把「第几个 epoch」写进 lambda，<b>续训也能自动对齐曲线</b>；每轮 step，plateau 按验证指标调</td>
+</tr>
+
+<tr>
+<td><span class="pill r">死开关</span>AMP</td>
+<td class="l"><code>self.scaler</code> 只看 <code>torch.cuda.is_available()</code>，
+<b>完全没读 <code>use_amp</code></b></td>
+<td class="l">UI 上勾/不勾 AMP 行为一样；将来 GPU 修好也会无视你的选择</td>
+<td class="l"><code>_amp_enabled = bool(use_amp) and cuda可用</code>；
+顺手开 <code>cudnn.benchmark</code>（固定输入尺寸下免费提速）</td>
+</tr>
+
+<tr>
+<td><span class="pill r">死开关</span>增强</td>
+<td class="l">增强总开关关掉时 UI 返回 <code>None</code>，
+Dataset 在 <code>augment_flags=None</code> 时<b>回落到内置增强</b>（翻转+±10°旋转+色彩抖动）</td>
+<td class="l">标签写着「无增强 / 原生基线」，实际仍在增强 ——
+你以为在跑对照组，其实不是</td>
+<td class="l"><code>None → {"enabled": False}</code> 真关；
+Dataset 记 <code>augment_desc</code>，自述日志里如实打出「关闭 / 内置 / 全局[..]」</td>
+</tr>
+
+<tr>
+<td><span class="pill r">真 bug</span>早停</td>
+<td class="l">先 <code>best_acc = val_acc</code>，紧接着又判 <code>val_acc &gt; best_acc</code>
+⇒ 条件<b>恒为 False</b> ⇒ <code>no_improve</code> 每轮必 +1</td>
+<td class="l">早停退化成「<b>固定跑 N 轮</b>」，与有没有提升无关。<br>
+· 你的存档：<code>epochs=200</code> + <code>early_stop=100</code> ⇒ 实际只跑 <b>100</b> 轮<br>
+· 点「智能推荐」：<code>early_stop=30</code> ⇒ 只跑 <b>30</b> 轮</td>
+<td class="l"><code>improved = cur_metric &gt; best_metric</code> 只算一次，
+同一个布尔同时驱动「存最优」与「重置计数器」</td>
+</tr>
+
+<tr>
+<td><span class="pill a">浪费</span>drop_last</td>
+<td class="l"><code>drop_last = len(train) &gt; batch</code></td>
+<td class="l">157 / batch 32 ⇒ 每轮丢掉最后 <b>29 张（18.5%）</b>。
+样本本来就只有 157 张</td>
+<td class="l">只在「尾巴小到会破坏 BN 统计」（<code>&lt; batch/4</code>）时才丢；
+默认路径下每轮 157/157 张全用</td>
+</tr>
+
+<tr>
+<td><span class="pill a">口径</span>验证指标</td>
+<td class="l">只回一个 accuracy，选最优模型也只看 accuracy</td>
+<td class="l"><b>实测证据</b>：未训练模型 <span class="mono">acc = 0.7358</span>，
+恰好等于「全判 OK」的多数类基线 <span class="mono">39/53 = 0.736</span>，
+而此时 <b>NG 召回 = 0.0000</b> —— 准确率看着挺高，缺陷一张没抓到</td>
+<td class="l">每轮算混淆矩阵、逐类 P/R/F1、macro-F1、balanced-acc、
+<b>NG 召回（漏检）</b>、<b>OK 过杀</b>；写进 history 与日志；<br>
+Loss 曲线窗新增 <b>NG Recall</b> 曲线</td>
+</tr>
+
+<tr>
+<td><span class="pill a">口径</span>选最优</td>
+<td class="l">写死 <code>val_acc</code>；验证集只有 53 张，1 张 = 1.9%</td>
+<td class="l">小验证集上 accuracy 抖动大，容易挑到「运气好」的那一轮</td>
+<td class="l">新增 <code>select_metric</code>：<code>acc</code>（<b>默认，口径不变</b>）
+/ <code>balanced_acc</code> / <code>macro_f1</code> / <code>ng_recall</code>，UI 加「Best Metric」下拉</td>
+</tr>
+
+<tr>
+<td><span class="pill">开销</span>CPU 训练</td>
+<td class="l">固定 <code>image_size</code> 时仍先按 scale_factor 缩一遍再 resize；
+<code>pin_memory=True</code> 在无 CUDA 时无意义；
+<code>num_workers=4</code> 与主进程抢同一批物理核（Windows spawn 每个 worker 要重新 import torch）</td>
+<td class="l">多一次重采样（掉画质）+ 纯开销</td>
+<td class="l">固定尺寸时跳过预缩放（<b>逐元素结果不变，只是少一次重采样</b>）；
+CPU 小数据集 → <code>workers=0</code>、<code>pin_memory=False</code>；
+CUDA → <code>workers≤4</code> + <code>persistent_workers</code></td>
+</tr>
+</table>
+
+<h3>还有一处实现错误是自测抓出来的</h3>
+<div class="box warn">
+「OK 过杀率」第一版我写成 <code>预测成 OK 但真值是 NG</code> —— 那是<b>漏检</b>方向，不是过杀。
+手算对拍时暴露（全判 OK 的场景下算出 1.0，与自己写的期望 0 矛盾），已改为
+<code>真 OK 被判成别的 = 1 − OK 召回</code>。这类方向写反的指标最危险：数字好看，含义相反。
+</div>
+
+<h2>三、新增：训练启动「自述」日志</h2>
+<div class="sub">判「跑的是哪套」只能看运行实例自述，不能看源码默认值。每次点开始先打这 10 行：</div>
+<pre><span class="c">──────── 本次训练自述（判『跑的是哪套』看这里）────────</span>
+[环境] CPU（未检测到可用 CUDA 设备） | torch 2.13.0+cu126 | CPU 线程 4 | DataLoader workers 0
+[数据] train 157（<span class="k">NG 79 / OK 78</span>）| val 53 | 起始 epoch 38 | 本轮 200 轮
+[输入] image_size=(448, 192) keep_aspect=True scale_factor=(0.5, 0.5)
+[模型] resnet18 预训练=True dropout=0.0 类别=['NG', 'OK']
+[权重] 预训练权重已缓存：resnet18-f37072fd.pth
+[优化] AdamW lr=0.0001 weight_decay=0.0001 | loss=cross_entropy label_smoothing=0.0 focal_gamma=2.0
+[调度] none（恒定 lr） | AMP 关闭（无 CUDA，CPU 上不适用） | EMA 关 | 类平衡 关
+[批次] batch=32 drop_last=False（每轮实际喂 157/157 张）
+[增强] 全局[brightness,contrast,flip] | 选最优模型指标 select_metric=acc
+<span class="c">─────────────────────────────────────────────────</span></pre>
+<div class="sub">上面这份是拿<b>你项目的存档设置</b>跑出来的真实输出（只读预演，没训练、没写任何文件）。
+注意「起始 epoch 38」——你那个 <code>resume</code> 复选框现在是勾着的。</div>
+
+<h2>四、怎么证明改对了</h2>
+<div class="sub"><code>C:\aitp_venv\Scripts\python.exe scripts/verify_cls_opt.py</code> → <b>65 / 65 PASS</b></div>
+<table>
+<tr><th style="width:16%">组</th><th style="width:10%">项数</th><th>验的是什么</th></tr>
+<tr><td class="l">A 源码级</td><td class="mono">14</td>
+<td class="l"><b>AST 核验，不用字符串包含</b>（注释能骗过包含式断言，而且以 PASS 形式骗人）：
+调度器真的被建出来、真的每轮 step；<code>_amp_enabled</code> 的取值真的用到 <code>use_amp</code>；
+早停分支真的用 <code>improved</code> 且内部不再出现 <code>val_acc</code> 比较；<code>_validate</code> 真的返回 3 元</td></tr>
+<tr><td class="l">B 指标手算</td><td class="mono">12</td>
+<td class="l">混淆矩阵 / 逐类 F1 / macro-F1 / balanced-acc / NG 召回 / OK 过杀 全部手算对拍；
+「全判 OK」场景：<b>准确率 0.5、NG 召回 0</b></td></tr>
+<tr><td class="l">C 数据管线</td><td class="mono">7</td>
+<td class="l">固定尺寸时 <code>scale_factor</code> 0.5 与 1.0 产出<b>逐元素相同</b>的张量（证明预缩放已跳过）；
+增强「关=真关」「None=仍走内置（向后兼容）」「预设 light=翻转+亮度+对比度」「验证集永不增强」</td></tr>
+<tr><td class="l">D 端到端真训</td><td class="mono">32</td>
+<td class="l">走真实 <code>ClassificationTrainer.train()</code>：
+12 轮 cosine+warmup3 的 lr 序列 <span class="mono">3.33e-3 → 6.67e-3 → 1.00e-2 → … → 3.99e-4</span>；
+早停三场景（持续提升跑满 6 轮 / 持续变差第 3 轮停 / 中途提升后重置）；
+select_metric 改变最优轮落点；drop_last 下每轮覆盖 44/44 张</td></tr>
+</table>
+
+<h2>五、等你拍板（阈值/口径我不自己定）</h2>
+<table>
+<tr><th style="width:24%">要定的事</th><th style="width:26%">当前状态</th><th>我的建议（供你选，不是已定）</th></tr>
+<tr><td class="l"><b>Best Metric 用哪个</b></td><td class="l">默认 <code>acc</code>（口径不变）</td>
+<td class="l">验证集只有 53 张、1 张 = 1.9%。做缺陷漏检建议 <code>balanced_acc</code> 或 <code>macro_f1</code>；
+只盯漏检则 <code>ng_recall</code>。换指标后<b>历史报告之间不可直接比</b></td></tr>
+<tr><td class="l"><b>Early Stop 取多少</b></td><td class="l">存档 = 100（语义已修好，现在它真的表示「100 轮没提升才停」）</td>
+<td class="l"><code>0</code>（关闭）先跑满一轮看曲线拐点，再定值；不要按旧语义的「固定轮数」估值</td></tr>
+<tr><td class="l"><b>LR 调度</b></td><td class="l">存档 = <code>none</code> + warmup 0</td>
+<td class="l">「智能推荐」本来就想给你 <code>cosine</code>+warmup，只是以前没生效。它可以开了</td></tr>
+<tr><td class="l"><b>resume 复选框</b></td><td class="l"><b>勾着</b>。checkpoint 里已有 38 轮历史（历史最好 val acc 0.8571）</td>
+<td class="l">勾着 = 从<b>第 38 轮续到 238 轮</b>，并且会<b>覆盖 8/13 的 best/last 模型</b>。
+要不要先备份 <code>models/classification/</code>，或者关掉 resume 从零训一轮？<b>这条需要你明确</b></td></tr>
+<tr><td class="l"><b>增强强度</b></td><td class="l">全局[翻转 / 亮度 / 对比度]，<code>rotate</code> 关</td>
+<td class="l">157 张偏少，建议上 light~medium。旋转对极耳这种长条缺陷是否有语义方向，你比我清楚</td></tr>
+<tr><td class="l"><b>要不要修 3080</b></td><td class="l">幽灵设备，训练在 CPU</td>
+<td class="l">第一步先看设备管理器与 BIOS/供电。修好后 200 轮从 ~2.2 小时降到几分钟，
+也才能用上 AMP 和 <code>select_metric</code> 之外更大的模型</td></tr>
+</table>
+
+<h2>六、改动清单</h2>
+<table>
+<tr><th style="width:34%">文件</th><th>改动</th></tr>
+<tr><td class="l"><code>classification/trainer.py</code></td>
+<td class="l">新增 <code>_device_is_cuda</code> / <code>_build_scheduler</code> / <code>_current_lr</code> /
+<code>_log_training_context</code> / <code>confusion_metrics</code> / <code>metric_for_selection</code> /
+<code>pretrained_weight_status</code>；<code>train()</code> 加 <code>select_metric</code>；
+修复早停计数、AMP 判定、drop_last、DataLoader 策略；<code>_validate()</code> 改回 3 元</td></tr>
+<tr><td class="l"><code>classification/dataset.py</code></td>
+<td class="l"><code>__getitem__</code> 固定尺寸时跳过预缩放；增强语义区分 <code>None</code> 与
+<code>enabled=False</code>；记录 <code>augment_desc</code></td></tr>
+<tr><td class="l"><code>ui/main_window.py</code></td>
+<td class="l">新增「Best Metric」下拉（含 4 个选项与 tooltip）、接入训练调用与设置持久化；
+Loss 曲线新增 NG Recall 曲线</td></tr>
+<tr><td class="l"><code>scripts/verify_cls_opt.py</code>（新）</td>
+<td class="l">65 项验证：AST + 手算对拍 + 数据管线 + 端到端真训</td></tr>
+<tr><td class="l"><code>scripts/precache_cls_weights.py</code>（新）</td>
+<td class="l">预训练权重预缓存（GUI 的 TORCH_HOME 口径）</td></tr>
+</table>
+
+<div class="box">
+<div class="h">顺带发现的、不在本次范围的一件事</div>
+<div class="sub"><code>crash_log.txt</code> 里 <code>_fit_ti_split</code> 的
+<code>RuntimeError: wrapped C/C++ object of type QSplitter has been deleted</code>
+今天 18:58 还在发生（就是你这个项目打开的时刻）。它是纯 UI 崩溃，与训练无关，
+但截图里那份日志已经积了 9/15 和 10/13 两次，要不要一并收掉。</div>
+</div>
+
+<div class="foot">
+改动<b>未提交 git</b>。分类相关文件：<code>classification/trainer.py</code>、<code>classification/dataset.py</code>、
+<code>ui/main_window.py</code>、<code>scripts/verify_cls_opt.py</code>、<code>scripts/precache_cls_weights.py</code>。
+本轮只做了「让死开关真的生效 + 修 bug + 加指标 + 加自述」，<b>没有动任何默认值口径</b>：
+不改 select_metric 默认、不改早停默认、不改增强默认 —— 需要你定的都在第五节。
+</div>
+
+</div>
+</body>
+</html>

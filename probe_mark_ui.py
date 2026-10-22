@@ -43,7 +43,7 @@ import time
 
 import numpy as np
 from PIL import Image
-from PyQt5.QtWidgets import (QApplication, QCheckBox, QHeaderView, QLabel, QSizePolicy,
+from PyQt5.QtWidgets import (QApplication, QCheckBox, QHeaderView, QLabel, QSizePolicy, QWidget,
                             QToolButton)
 from PyQt5.QtCore import Qt, QTimer
 
@@ -351,6 +351,172 @@ def _painted_cnt(w):
     if not _cc:
         return 0
     return _img.width() * _img.height() - _cc.most_common(1)[0][1]
+
+
+def _check_system_monitor(win, ck, pump, app):
+    """底栏资源占用：口径必须**与任务管理器对得上**，否则用户会以为"不同步"。
+
+    2026-10-15 用户拿底栏和任务管理器比，发现对不上。逐项核实：
+      · 内存：口径本来就一致（psutil.used/total vs 任务管理器 "13.9/31.8 GB"）
+      · CPU：psutil.cpu_percent(interval=None) 语义是"距上次调用的均值"，
+        定时器被阻塞时那个窗口会被拉长 ⇒ 改成后台线程固定 1s 采样
+      · 磁盘：原来只显示 `C: 86%`（**空间已用率**），而任务管理器那个 1% 是
+        **I/O 活动率** —— 同名不同义，必然对不上 ⇒ 现在两个都给
+      · GPU：无 CUDA 时要**明说"不可读"**，静默消失会让人误判成"没占用"
+    """
+    # ⚠️ 控件在产品里的属性名是 `_sys_monitor`（main_window:484），
+    #    写错名字会拿到 None 而"假装通过"—— 所以这里先按真名取，再回退扫描。
+    mon = getattr(win, "_sys_monitor", None)
+    if mon is None:
+        for nm in dir(win):
+            if "mon" in nm.lower() and hasattr(getattr(win, nm, None), "text"):
+                mon = getattr(win, nm)
+                break
+    ck("底栏存在资源占用控件（SystemMonitor）",
+       mon is not None and hasattr(mon, "text"), str(mon))
+    if mon is None or not hasattr(mon, "text"):
+        return
+    pump(app, 1.2)                      # 等后台线程出第一个样本
+    mon._refresh()
+    txt = mon.text()
+    ck("★ CPU 分「整机 / 本进程」两项（训练时要看自己吃多少）",
+       "CPU:" in txt and "进程:" in txt, txt)
+    ck("★ 磁盘分「空间 / IO」两个口径（同名不同义是对不上的根因）",
+       "空间" in txt and "IO " in txt, txt)
+    ck("★ GPU 有明确交代：读得到就显示用量，读不到必须写「不可读」",
+       ("GPU" in txt) and ("不可读" in txt or "GB" in txt), txt)
+    ck("★ 内存保留 GB 数值（与任务管理器同格式，便于对照）",
+       "内存:" in txt and "GB" in txt, txt)
+    # 采样线程必须在跑，且不阻塞 UI：线程活着 + 能取到快照
+    smp = getattr(getattr(mon, "_sampler", None), "is_alive", lambda: False)()
+    ck("★ 采样线程活着（CPU 采样挪到后台线程，不卡 UI）", smp, "alive=%s" % smp)
+
+
+def _check_task_queue(win, ck, pump, app):
+    """任务队列（左栏第三页）：结构 + 行显示 + 取消 + 清空。
+
+    钉这几条的缘由：队列页最容易被"看着有了、其实没接线"糊弄过去 ——
+      · 页签能切但页里是空的（面板没加进页栈）
+      · 任务登记了但行不刷新（on_change 没挂上/ 跨线程直接碰控件）
+      · × 按钮只是摆设（没连到队列的 request_cancel）
+    """
+    from ui.task_queue import TaskKind as _TK, TaskState
+    q = getattr(win, "_task_queue", None)
+    ck("★ 主窗口持有任务队列对象", q is not None, str(q))
+    panel = getattr(win, "task_queue_panel", None)
+    ck("★ 队列表控件已创建并挂在页栈第 3 页",
+       panel is not None and panel.parent() is not None, str(panel))
+    if q is None or panel is None:
+        return
+    ck("★ 面板绑的就是主窗口那个队列（不是另建一个）",
+       getattr(panel, "_queue", None) is q)
+    # 行显示：登记一个假任务，看行数/文字
+    t = q.submit(_TK.TRAIN, "探针任务_训练", project="夹具", total=10, detail="自测")
+    pump(app, 0.4)
+    rows = panel._rows
+    ck("★ 提交任务后面板真的长出一行", len(rows) == 1, str(len(rows)))
+    if rows:
+        r = rows[t.id]
+        ck("★ 行里显示了类型/标题/进度/剩余时间",
+           "训练" in r["kind"].text() and "探针任务" in r["title"].text()
+           and r["status"].text().strip() != "",
+           "%s|%s|%s" % (r["kind"].text(), r["title"].text(), r["status"].text()))
+    # 进度推进 -> 行内文字跟着变（不是只建行不更新）
+    # 没在跑的任务不经过 ctx，直接推进度字段（模拟回调已到达的状态）
+    t.done, t.total = 5, 10
+    q._notify()
+    pump(app, 0.4)
+    ck("★ 推进度后行内进度% 跟着更新",
+       "50.00%" in panel._rows[t.id]["status"].text(),
+       panel._rows[t.id]["status"].text())
+    # × 按钮 -> 真的请求取消
+    # ⚠️ 用 isHidden() 而不是 isVisible()：队列页不是当前页时，整页控件在 Qt 眼里
+    #    就是"不可见"，isVisible() 会给出假失败（同一天第二次踩这个坑）。
+    ck("★ 已完成任务的 × 按钮**隐藏**（结束了就不该还能取消）",
+       panel._rows[t.id]["btn_x"].isHidden())
+    # 取消要用**真正在跑**的任务：run=None 的任务会被队列立刻标成 done，
+    # 而"已结束的任务不可取消"是设计如此（不然会给出假的取消成功）。
+    import threading as _th
+    _gate = _th.Event()
+
+    def _hold(ctx):
+        # ⚠️ 这里**不能**写 `if ctx.canceled: break` —— 那样会在 check_cancel() 之前
+        #   跳出循环、函数**正常返回**，队列就记成 done 而不是 canceled（我踩过：
+        #   探针报"被取消后状态是 done"，查下来是测试夹具自己把取消吞了）。
+        for _i in range(200):
+            ctx.check_cancel()# 被取消时这里抛_CCanceled
+            _gate.wait(0.05)
+    t2 = q.submit(_TK.INFER, "探针任务_推理", total=50, run=_hold)
+    pump(app, 0.5)
+    ck("★ 在跑的任务 × 可点", not panel._rows[t2.id]["btn_x"].isHidden())
+    win._on_task_cancel(t2.id)
+    pump(app, 0.4)
+    ck("★ 点 × 后任务被请求取消（cancel_requested 置位）", t2.cancel_requested,
+       t2.state.value)
+    ck("★ 被取消后状态转 canceled（不是 failed）",
+       wait_until(app, lambda: t2.state is TaskState.CANCELED, 6), t2.state.value)
+    _gate.set()
+    pump(app, 0.3)
+    # ★ 布局一致性（这一类问题最阴：肉眼只看到"只有一行 + 大片空白"）
+    _boxes = [w for w in panel.findChildren(QWidget) if w.objectName() == "taskRow"]
+    ck("★ 面板里的 taskRow 数与队列可见任务数一致（没有幽灵行/ 漏行）",
+       len(_boxes) == len(panel.visible_tasks()),
+       "DOM 里 %d 个 / 可见任务 %d 个" % (len(_boxes), len(panel.visible_tasks())))
+    ck("★ 每行高度正常（<=80px，不被拉成大空卡片）",
+       all(w.height() <= 80 for w in _boxes) if _boxes else True,
+       str([w.height() for w in _boxes]))
+    ck("★ 空任务时显示提示、有任务时不显示",
+       (not panel.visible_tasks()) == panel.empty_label.isVisible(),
+       "empty=%s tasks=%d" % (panel.empty_label.isVisible(), len(panel.visible_tasks())))
+
+    # 清空
+    q.clear_finished()
+    # 刷新是**异步**的（QTimer 投递到 UI 线程）⇒ 必须条件等待，
+    # 固定 sleep 在负载高时会偶发失败（那种 flaky 最费时间）
+    _gone = wait_until(app, lambda: t.id not in panel._rows, 4.0)
+    ck("★ 清空后（已结束的任务）行被移除", _gone,
+       "rows=%s tasks=%s" % (list(panel._rows), [x.id for x in q.tasks]))
+
+
+def _check_table_columns(win, ck):
+    """三张统计表的列宽：**每一列都必须放得下自己的表头**，否则就是截断。
+
+    为什么值得钉：原实现给所有列 setSectionResizeMode(Stretch) ⇒ 等分。
+    Result 表 10 列挤在右栏 ~590px，每列才 59px，而「平均灰度」要装
+    `114.5，188.2，68.3`（约 120px）⇒ 被截成 "114.5，…"，功能等于白做；
+    表头"平均灰度/交并比"四个字本身也放不下。
+    判据用 QFontMetrics 量表头实际文字宽 + 余量，而不是"列数对不对"。
+    """
+    from PyQt5.QtGui import QFontMetrics
+    for name in ("class_list", "ann_table", "stats_table"):
+        # ⚠️ `class_list` 是**包装控件**（ClassTableView），真正的 QTableWidget 在 .table 里；
+        #    当成表格用会 AttributeError 把整个探针带崩（只跑 27 条就退出）。
+        t = getattr(win, name, None)
+        t = getattr(t, "table", t)          # 包装控件 -> 里面的真表格
+        if t is None or not hasattr(t, "columnCount") or t.columnCount() == 0:
+            ck("%s 表存在且有列（列宽才有意义）" % name, False,
+               "对象=%s 列数=%s" % (t, t.columnCount() if t else None))
+            continue
+        hdr = t.horizontalHeader()
+        fm = QFontMetrics(hdr.font())
+        bad = []
+        for i in range(t.columnCount()):
+            hi = t.horizontalHeaderItem(i)
+            txt = hi.text() if hi is not None else ""
+            need = fm.horizontalAdvance(txt) + 8
+            if t.columnWidth(i) < need:
+                bad.append((txt, t.columnWidth(i), int(need)))
+        ck("%s 表：每一列都放得下自己的表头（无截断）" % name, not bad,
+           "放不下的列：%s" % bad)
+        # 「平均灰度」列还要放得下三段并列值
+        _h = [(t.horizontalHeaderItem(i).text() if t.horizontalHeaderItem(i) else "")
+              for i in range(t.columnCount())]
+        if "平均灰度" in _h:
+            _ci = _h.index("平均灰度")
+            _cell = (t.item(0, _ci).text() if t.rowCount() > 0 and t.item(0, _ci) else "")
+            ck("%s 表：「平均灰度」列放得下三视图并列值（如 114.5，188.2，68.3）" % name,
+               t.columnWidth(_ci) >= 110 or "，" not in (_cell or ""),
+               "列宽=%d 首行=%r" % (t.columnWidth(_ci), _cell))
 
 
 def _check_panel_handles(win, pump, ck, app):
@@ -1598,6 +1764,12 @@ def main():
             pump(app, 0.3)
 
         # ④ 底栏右端：−/滑块/+ 与读数（照友商摆在同一栏最右端）
+        # ★ 列宽断言放这里：此时掩膜/预测已加载、三张表**有内容**。
+        #   放在窗口刚构造完的位置会静默跳过「平均灰度」那条 —— 那时表还没填数据，
+        #   列头里根本没有这一列（断言"没跑"和"跑过了"在结果里长得一样）。
+        _check_task_queue(win, ck, pump, app)
+        _check_table_columns(win, ck)
+        _check_system_monitor(win, ck, pump, app)
         ck("%s：底栏右端有 −/滑块/+ 与百分比读数" % tag,
            all(hasattr(win, n) for n in ("_zoom_out_btn", "_zoom_slider",
                                          "_zoom_in_btn", "_zoom_pct")), "缺件")
@@ -1718,13 +1890,13 @@ def main():
         最后一条只有**数像素**才抓得到，所以下面专门留了一条像素级断言。
         """
         btns = getattr(win, "_left_tab_btns", {}) or {}
-        ck("左栏页签是两个（工程管理 / 图像管理）",
-           set(btns) == {"proj", "img"}, str(sorted(btns)))
+        ck("左栏页签是三个（工程管理 / 图像管理 / 任务队列）",
+           set(btns) == {"proj", "img", "task"}, str(sorted(btns)))
         ck("左栏页签文字是**竖排**（一个字一行，与右栏同款）",
            bool(btns) and all("\n" in b.text() for b in btns.values()),
            str({k: b.text().replace("\n", "|") for k, b in btns.items()}))
-        ck("左栏页栈是两页（工程列表 / 图片列表）",
-           win._left_stack.count() == 2, str(win._left_stack.count()))
+        ck("左栏页栈是三页（工程列表 / 图片列表 / 任务队列）",
+           win._left_stack.count() == 3, str(win._left_stack.count()))
 
         # ① 切页本身可用（默认值在更早处断言 —— 那里是**构造完、还没打开工程**的真·默认态）
         win.show_left_tab("img")

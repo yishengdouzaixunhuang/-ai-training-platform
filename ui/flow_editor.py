@@ -341,7 +341,10 @@ class ParamPanel(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
         self.title = QLabel("未选择节点")
-        self.title.setStyleSheet("font-weight: bold; color: #ddd;")
+        # ⚠️ 原本写死 color:#ddd —— 深色主题下没问题，但 ParamPanel 的底色是**主题表**给的
+        #    （浅色主题 -> 浅灰），浅灰字压浅底就是"看不清"。字重留着，颜色交给主题表
+        #    （深色 -> #E6F0FF，浅色 -> #1A2233，两边都可读）。
+        self.title.setStyleSheet("font-weight: bold;")
         layout.addWidget(self.title)
         self._form_host = QWidget()
         self._form = QFormLayout(self._form_host)
@@ -462,7 +465,11 @@ class FlowEditorWidget(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
 
         tb = QWidget()
-        tb.setStyleSheet("QWidget { background: #2b2b30; }")
+        # ⚠️ 这段深色皮肤**不会**被 themes.py 的 sweep_inline_styles 清掉（#2b2b30 不在
+        #    主题色白名单里），所以浅色主题下这里仍然是深灰。既然如此，文字色就必须
+        #    **显式**写出来 —— 否则工具栏按钮会拿到应用级浅色主题的深字
+        #    （QPushButton -> #1A2233），深字压深底 = 看不清。
+        tb.setStyleSheet("QWidget { background: #2b2b30; color: #D6E4FF; }")
         tbh = QHBoxLayout(tb)
         tbh.setContentsMargins(6, 4, 6, 4)
         tbh.setSpacing(6)

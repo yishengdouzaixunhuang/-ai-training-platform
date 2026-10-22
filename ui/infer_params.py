@@ -1,34 +1,43 @@
 # -*- coding: utf-8 -*-
-"""推理参数面板（对标友商 友商平台 的「推理参数」）。
+"""推理参数面板（对标友商 iCogtiveFlow / 友商平台 的「推理参数」）。
 
 面板布局照友商的来：**类别下拉 + 一组 min~max 区间 + Apply All**，
 所以同一时间只显示一个类别的参数，改完即存（防抖 600ms 写 inference_params.json）。
+现在有 **7 组按类别的区间**（分数/面积/宽度/高度/角度/灰度/半径）
++ **1 个全局的过滤维**（中心半径）+ 孔洞填充/排序/最大检测个数 —— 合计八维过滤。
+
+每行右侧的勾选框是该维的启用开关，**默认全开**（维护者 2026-10-14 拍板）。
+关掉某一维时它的区间值原样保留，下次勾回来不用重填。
 
 为什么不做成"一张大表、每类一行"：友商就是这么做的（一次看一个类别），
-区间有 6 组共 12 个数字框，横着排一行会挤成看不清；竖着一类一块又太长。
+区间有 7 组共 14 个数字框，横着排一行会挤成看不清；竖着一类一块又太长。
 """
 from __future__ import annotations
 
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QComboBox,
-    QDoubleSpinBox, QSpinBox, QPushButton, QGroupBox,
+    QDoubleSpinBox, QSpinBox, QPushButton, QGroupBox, QCheckBox,
 )
 
 from inference.params import (
-    RANGE_KEYS, SORT_CHOICES, default_class_params, load_params, save_params,
+    ENABLE_KEY, RANGE_KEYS, SORT_CHOICES, default_class_params, load_params, save_params,
 )
 
 _NO_LIMIT_TIP = "上限填负数表示「不限」（与友商一致）\n角度上下限都为 -180 时表示不过滤角度"
+_ENABLE_TIP = "该维是否参与过滤（默认全开）。关掉后区间值会保留，勾回来不用重填。"
 
 
 class InferParamsPanel(QGroupBox):
-    """推理参数：按类别过滤连通域（面积/宽度/高度/角度/灰度/分数）+ 全局后处理。"""
+    """推理参数：八维过滤 —— 按类别过滤连通域（分数/面积/宽/高/角度/灰度/半径）
+    + 全局（中心半径/孔洞填充/排序/最大检测个数）。"""
 
     params_changed = pyqtSignal()
 
     def __init__(self, parent=None):
-        super().__init__("推理参数", parent)
+        # ★ 原标题也是「推理参数」，和外层折叠标题重复 → 面板上看着像两个块。
+        #   改成「结果过滤」：外层说"这块叫推理参数"，这里说"其中这段是过滤"。
+        super().__init__("结果过滤", parent)
         self._project_dir = None
         self._params = None
         self._loading = False
@@ -55,9 +64,10 @@ class InferParamsPanel(QGroupBox):
         top.addWidget(self.apply_all_btn)
         root.addLayout(top)
 
-        # ── 6 组区间 ──
+        # ── 7 组区间（每行右侧一个启用勾选框） ──
         grid = QGridLayout(); grid.setHorizontalSpacing(6); grid.setVerticalSpacing(2)
         self._spins = {}
+        self._enables = {}
         for row, (key, label, _default) in enumerate(RANGE_KEYS):
             grid.addWidget(QLabel(label + ":"), row, 0)
             lo = QDoubleSpinBox(); hi = QDoubleSpinBox()
@@ -71,6 +81,11 @@ class InferParamsPanel(QGroupBox):
             grid.addWidget(lo, row, 1)
             grid.addWidget(QLabel("~"), row, 2)
             grid.addWidget(hi, row, 3)
+            chk = QCheckBox()
+            chk.setChecked(True)
+            chk.setToolTip(_ENABLE_TIP)
+            chk.toggled.connect(self._on_value_changed)
+            grid.addWidget(chk, row, 4)
             if key == "angle":
                 tip = ("角度归一到 -45~45：0 = 横平竖直，±45 = 45° 斜；\n"
                        "上下限都填 -180 表示不看角度")
@@ -81,7 +96,13 @@ class InferParamsPanel(QGroupBox):
             elif key == "score":
                 tip = "分数 = 连通域内的平均置信度；\n当前推理后端没有概率图时会自动跳过这一项（日志里会写明）"
                 lo.setToolTip(tip); hi.setToolTip(tip)
+            elif key == "radius":
+                tip = ("半径 = 连通域等效半径 sqrt(面积/π)。\n"
+                       "与「面积」等价（半径大 ⇔ 面积大），保留它是为了对齐友商的八维面板 ——\n"
+                       "按半径调还是按面积调，挑一个口径统一就行，别两边同时收紧")
+                lo.setToolTip(tip); hi.setToolTip(tip)
             self._spins[key] = (lo, hi)
+            self._enables[key] = chk
         root.addLayout(grid)
 
         # ── 全局后处理 ──
@@ -94,10 +115,15 @@ class InferParamsPanel(QGroupBox):
         g.addWidget(self.hole_spin, 0, 1)
         g.addWidget(QLabel("中心半径:"), 0, 2)
         self.radius_spin = QSpinBox(); self.radius_spin.setRange(0, 100000)
-        self.radius_spin.setToolTip("等效半径 sqrt(面积/π) 的下限（0=关）")
+        self.radius_spin.setToolTip("等效半径 sqrt(面积/π) 的全局下限（0=不设下限）")
         self.radius_spin.setKeyboardTracking(False)
         self.radius_spin.valueChanged.connect(self._on_value_changed)
         g.addWidget(self.radius_spin, 0, 3)
+        self.center_radius_chk = QCheckBox()
+        self.center_radius_chk.setChecked(True)
+        self.center_radius_chk.setToolTip(_ENABLE_TIP)
+        self.center_radius_chk.toggled.connect(self._on_value_changed)
+        g.addWidget(self.center_radius_chk, 0, 4)
         g.addWidget(QLabel("排序:"), 1, 0)
         self.sort_combo = QComboBox(); self.sort_combo.addItems(SORT_CHOICES)
         self.sort_combo.currentTextChanged.connect(self._on_value_changed)
@@ -114,7 +140,7 @@ class InferParamsPanel(QGroupBox):
         self.reset_btn = QPushButton("恢复默认")
         self.reset_btn.clicked.connect(self._reset_current)
         bottom.addWidget(self.reset_btn)
-        self.hint = QLabel("上限填负数=不限")
+        self.hint = QLabel("上限填负数=不限；右侧勾选=该维是否参与过滤")
         self.hint.setStyleSheet("color:#8A93A6; font-size:10px;")
         bottom.addWidget(self.hint, 1)
         root.addLayout(bottom)
@@ -141,7 +167,7 @@ class InferParamsPanel(QGroupBox):
         if not self._classes:
             self.hint.setText("该工程还没有类别（先导入标注 JSON）")
         else:
-            self.hint.setText("上限填负数=不限")
+            self.hint.setText("上限填负数=不限；右侧勾选=该维是否参与过滤")
 
     def current_params(self):
         return self._params
@@ -156,13 +182,16 @@ class InferParamsPanel(QGroupBox):
         rng = self._cls_params(name)
         self._loading = True
         try:
+            on = rng.get(ENABLE_KEY) if isinstance(rng.get(ENABLE_KEY), dict) else {}
             for key, _label, _d in RANGE_KEYS:
                 lo, hi = self._spins[key]
                 v = rng.get(key) or list(default_class_params()[key])
                 lo.setValue(float(v[0])); hi.setValue(float(v[1]))
+                self._enables[key].setChecked(bool(on.get(key, True)))
             g = self._params.get("global") or {}
             self.hole_spin.setValue(int(g.get("hole_fill", 0) or 0))
             self.radius_spin.setValue(int(g.get("center_radius", 0) or 0))
+            self.center_radius_chk.setChecked(bool(g.get("center_radius_on", True)))
             idx = self.sort_combo.findText(str(g.get("sort", "面积降序")))
             self.sort_combo.setCurrentIndex(idx if idx >= 0 else 0)
             self.maxdet_spin.setValue(int(g.get("max_det", 99999) or 99999))
@@ -182,9 +211,12 @@ class InferParamsPanel(QGroupBox):
         for key, _label, _d in RANGE_KEYS:
             lo, hi = self._spins[key]
             rng[key] = [lo.value(), hi.value()]
+        # 各维启用开关存进类别参数（与区间同层，"on" 子字典）
+        rng[ENABLE_KEY] = {k: bool(self._enables[k].isChecked()) for k, _l, _d in RANGE_KEYS}
         g = self._params.setdefault("global", {})
         g["hole_fill"] = self.hole_spin.value()
         g["center_radius"] = self.radius_spin.value()
+        g["center_radius_on"] = bool(self.center_radius_chk.isChecked())
         g["sort"] = self.sort_combo.currentText()
         g["max_det"] = self.maxdet_spin.value()
         self._save_timer.start()
@@ -193,9 +225,14 @@ class InferParamsPanel(QGroupBox):
     def _apply_all(self):
         if self._params is None or not self._current:
             return
-        rng = dict(self._cls_params(self._current))
+        src = self._cls_params(self._current)
+        # 深拷贝：区间是 list、启用表是 dict，用 list(v) 会把 dict 变成键列表，
+        # 静默把"启用表"写坏成 ["score","area",...] —— 之后 _enabled_of 读到的
+        # on 不是 dict，于是**悄悄回到全开**，操作员关掉的维又自己开了。
         for c in self._classes:
-            self._params["classes"][c] = {k: list(v) for k, v in rng.items()}
+            self._params["classes"][c] = {
+                k: (dict(v) if isinstance(v, dict) else list(v)) for k, v in src.items()
+            }
         self._save_timer.start()
         self.params_changed.emit()
 

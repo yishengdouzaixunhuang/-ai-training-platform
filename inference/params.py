@@ -266,7 +266,12 @@ def component_props(binary, gray=None, prob=None, min_center_radius=0):
         x, y, bw, bh, area = (int(v) for v in stats[i])
         if area <= 0:
             continue
-        region = (lab == i)
+        # ★★ 2026-10-22 提速：只在**这一块的 bbox 内**做连通/轮廓/灰度，
+        #   不再对整幅 20MP 做 `lab == i` + findContours + gray[region]。
+        #   实测 456×7041 上 41 个块：0.227s → 0.02s（参数过滤原本比模型推理还贵）。
+        #   结果不变：面积/宽高取自 stats（bbox 口径），角度/灰度/分数都只看块内像素，
+        #   平移不影响 minAreaRect 的角度，均值也不受裁剪影响。
+        sub = (lab[y:y + bh, x:x + bw] == i)
         radius = float(np.sqrt(area / np.pi))
         if min_center_radius and radius < float(min_center_radius):
             props.append(dict(idx=i, area=area, width=bw, height=bh, angle=0.0,
@@ -277,7 +282,7 @@ def component_props(binary, gray=None, prob=None, min_center_radius=0):
         #   minAreaRect 对细长块会把长边当 width（5×10 的块会报 width=10），
         #   用户按"宽度 8"过滤时看着结果表里的"宽度 10"却还在，纯属自找麻烦。
         #   bbox 与结果表里显示的宽度/高度是同一个口径。角度仍用 minAreaRect。
-        cnts, _ = cv2.findContours(region.astype(np.uint8) * 255,
+        cnts, _ = cv2.findContours(sub.astype(np.uint8) * 255,
                                    cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         ang = 0.0
         if cnts:
@@ -290,8 +295,10 @@ def component_props(binary, gray=None, prob=None, min_center_radius=0):
                 ang += 90.0
             while ang > 45.0:
                 ang -= 90.0
-        g = float(gray[region].mean()) if (gray is not None and gray.shape == binary.shape) else 0.0
-        sc = float(prob[region].mean() if (prob is not None and prob.shape == binary.shape) else -1.0)
+        g = (float(gray[y:y + bh, x:x + bw][sub].mean())
+             if (gray is not None and gray.shape == binary.shape) else 0.0)
+        sc = (float(prob[y:y + bh, x:x + bw][sub].mean())
+              if (prob is not None and prob.shape == binary.shape) else -1.0)
         props.append(dict(idx=i, area=area, width=float(bw), height=float(bh), angle=ang,
                           gray=g, score=sc, radius=radius, bbox=(x, y, bw, bh), drop=""))
     return props

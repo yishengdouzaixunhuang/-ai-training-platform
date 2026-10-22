@@ -93,10 +93,14 @@ def _get_label(base, path, mapping_dict):
 
 
 def _check_split(base, split, split_map):
-    """Check if sample belongs to requested split."""
+    """Check if sample belongs to requested split.
+
+    ★ 2026-10-22：默认值从 "train" 改成 None —— 未划分 = 不属于任何集，
+    与 training/dataset.py、classification/dataset.py 同一口径。
+    """
     if split == "all":
         return True
-    file_split = split_map.get(base, "train")
+    file_split = split_map.get(base)
     return file_split == split
 
 
@@ -119,6 +123,13 @@ class MixedClassificationDataset(Dataset):
         # If no pairs found or labels are None, try ImageFolder
         if self.samples and self.samples[0][2] is None:
             self.samples = self._resolve_imagefolder_labels()
+
+        # ★ 同 classification/dataset.py：未划分 = 空集，训练集 0 张要当场说清
+        if split == "train" and not self.samples:
+            raise RuntimeError(
+                "训练集为空：没有任何一对图（灰度/高度）被划分到 train。\n\n"
+                "请先打开「工具 → 数据集划分管理…」显式划分，再开始训练。\n"
+                "（未划分的图不属于任何集）")
 
         # Determine num_classes
         label_ids = set(s[2] for s in self.samples if s[2] is not None)

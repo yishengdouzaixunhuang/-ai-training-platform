@@ -1,0 +1,774 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>友商 iCogtiveFlow 借鉴分析 · 逐项对照 DL Studio</title>
+<style>
+:root{
+  --bg:#F4F6FA; --panel:#FFFFFF; --line:#E2E8F0; --ink:#16213A; --mut:#5C6B85;
+  --blue:#2F6FED; --green:#12855A; --amber:#B87413; --red:#C6362C; --violet:#6A4CD1;
+  --tint:#EDF2FB;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);padding:30px 34px 70px;
+  font:14px/1.7 -apple-system,"Segoe UI","Microsoft YaHei","PingFang SC",sans-serif;}
+h1{font-size:25px;margin:0 0 6px;letter-spacing:-.01em}
+h2{font-size:17px;margin:36px 0 14px;padding-left:11px;border-left:4px solid var(--blue)}
+h3{font-size:14.5px;margin:22px 0 10px;color:#2A3A5C}
+h4{font-size:13.5px;margin:16px 0 8px;color:#3A4A6C}
+.sub{color:var(--mut);font-size:13px}
+.wrap{max-width:1220px;margin:0 auto}
+.hero{background:linear-gradient(135deg,#FFFFFF 0%,#F0F5FF 100%);border:1px solid var(--line);
+  border-radius:14px;padding:20px 24px;margin-bottom:6px;box-shadow:0 1px 3px rgba(16,24,40,.05)}
+.hero .meta{color:var(--mut);font-size:12.5px;margin-top:8px}
+.kpis{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:16px}
+@media(max-width:820px){.kpis{grid-template-columns:repeat(2,1fr)}}
+.kpi{background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:13px 15px}
+.kpi .t{font-size:12px;color:var(--mut);margin-bottom:5px}
+.kpi .n{font-size:21px;font-weight:680;font-variant-numeric:tabular-nums}
+.kpi .d{font-size:11.5px;color:var(--mut);margin-top:3px}
+.kpi.bad{border-left:4px solid var(--red)} .kpi.bad .n{color:var(--red)}
+.kpi.good{border-left:4px solid var(--green)} .kpi.good .n{color:var(--green)}
+.kpi.warn{border-left:4px solid var(--amber)} .kpi.warn .n{color:var(--amber)}
+.kpi.blue{border-left:4px solid var(--blue)} .kpi.blue .n{color:var(--blue)}
+table{border-collapse:separate;border-spacing:0;width:100%;background:var(--panel);font-size:13px;
+  border:1px solid var(--line);border-radius:10px;overflow:hidden;margin:10px 0}
+th,td{padding:9px 11px;border-bottom:1px solid var(--line);text-align:center;vertical-align:top}
+th{background:#EBF0F8;font-weight:640;color:#2E3E60;font-size:12.5px;white-space:nowrap}
+td:first-child,th:first-child{text-align:left}
+tr:last-child td{border-bottom:none}
+td.l{text-align:left}
+code{background:#F0F3F9;border:1px solid #E1E7F1;border-radius:4px;padding:1px 5px;
+  font:12px/1.5 "Consolas","Courier New",monospace;color:#25406E;word-break:break-all}
+.mono{font-family:"Consolas","Courier New",monospace;font-variant-numeric:tabular-nums;font-size:12px}
+.box{background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:16px 20px;
+  margin:14px 0;box-shadow:0 1px 2px rgba(16,24,40,.04)}
+.box.warnbox{background:#FFFCF3;border-color:#F2DCA8}
+.box.alert{background:#FFF6F5;border-color:#F3CBC6}
+.box.okbox{background:#F4FCF7;border-color:#C8E8D6}
+.box.infobox{background:#F5F8FF;border-color:#CFDDF7}
+ul{margin:8px 0 8px 20px;padding:0} li{margin:5px 0}
+ol{margin:8px 0 8px 22px;padding:0}
+b.hl{color:var(--red)} b.hg{color:var(--green)} b.hb{color:var(--blue)} b.ha{color:var(--amber)}
+.foot{color:var(--mut);font-size:12px;margin-top:36px;border-top:1px solid var(--line);padding-top:14px}
+.small{font-size:12px;color:var(--mut)}
+.pill{display:inline-block;font-size:11.5px;padding:2px 9px;border-radius:20px;font-weight:600;white-space:nowrap}
+.pill.red{background:#FBE9E7;color:#C6362C} .pill.green{background:#E3F5EC;color:#12855A}
+.pill.amber{background:#FDF0DC;color:#B87413} .pill.blue{background:#E4EDFF;color:#2F6FED}
+.pill.violet{background:#EAE4FB;color:#6A4CD1} .pill.gray{background:#EDF0F5;color:#5C6B85}
+td.nowrap,th.nowrap{white-space:nowrap}
+td.n{white-space:nowrap;font-variant-numeric:tabular-nums;color:#5C6B85;font-size:12px}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.three{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+@media(max-width:980px){.two,.three{grid-template-columns:1fr}}
+.grp-tag{display:inline-block;font-size:11px;padding:1px 8px;border-radius:20px;font-weight:600;margin-right:6px}
+.t1{background:#E4EDFF;color:#2F6FED}
+.t2{background:#E3F5EC;color:#12855A}
+.t3{background:#FDF0DC;color:#B87413}
+.t4{background:#EAE4FB;color:#6A4CD1}
+.t5{background:#FBE9E7;color:#C6362C}
+pre{background:#F7F9FC;border:1px solid var(--line);border-radius:8px;padding:12px 14px;
+  overflow-x:auto;font:12px/1.6 "Consolas","Courier New",monospace;color:#25406E;margin:10px 0}
+.toc{background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:14px 20px;margin:16px 0}
+.toc a{color:var(--blue);text-decoration:none;font-size:13px}
+.toc a:hover{text-decoration:underline}
+.toc ol{columns:2;column-gap:30px;margin:6px 0 0 18px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<div class="hero">
+  <h1>友商 iCogtiveFlow 借鉴分析 · 逐项对照 DL Studio</h1>
+  <div class="sub">分析对象 <code>D:\00_软件安装\00_Flow\iCogtiveFlow_V1R1C1B066</code>（V1.1.1.66 / 说明书 V1.4，96 页）｜ 2026-10-13</div>
+  <div class="meta">
+    取证方式：<b>说明书 96 页全文 + 22 个工具模块 + 2 个真实工程（国轩撕裂 / 孚能凹凸点）的 .isf 数据库 + 运行日志</b>。
+    未反编译任何二进制，全部结论来自随软件发布的文档、配置、数据文件。
+  </div>
+  <div class="kpis">
+    <div class="kpi blue"><div class="t">AI 工具数</div><div class="n">22</div><div class="d">= 任务 × 图源模态 的矩阵化设计</div></div>
+    <div class="kpi blue"><div class="t">单工具参数数</div><div class="n">52</div><div class="d">Segmentation2D 实测（分 4 类）</div></div>
+    <div class="kpi good"><div class="t">预训练权重</div><div class="n">27</div><div class="d">tiny/small/medium/large 尺寸阶梯</div></div>
+    <div class="kpi warn"><div class="t">完整工程文件</div><div class="n">0.36 MB</div><div class="d">单 SQLite 库 + 每节点一目录</div></div>
+    <div class="kpi warn"><div class="t">加密狗</div><div class="n">双品牌</div><div class="d">训练端威步 / 推理端深思数盾</div></div>
+    <div class="kpi"><div class="t">国际化</div><div class="n">6 + 22</div><div class="d">自有消息表 6 语 + Qt 翻译 22 语</div></div>
+  </div>
+</div>
+
+<div class="toc">
+  <b>目录</b>
+  <ol>
+    <li><a href="#s1">结论摘要：它强在哪、我们缺什么</a></li>
+    <li><a href="#s2">技术画像与产品定位判断</a></li>
+    <li><a href="#s3">工程文件格式解剖（.isf / .node）</a></li>
+    <li><a href="#s4">22 个 AI 工具的矩阵化设计</a></li>
+    <li><a href="#s5">参数体系：52 个参数分四类</a></li>
+    <li><a href="#s6">22 个值得借鉴的功能点（逐项）</a></li>
+    <li><a href="#s7">DL Studio 落地清单（P0/P1/P2）</a></li>
+    <li><a href="#s8">不该照抄的部分 + 待你拍板</a></li>
+  </ol>
+</div>
+
+<div class="box alert">
+  <h3 style="margin-top:0">⚠️ 先划边界（重要）</h3>
+  <p style="margin:6px 0 0">
+    这份报告只做<b>产品与架构层面的借鉴</b>：功能设计、参数体系、文件组织、交互范式、工程经验。
+    <b class="hl">不包含任何逆向出来的代码、算法实现或二进制常量</b>，也不建议照搬它的私有格式与授权方案。
+    凡涉及「阈值 / 口径 / 成本 / 对外发布」的取舍，我全部列成待你拍板项，不自己定（沿用项目铁律）。
+  </p>
+</div>
+
+<h2 id="s1">一、结论摘要：它强在哪、我们缺什么</h2>
+
+<div class="box">
+  <h3 style="margin-top:0">判断一：它不是"另一个训练工具"，它是<u>算子流平台</u></h3>
+  <p style="margin:6px 0 0">
+    我们 DL Studio 现在的形态是「任务型工具」——每个任务（分类/检测/分割/OCR）有独立的
+    数据集、训练器、推理入口。它是「平台型」——<b>所有能力都是节点</b>，节点连成 DAG，
+    训一个节点 ↔ 执行一个节点。
+    你已经有 <code>flow/</code>（Frame/Node/Registry/Runner/Flow）+ <code>ui/flow_editor.py</code>，
+    <b>骨架方向是对的</b>，差的是"节点种类 × 图源模态"这一层矩阵，以及节点目录/版本/结果这三套约定。
+  </p>
+</div>
+
+<div class="box warnbox">
+  <h3 style="margin-top:0">判断二：它的<u>参数体系</u>是我们最大的差距，不是算法</h3>
+  <p>我们分类训练器的可调项是：epoch / batch / lr / optimizer / loss / dropout / weight_decay / 调度 / 增强开关（十来个）。
+  它单个分割节点是 <b>52 个具名参数</b>，而且分成四类职责清晰：</p>
+  <table>
+    <tr><th style="width:130px">类别</th><th>它有什么</th><th>我们的现状</th></tr>
+    <tr><td class="l"><span class="grp-tag t3">训练</span></td>
+        <td class="l">Batch / Epoch / Capacity(网络容量) / PatchSize(图像块) / StepSize(步长) /
+            ReceptiveField(特征尺寸) / ByPatch / DeviceId / Platform</td>
+        <td class="l">有 epoch/batch/lr，<b class="hl">缺滑窗与特征尺寸概念</b>（大图必须靠它控显存）</td></tr>
+    <tr><td class="l"><span class="grp-tag t2">增广</span></td>
+        <td class="l">Flip / Rotate / ImageZoom / ImageZoomIn / ImageMove / ImageShear /
+            ImageBright / Contrast / InvertContrast / GaussianNoise（各带 Switch）</td>
+        <td class="l">有翻转/旋转/颜色抖动，<b class="hl">缺"每个增广独立开关 + 悬停预览"</b></td></tr>
+    <tr><td class="l"><span class="grp-tag t1">后处理</span></td>
+        <td class="l">Score / Area / Gray / Contrast / AspectRatio / Width / Height / Angle 阈值 +
+            MaxDetectCount / Density / Capacity 排序</td>
+        <td class="l"><b class="hl">基本空白</b>——预测出来就直接用，没有可调过滤层</td></tr>
+    <tr><td class="l"><span class="grp-tag t4">可视化</span></td>
+        <td class="l"><code>V</code> 前缀：VCategory / VRadius / VCenterRegionRadius / VPredictSortOrder</td>
+        <td class="l"><b class="hl">无此概念</b>——展示参数与业务参数混在一起</td></tr>
+  </table>
+  <p class="small" style="margin-bottom:0">
+    最值得抄的一条范式：<b>所有过滤条件都是 <code>{参数}</code> + <code>{参数}Switch</code> 成对出现</b>。
+    这样"这个条件启不启用"和"阈值多少"是两个独立维度，改阈值不会意外改行为。
+  </p>
+</div>
+
+<div class="box okbox">
+  <h3 style="margin-top:0">判断三：它的"闭环"比我们完整——标注→训练→评估→<u>难例回流</u></h3>
+  <p>它的说明书里明确写了这个循环：</p>
+  <pre>先标有代表性的部分样本 → 训练 → 用结果筛选（分数/面积/类别）→ 把结果导入标注 → 精细化修改 → 再训练</pre>
+  <p>支撑这个闭环的是三个我们完全没有的功能：</p>
+  <ul>
+    <li><b>图像列表自定义筛选</b>：字段 / 条件 / 值 / AND-OR 连接词，还能"语法检测"。可以筛出"结果含 Class1 且分数 &gt; 0.5"的图 —— <b>这就是难例挖掘</b>。</li>
+    <li><b>图像人工标记四态</b>：正常 / 过杀 / 漏杀 / 存疑，<b>明确写"不影响训练，只做标记用"</b>。</li>
+    <li><b>模型效果报表 + 结果报表页</b>：可直接填工程信息与检测需求/结果 —— 和你做 PPT 的活儿重合。</li>
+  </ul>
+</div>
+
+<div class="box infobox">
+  <h3 style="margin-top:0">判断四：它的底层范式继承自 Cognex ViDi（这个映射很关键）</h3>
+  <p>说明书「专业术语」一节里，讲"特征尺寸"用的例子是：<b>根据发动机数量给飞机图片分类，特征尺寸就按发动机大小定</b>。
+  这是 Cognex ViDi 的经典官方比喻；"采样密度""运行时采样（默认采样率 3）"也全部是 ViDi 的原术语。</p>
+  <p style="margin-bottom:0">
+    <b>所以它的技术底座 = ViDi 的"滑动窗口 + 特征尺寸 + 采样密度"范式，用现代深度学习重写，外面套一层 Flow 节点图。</b>
+    <br>这解释了两件事：①为什么它单个节点的参数那么多（ViDi 本来就是"调参换性能"的哲学）；
+    ②为什么它推荐"验证集可以不设"（ViDi 体系里训练/测试二分就够了）。
+    <br><b class="hl">对我们的含义</b>：如果目标是复刻它的检测能力，核心不是换模型，而是把
+    <code>ReceptiveField / PatchSize / StepSize / Density</code> 这套"窗口采样"参数做成我们自己的配置层。
+  </p>
+</div>
+
+<div class="box">
+  <h3 style="margin-top:0">判断五（附带发现）：日志里有一台 RTX 5080 的痕迹，但不是这台机器</h3>
+  <table>
+    <tr><th style="width:110px">时间</th><th style="width:160px">日志内容</th><th class="l">解读</th></tr>
+    <tr><td class="mono">09:50:42</td>
+        <td class="mono">infer device id: 0<br>name: "NVIDIA GeForce RTX 5080"</td>
+        <td class="l">exe 路径是 <code>D:\01_D盘\00_软件安装\...</code>，<b>本机 D: 根目录没有 <code>01_D盘</code></b></td></tr>
+    <tr><td class="mono">17:06:06</td>
+        <td class="mono">get GPUs Info failed.<br>（连续 3 次）</td>
+        <td class="l">本机启动时取不到 GPU —— 与之前查到的"3080 是幽灵设备、<code>cuda.is_available()=False</code>"一致</td></tr>
+  </table>
+  <p style="margin-bottom:0" class="small">
+    <b>结论（事实）</b>：这套安装目录（含 <code>logs/</code>、<code>recentProjects.ini</code>）是从<b>另一台有 5080 的机器</b>整体拷过来的，
+    本机现在跑的是 CPU。这也顺带说明：<b>友商在 5080 上是能正常推理的</b>（说明书驱动表里 5080/5070/5090 都列了 581.29 版本），
+    所以"5080 能不能用于深度学习"这件事本身没有疑问，问题只在本机这张卡为什么没被枚举。
+  </p>
+</div>
+
+<h2 id="s2">二、技术画像与产品定位判断</h2>
+
+<h3>2.1 技术栈指纹（从依赖清单反推）</h3>
+<table>
+  <tr><th style="width:150px">层次</th><th style="width:300px">实证</th><th class="l">含义 / 对我们的启示</th></tr>
+  <tr><td class="l"><b>界面</b></td>
+      <td class="l"><code>Qt5Core/Gui/Widgets/Sql/Svg/Charts</code>（2018 版 Qt5）</td>
+      <td class="l">与我们同栈（PyQt5）。它加了 <b>Qt5Charts</b> —— Loss/报表曲线是原生控件，不是 matplotlib。我们画曲线用的是 pyqtgraph/matplotlib，注意 <b class="ha">matplotlib 在浅色主题下的配色问题</b>（你之前踩过）</td></tr>
+  <tr><td class="l"><b>三维</b></td>
+      <td class="l">OpenCASCADE 全套 <code>TK*.dll</code>（30+ 模块：TKBRep/TKSTEP/TKMesh/TKOpenGl…）</td>
+      <td class="l">它用<b>工业级 CAD 内核</b>做点云与高度图渲染，不是自己写 OpenGL。我们要做 3D 视图的话，这是可选项；但<b>代价是 8.9 GB 安装体积</b>，我们没必要</td></tr>
+  <tr><td class="l"><b>训练</b></td>
+      <td class="l"><code>torch.dll / torch_cpu / torch_cuda / torchvision / c10</code><br>= <b>libtorch C++</b>（不是 Python）</td>
+      <td class="l">它把训练做进了 C++ 进程内，所以"点训练就在同一个界面里画曲线"。<b>我们用 Python + 子进程</b>，天然更灵活；但要保证训练挂掉不拖死 UI</td></tr>
+  <tr><td class="l"><b>推理加速</b></td>
+      <td class="l"><code>nvinfer_10 + nvinfer_builder_resource + nvinfer_plugin + nvonnxparser</code><br>（TensorRT 10）+ <code>cudnn64_9</code> + <code>cudart64_12</code></td>
+      <td class="l"><b class="hb">这条最值得学</b>：TensorRT 全家桶直接打包，且工程目录里出现了 <code>SG_Tiny_V1_40_GPU.net</code> —— <b>按目标 GPU 架构预导出专用模型文件</b></td></tr>
+  <tr><td class="l"><b>CPU 兜底</b></td>
+      <td class="l"><code>openvino.dll</code> + intel_cpu / intel_gpu / <b>intel_npu</b> 插件 + onnx/paddle/pytorch/tf/tflite 前端 + <code>openvino_genai</code></td>
+      <td class="l"><b class="hb">第二值得学</b>：没有 N 卡也能跑，且支持 Intel 核显/NPU；<code>genai</code> 说明已经预留了大模型侧能力。我们的 <code>inference/predictor.py</code> 已有多后端抽象，可把 OpenVINO 加进去做无卡兜底</td></tr>
+  <tr><td class="l"><b>数据</b></td>
+      <td class="l"><code>Qt5Sql</code> + <code>iCogtiveFlow.db</code>（SQLite WAL）+ 工程 <code>.isf</code>（同为 SQLite）</td>
+      <td class="l">全产品统一用 SQLite 做持久化，<b>连工程文件都是库</b>。见第三章</td></tr>
+  <tr><td class="l"><b>图像/基础库</b></td>
+      <td class="l"><code>opencv_world420</code>、tbb、jpeg62/libpng16/zlib、icudt70、fbgemm、libiomp5md</td>
+      <td class="l">常规</td></tr>
+  <tr><td class="l"><b>授权</b></td>
+      <td class="l"><code>UserMsg.ini</code>（WIBU CodeMeter DK 模板）<br>说明书：训练端威步 7.60 / 推理端深思数盾 Virbox 2.5</td>
+      <td class="l"><b>商业模式参考</b>：训练端与推理端分权授权（客户现场只买推理端）。产品码 48503200 / 28506200</td></tr>
+</table>
+
+<h3>2.2 产品族关系（重要的定位情报）</h3>
+<p>工程库里 <code>singles.$identifier</code> 的值是 <code>"iSenseFlow_Project"</code>，
+说明书第 43 页的流程图标题写的是「<b>iSenseFlow 使用步骤</b>」，而软件名与注册表叫
+<i>iCogtiveFlow</i>。说明书里还提到 <i>MVStudio</i>、<i>HyperShape</i>（混合图像匹配规则时要选"对应哪家的"）、
+<i>iFusion</i>（用深度学习方法生成缺陷样本）。</p>
+<div class="box warnbox" style="margin-top:10px">
+  <p style="margin:0">
+    <b>事实</b>：同一个引擎（工具命名前缀 <code>Hh*</code>、统一对象存储 schema、<code>iSenseFlow_Project</code> 标识）被用在
+    <b>多个品牌/SKU</b> 下：iCogtiveFlow、iSenseFlow，并与 MVStudio / HyperShape / iFusion 组成配套产品族。
+  </p>
+  <p style="margin:8px 0 0">
+    <b>判断（我不下结论，交给你）</b>：这更像<b>同一技术底座的品牌/渠道分化</b>，而不是纯竞品。
+    你手上同时有 <code>iSenseFlow工程</code> 目录和这个 <code>iCogtiveFlow</code> 安装包，
+    内部关系你比我清楚 —— 但它<b>决定了"借鉴"的合规性质</b>（自家产品线 vs 外部竞品），
+    我在报告里只取设计范式，具体到能不能复用内部资料，需要你确认。
+  </p>
+</div>
+
+<h3>2.3 授权与部署形态（对产品化的启示）</h3>
+<div class="three">
+  <div class="box" style="margin:0">
+    <h4 style="margin-top:0">训练端</h4>
+    <div class="small">威步 CodeMeter 加密狗<br>支持<b>训练 + 推理</b><br>装在调试电脑</div>
+  </div>
+  <div class="box" style="margin:0">
+    <h4 style="margin-top:0">推理端</h4>
+    <div class="small">深思数盾 Virbox 加密狗<br>只支持<b>推理</b><br>装在产线机台，便宜</div>
+  </div>
+  <div class="box" style="margin:0">
+    <h4 style="margin-top:0">多开</h4>
+    <div class="small">多次点 exe → 生成 <code>multiInstances/user_x/</code><br>实例间数据隔离；<b>禁止同时打开同一工程</b>（会警告）</div>
+  </div>
+</div>
+
+<h2 id="s3">三、工程文件格式解剖</h2>
+
+<div class="box infobox">
+  <p style="margin:0">
+    <b>为什么这一章值得看</b>：文件格式决定了"项目的可移植性 / 版本管理 / 出问题时能不能救回来"。
+    它的设计非常克制 —— 只有 <b>2 张表</b>，却装下了整个平台。
+  </p>
+</div>
+
+<h3>3.1 三个存储单元，同一套 schema</h3>
+<pre>工程文件  {项目名}.isf           ← SQLite（WAL 模式）+ .isf-shm + .isf-wal + .isf.lock
+节点文件  {节点名}/{节点名}.node   ← 同样是 SQLite，同一套表
+应用数据  iCogtiveFlow.db         ← 软件自身数据（最近工程、语言等）
+</pre>
+<p>两张表的建表语句（<b>一个字都没多</b>）：</p>
+<pre>CREATE TABLE objects( id int(32) primary key, type text not null, tags text, data blob);
+CREATE TABLE singles( id text primary key, data blob);
+</pre>
+<table>
+  <tr><th style="width:120px">表</th><th style="width:200px">用途</th><th class="l">实测内容</th></tr>
+  <tr><td class="l"><code>objects</code></td><td class="l">一切"多个"的东西</td>
+      <td class="l">国轩工程 1247 行 = <code>UniverseImageInfo</code>×1247 + <code>Node</code>×2 + <code>Connection</code>×1</td></tr>
+  <tr><td class="l"><code>singles</code></td><td class="l">一切"一个"的东西（工程级单例）</td>
+      <td class="l"><code>$NextId</code> / <code>$name</code> / <code>$identifier</code> / <code>$version</code> / <code>$createTime</code> / <code>$lastOpenPath</code> / <code>$lastOpenTime</code>；
+          <code>$</code> 前缀 = 保留键约定</td></tr>
+</table>
+<p class="small"><code>data</code> 是 blob，序列化格式为 <b>Qt QDataStream</b>（字符串是 UTF-16LE + 4 字节长度前缀）。
+这是私有格式 —— <b class="hl">不建议照抄</b>，但"objects + singles 兜住一切"这个极简思路值得学。</p>
+
+<h3>3.2 三类核心对象的字段（解码结果）</h3>
+<div class="two">
+  <div class="box" style="margin:0">
+    <h4 style="margin-top:0"><span class="grp-tag t1">Node</span>节点</h4>
+    <div class="mono" style="line-height:1.9">
+      NodeId · NodeType · Name · SaveName<br>
+      NodePosX · NodePosY · Root · Url · Version<br>
+      <b>Params{…}</b> · Data{…} · Tags · Permission<br>
+      <b>TrainModelId · InferModelId</b><br>
+      <b>InferModelType · InferSetType · NewestModel</b><br>
+      CreateTime · IsNewNode
+    </div>
+    <p class="small" style="margin:8px 0 0">
+      实测 <code>NodeType</code> 取值：<code>DiskImage</code> / <code>Segmentation2D</code> / <code>NewNode</code>（未配置）。
+      <br><b class="hb">关键设计</b>：节点同时持有<b>训练模型</b>和<b>推理模型</b>的引用，且可指向不同模型 —— 训一个、上另一个。
+    </p>
+  </div>
+  <div class="box" style="margin:0">
+    <h4 style="margin-top:0"><span class="grp-tag t2">Connection</span>连线</h4>
+    <div class="mono" style="line-height:1.9">
+      ConnType · Id<br>
+      <b>Tail</b>NodeId · <b>Tail</b>PortIdx · <b>Tail</b>Pos<br>
+      <b>Tip</b>NodeId · <b>Tip</b>PortIdx · <b>Tip</b>Pos
+    </div>
+    <p class="small" style="margin:8px 0 0">
+      边是<b>带端口索引</b>的有向连接（Tail=源，Tip=目标），外加<b>两个端点的画布坐标</b>（为了重开时折线还原）。
+      <br>我们的 <code>flow/</code> 目前是 <code>(from_node, to_node)</code> 级别 —— <b>缺端口这一层</b>。多输入/多输出节点必须补上。
+    </p>
+  </div>
+</div>
+<div class="box" style="margin-top:12px">
+  <h4 style="margin-top:0"><span class="grp-tag t3">UniverseImageInfo</span>全局图像池（这个名字我特别喜欢）</h4>
+  <div class="mono" style="line-height:1.9">Uid · SrcImageId · SrcNodeId · SrcPath · Tags · Url · Root</div>
+  <ul>
+    <li><b>Uid 是全局唯一标识</b>，形如 <code>1000100-1a00a-c31c77d1-56b708d2</code>；全工程任何地方引用图片都用 Uid。</li>
+    <li><b>图片被"收编"进工程</b>：<code>Url</code> = 节点目录内的托管副本路径（如 <code>DiskImage_…/images/1_106_0114_16_te_0.BMP</code>），
+        同时 <code>SrcPath</code> 保留原始外部路径（含来源批次，便于溯源）。</li>
+    <li>工程自包含 ⇒ 拷走工程目录就能复现；来源可溯 ⇒ 能回答"这张图哪来的"。</li>
+  </ul>
+  <p class="small" style="margin-bottom:0">
+    <b>对照我们</b>：DL Studio 的图片是"项目 <code>images/</code> 目录扫描 + 名字做键"。
+    一张图改名/换批次就会断链。引入 Uid + 托管副本 + 源路径三件套，能同时解决
+    <b>换批次数据对齐</b>（你常做的 te_0/1/2 配对）和<b>溯源</b>。
+  </p>
+</div>
+
+<h3>3.3 目录约定：每个节点一个带时间戳的目录</h3>
+<pre>{工程名}\
+├─ {工程名}.isf                                  工程库（节点图 + 图像池）
+├─ DiskImage_20260706205623618\
+│   ├─ DiskImage_20260706205623618.node
+│   └─ images\                                    图像托管副本
+└─ Segmentation2D_20260706205708114\
+    ├─ Segmentation2D_20260706205708114.node
+    ├─ dataSet\
+    │   ├─ labels\            *.json  标注（每图一个）
+    │   └─ labels_back\       ← 标注备份目录（它也有"改动前先备份"的习惯）
+    ├─ history\               *.hist  每图操作历史（108 字节二进制）
+    └─ models\
+        ├─ SG_Tiny_V1\ ... SG_Tiny_V13\            每次训练自动开新版本目录
+        └─ images\           color_XXXX_XXXX.png   样本推理结果图
+</pre>
+<div class="box okbox">
+  <h4 style="margin-top:0">它的模型版本策略（三个细节，都可以直接学）</h4>
+  <table style="margin-top:6px">
+    <tr><th style="width:200px">现象</th><th class="l">含义</th></tr>
+    <tr><td class="l"><code>SG_Tiny_V1</code> … <code>V13</code></td>
+        <td class="l">每次训练<b>自动新建版本目录</b>，永不覆盖 —— 和你做 PPT 的 v9→v49 习惯同源</td></tr>
+    <tr><td class="l"><code>SG_Tiny_V1_40_GPU.net</code></td>
+        <td class="l">同一模型<b>按目标 GPU 架构预导出</b>一份（40 系）。避免上线时现场重新编译 engine 的等待</td></tr>
+    <tr><td class="l"><code>SG_Tiny_V5(SG_Tiny_V4.net)</code></td>
+        <td class="l">目录名直接写明"本版本复用 V4 的模型"，且该目录<b>没有 loss 文件</b>（因为没重训）——用命名代替元数据文件</td></tr>
+  </table>
+  <p style="margin-bottom:0" class="small">
+    每个版本目录里固定三个文件：<code>{名}.net</code>（模型）、<code>loss.csv</code>、<code>loss_val.csv</code>、<code>res.dat</code>（推理结果缓存，15 MB）。
+    <br><code>loss.csv</code> 的横轴 <b>不是 epoch 而是归一化到 0→1000 的进度</b>（实测 217,000 行、每 step 一行），所以不同轮数的训练曲线可以直接叠在一起比。
+    <code>loss_val.csv</code> 只稀疏记了 12 个点（1/41/111/241/251/531/581/681/721/803/815/895）。
+  </p>
+</div>
+
+<h3>3.4 标注格式 v5.3.1（它叫 labelMe，但已经不是 labelme）</h3>
+<pre>{
+  "baseData": [ { "Roi": {"h","w","x","y","<b>phi</b>"}, "category": "", "dataSet": "Train" } ],
+  "shapes": [ { "description": "Region",     ← 形状的语义类型
+                "label": "__ignore__",        ← 忽略区（和我们一致）
+                "points": [[x,y], ...],
+                "shape_type": "polygon",
+                "eraser points": [],          ← 橡皮擦轨迹也会被存下来
+                "group_id": null, "flags": {} } ],
+  "imagePath", "imageWidth", "imageHeight", "imageSet", "flags", "imageData", "version"
+}</pre>
+<table>
+  <tr><th style="width:190px">设计点</th><th class="l">说明 / 对比我们</th></tr>
+  <tr><td class="l"><code>baseData.Roi</code> 带 <code>phi</code></td>
+      <td class="l"><b>ROI 是"旋转矩形"</b>，独立于画在 shapes 里的缺陷。<br>
+          我们是"图有一个 ROI + shapes 里画缺陷"混在一层 —— 它的分层更清楚：
+          <code>baseData</code> = 这张图怎么用（ROI / 类别 / 属于哪个集），<code>shapes</code> = 图上画了什么</td></tr>
+  <tr><td class="l"><code>dataSet</code> 写在标签里</td>
+      <td class="l"><b>数据集划分不存单独文件，就存在每张图的标签里</b>。<br>
+          好处：图跟着标签走，不会出现"改过名之后 split.json 对不上"。我们用的是单独 <code>train_test_split.json</code>，改图名会断链</td></tr>
+  <tr><td class="l"><code>shapes[].description</code></td>
+      <td class="l">形状有语义角色（实测 <code>"Region"</code>，推测还有缺陷/擦除等）。我们只有 <code>label</code></td></tr>
+  <tr><td class="l"><code>__ignore__</code></td>
+      <td class="l">和我们一致 —— 说明我们这条已经对齐了行业惯例，不用改</td></tr>
+</table>
+
+<h2 id="s4">四、22 个 AI 工具的矩阵化设计</h2>
+
+<h3>4.1 工具清单 = 任务 × 模态 的笛卡尔积</h3>
+<table>
+  <tr>
+    <th style="width:170px">任务 \ 图源模态</th>
+    <th>2D 单图</th><th>2D 多图<br><span class="small">（多图工具集）</span></th>
+    <th>3D 单图</th><th>2D+3D<br><span class="small">（混合）</span></th><th>对比<br><span class="small">（标准图 vs 检测图）</span></th>
+  </tr>
+  <tr><td class="l"><b>语义分割</b></td><td><code>Segment2D</code></td><td><code>MultiSegment</code></td><td><code>Segment3D</code></td><td><code>SegmentMixed</code></td><td><code>SegmentCP</code></td></tr>
+  <tr><td class="l"><b>分类</b></td><td><code>Classify2D</code></td><td><code>MultiClassify</code></td><td><code>Classify3D</code></td><td><code>ClassifyMixed</code></td><td><code>ClassifyCP</code></td></tr>
+  <tr><td class="l"><b>目标检测</b></td><td><code>ObjectDetect2D</code><br><code>RotObjectDetect2D</code>(旋转)</td><td>—</td><td><code>ObjectDetect3D</code></td><td>—</td><td>—</td></tr>
+  <tr><td class="l"><b>实例分割</b></td><td><code>InstanceSegmentation2D</code></td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+  <tr><td class="l"><b>关键点</b></td><td><code>KeyPointDetect2D</code></td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+  <tr><td class="l"><b>异常检测</b></td><td><code>AnomalyDetect2D</code></td><td>—</td><td><code>AnomalyDetect3D</code></td><td>—</td><td>—</td></tr>
+  <tr><td class="l"><b>字符识别</b></td><td><code>OCR2D</code></td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+  <tr><td class="l"><b>边缘检测</b></td><td><code>EdgeDetect2D</code></td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+  <tr><td class="l"><b>图像工具</b></td><td colspan="5"><code>DiskImage</code>(本地磁盘) · <code>Crop</code>(裁剪) · <code>TrueCrop</code>(精确裁剪)</td></tr>
+</table>
+<p class="small">注：表格由 22 个工具模块的实际文件名反推，并按说明书章节（4/5/6/7/8/9 章）核对命名。
+<code>CP</code> = Compare（对比），对应说明书 4.3「对比分割」/ 5.3「对比分类」两节。</p>
+
+<div class="box warnbox">
+  <h4 style="margin-top:0">三个设计要点（都可直接借用）</h4>
+  <ol>
+    <li><b>模态门控</b>：说明书原文 —— "图像工具节点决定了可用的 Ai 工具类型…若图像与 Ai 工具不对应，<b>无法进行配置</b>"。
+        <br>即：<b>连线阶段就禁止非法组合</b>，而不是等到训练时报错。<br>
+        <span class="small">→ 我们的 <code>flow/</code> 应该给每个节点声明「输入 modality」和「输出 modality」，连线时校验。</span></li>
+    <li><b>工具集命名与 nets 命名严格对应</b>：<code>cl</code>=分类 / <code>sg</code>=分割 / <code>od</code>=检测 / <code>rod</code>=旋转检测 /
+        <code>isg</code>=实例分割 / <code>kpd</code>=关键点 / <code>ocl</code>… / <code>ad</code>=异常 / <code>ed</code>=边缘 / <code>mcl</code>/<code>msg</code>=多图 / <code>*3d</code>/<code>*mixed</code>。
+        <code>_tiny/_small/_medium/_large</code> 四级容量阶梯（实测 tiny 5.7 MB → large 49.8 MB）。</li>
+    <li><b>对比分割/对比分类（CP）</b>：导入时<b>组大小设为 2</b>，一组是"标准图"、一组是"检测图"，
+        按序号一一对应，模型学的是"差异"。<br>
+        <span class="small">→ 这正好对上你的一个真实痛点：<b>来料差异导致 OK 图本身长相不同</b>（187 料 vs 233 料）。用"标准图 vs 检测图"的差分式建模，可以从原理上绕开"来料变了模型就过杀"。</span></li>
+  </ol>
+</div>
+
+<h3>4.2 多模态的官方定位（第 9 章，对孚能项目直接可用）</h3>
+<table>
+  <tr><th style="width:120px">模式</th><th style="width:230px">它说的适用场景</th><th class="l">对应到我们的项目</th></tr>
+  <tr><td class="l"><b>2D 单图</b></td><td class="l">常规 2D 缺陷</td><td class="l">—</td></tr>
+  <tr><td class="l"><b>2D 多图</b></td>
+      <td class="l">"<b>2.5D 相机或者光度立体融合后，可以生成形状图、标准图、反射率图</b>…多张不同类型图像数据"<br>
+          <span class="small">2.5D 项目设 3 张；光度立体设 4/6/8 张</span></td>
+      <td class="l"><b class="hg">就是孚能的场景</b>：漫反射 + 形状图1 + 形状图2 = 2.5D 三张。<br>
+          它还给了命名规范，且<b>第三条示例就是 <code>针孔_te_0 / _te_1 / _te_2 / _te_3</code></b> —— 你用的 <code>17_31_凹点_te_0/1/2</code> 命名和它一模一样</td></tr>
+  <tr><td class="l"><b>3D 单图</b></td>
+      <td class="l">tif/tiff <b>32 位浮点</b>高度图；"产品高度存在差异但灰度差异不大时"</td>
+      <td class="l">我们目前把形状图当 2D 8 位图用 —— <b class="ha">丢了高度信息</b>。若要提升凹凸点判别，保留 32 位浮点做真 3D 是方向</td></tr>
+  <tr><td class="l"><b>2D+3D</b></td>
+      <td class="l">1 张高度图 + 1 张灰度图，<b>合并成一个张量</b>作为模型输入；工具 = 混合分割/混合分类</td>
+      <td class="l">我们已有"混合分类"（<code>ui/mixed_viewer.py</code> / <code>mixed_add_dialog.py</code>），思路一致</td></tr>
+</table>
+<div class="box infobox" style="margin-top:10px">
+  <p style="margin:0"><b>多图模式的三个交互细节</b>：
+    ① 图像操作界面变成<b>分组显示窗口</b>（单张/多张切换、组内上一张/下一张、窗口排列方式）；
+    ② <b>"组内操作绑定"</b>——在一张图上做 ROI/掩膜/标注，会<b>同步复制到组内其他图</b>；
+    ③ 定位是"<b>将一组图像融合为一张图像处理</b>"，即模型输入是多通道张量，而非多个独立模型。
+    <br><span class="small">→ 对我们的启示：三图数据的标注成本是 3 倍，靠"组内绑定"能压回 1 倍。这条性价比极高。</span></p>
+</div>
+
+<h2 id="s5">五、参数体系：52 个参数分四类</h2>
+<p>从国轩工程 <code>Segmentation2D_20260706205708114</code> 节点的 <code>Params</code> 里完整解出的参数名：</p>
+<pre>训练      Batch  Capacity  DeviceId  Epoch  PatchSize  StepSize  ReceptiveField  ReceptiveFieldOrStep
+          ByPatch  Platform
+增广      Flip+FlipSwitch  Rotate+RotateSwitch  ImageZoom+ImageZoomSwitch  ImageZoomIn+ImageZoomInSwitch
+          ImageMove+ImageMoveSwitch  ImageShear+ImageShearSwitch  ImageBright+ImageBrightSwitch
+          Contrast+ContrastSwitch  InvertContrast+InvertContrastSwitch  GaussianNoise+GaussianNoiseSwitch
+后处理    ScoreThreshold  AreaThreshold  GrayThreshold  AngleThreshold  AspectRatio(+Switch)
+          WidthThreshold  HeightThreshold  Density  MaxDetectCount  Category
+模型      TrainModelId  InferModelId  InferModelType  InferSetType  NewestModel
+可视化    VCategory  VRadius  VCenterRegionRadius  VPredictSortOrder
+其他      Permission  PermissionType  SaveName  NodeType  NodePosX  NodePosY  Id  Url  Version  CreateTime</pre>
+
+<table>
+  <tr><th style="width:96px">类别</th><th style="width:270px">参数</th><th class="l">它解决什么问题 / 我们缺什么</th></tr>
+  <tr><td class="l"><span class="grp-tag t3">训练</span></td>
+      <td class="l mono">PatchSize / StepSize / ReceptiveField / ByPatch / Capacity</td>
+      <td class="l"><b class="hl">这是最大的空白</b>。大图（相机 1160×460 甚至 1640×4200）不可能整图送网络，
+          必须滑窗。<code>PatchSize</code>=窗口大小、<code>StepSize</code>=步长（有重叠就融合）、
+          <code>ReceptiveField</code>=特征尺寸。<br>
+          说明书给的工程规则：<b>"较大缺陷设较大块，较小缺陷设较小块；小图优先整幅训练，效果优于分块"</b>；
+          还有"分块太大易显存不足"</td></tr>
+  <tr><td class="l"><span class="grp-tag t2">增广</span></td>
+      <td class="l mono">10 种 × (阈值 + Switch)</td>
+      <td class="l">我们缺"每个增广独立开关"，缺<b>悬停预览</b>（把鼠标放在参数上就能看到增强后的效果图）</td></tr>
+  <tr><td class="l"><span class="grp-tag t1">后处理</span></td>
+      <td class="l mono">Score / Area / Gray / Contrast / AspectRatio / Width / Height / Angle + MaxDetectCount</td>
+      <td class="l"><b class="hl">我们完全没有这一层</b>。它的说明书明确写："推理参数用于<b>过滤</b>模型推理后的检测结果，
+          并<b>判断模型文件的性能效果</b>" —— 也就是说，
+          <b class="hb">评估指标是在应用了后处理过滤之后算的</b>。这和你上次讨论分割评估时的口径问题是同一件事</td></tr>
+  <tr><td class="l"><span class="grp-tag t4">可视化</span></td>
+      <td class="l mono">VCategory / VRadius / VCenterRegionRadius / VPredictSortOrder</td>
+      <td class="l">用 <code>V</code> 前缀把"显示相关"参数和"业务相关"参数<b>物理隔离</b>。
+          好处：客户现场调显示不会碰到业务参数。这个约定很便宜，建议直接采用</td></tr>
+</table>
+
+<div class="box okbox">
+  <h4 style="margin-top:0">两条可以把整份参数表变得可控的范式</h4>
+  <ol>
+    <li><b><code>{参数}</code> + <code>{参数}Switch</code> 成对</b>：启用与否、阈值多少是两个维度。
+        我们现在的增强是"一个总开关 + 三个写死的强度"，改强度会连带改变行为。</li>
+    <li><b>推理参数可切换"作用于哪个数据集 / 哪个模型"</b>：可以拿同一组后处理参数，
+        <b>横向对比 V1…V13 的效果</b>，选出最优模型 —— 这是它版本管理闭环的最后一块拼图。</li>
+  </ol>
+</div>
+
+<h2 id="s6">六、22 个值得借鉴的功能点</h2>
+<p class="small">优先级：<span class="pill red">P0</span> 直接影响项目效果 ｜ <span class="pill amber">P1</span> 显著提效 ｜ <span class="pill blue">P2</span> 产品化完善 ｜ <span class="pill gray">规避</span> 不建议学</p>
+
+<table>
+  <tr><th class="nowrap" style="width:40px">#</th><th style="width:180px">功能</th><th style="width:300px">它怎么做</th><th class="l">我们的现状 / 建议</th><th style="width:74px">优先级</th></tr>
+
+  <tr><td>1</td><td class="l"><b>参数自适应搜索</b></td>
+      <td class="l">对增广参数（放大/平移/亮度…）<b>做多次短训练（推荐 10 轮）</b>，
+          分析参数重要性，给最佳值，一键"应用"到增强参数</td>
+      <td class="l"><b class="hl">我们没有。</b>可先只做增广强度的粗搜索（3×3 网格 × 10 轮），
+          产出一张"参数 → 效果"热力图。<b>轮数与搜索空间需你拍板</b>（要烧算力）</td><td><span class="pill red">P0</span></td></tr>
+
+  <tr><td>2</td><td class="l"><b>推理参数（后处理过滤）</b></td>
+      <td class="l">分数/面积/灰度/长宽比/宽/高/角度阈值 + 最大检测数，
+          作用于"所有/训练集/测试集"，且参与模型效果评估</td>
+      <td class="l"><b class="hl">完全没有。</b>这是把"像素指标"翻译成"产线口径"的唯一桥梁。
+          建议优先补：分数阈值 + 面积阈值 + 最大检测数三项</td><td><span class="pill red">P0</span></td></tr>
+
+  <tr><td>3</td><td class="l"><b>滑窗训练参数</b></td>
+      <td class="l">PatchSize / StepSize / ReceptiveField / ByPatch，配合"大缺陷设大块、小缺陷设小块"的经验规则</td>
+      <td class="l"><b class="hl">没有。</b>决定大图能不能训、显存够不够。先做"整图 vs 分块"二选一 + 块大小/步长</td><td><span class="pill red">P0</span></td></tr>
+
+  <tr><td>4</td><td class="l"><b>掩膜的精确语义</b></td>
+      <td class="l">原文：<b>"训练时工具不对掩膜区域采样，但推理阶段会对掩膜区域采样"</b></td>
+      <td class="l">我们有 <code>__ignore__</code>/<code>label_overlay</code> 的显示，但<b>要核对训练采样与推理是否分别处理</b>。
+          语义说清才能保证"标注时忽略的地方，推理时不会被判 NG"</td><td><span class="pill red">P0</span></td></tr>
+
+  <tr><td>5</td><td class="l"><b>难例挖掘闭环</b></td>
+      <td class="l">图像列表自定义筛选（字段/条件/值 + AND-OR + <b>语法检测</b>），
+          可筛"结果含 Class1 且分数 &gt; 0.5"；再一键把这些图加入训练集</td>
+      <td class="l"><b class="hl">没有。</b>配合我们刚做的评估工具，这是"过杀/漏检从统计数字 → 可操作图片列表"的通道。
+          你现场天天在做这件事，只是手工</td><td><span class="pill red">P0</span></td></tr>
+
+  <tr><td>6</td><td class="l"><b>图像四态人工标记</b></td>
+      <td class="l"><b>正常 / 过杀 / 漏杀 / 存疑</b>，明确"不影响训练，只做标记用"</td>
+      <td class="l"><b class="hl">没有。</b>实现成本极低（一个字段 + 四个按钮），
+          收益却直击你的核心 KPI（过杀率/漏检率）——<b>等于把 PPT 的统计工作就地做掉</b></td><td><span class="pill red">P0</span></td></tr>
+
+  <tr><td>7</td><td class="l"><b>概率图 / 可能性图</b></td>
+      <td class="l">可开关；"越接近红色越重要，越接近蓝色越不重要"</td>
+      <td class="l">我们有 Grad-CAM（<code>heatmap_overlay</code> 节点），<b>方向一致</b>。
+          补一个"结果图例 + 开关"即可对齐</td><td><span class="pill amber">P1</span></td></tr>
+
+  <tr><td>8</td><td class="l"><b>智能标注（AI 预标）</b></td>
+      <td class="l">用现有模型自动产区域，参数：网络大小(Tiny)/采样密度/灰度/分数/面积/宽/高/角度阈值/排序次序</td>
+      <td class="l">我们有 SAM 相关能力（<code>annotation/</code> 里有 SAM 引用）。
+          建议<b>不做通用 AI 预标，做"用上一版模型给新批次预标"</b>——这才是产线提效点</td><td><span class="pill amber">P1</span></td></tr>
+
+  <tr><td>9</td><td class="l"><b>二值化自动标注</b></td>
+      <td class="l">按阈值（手动或<b>自适应</b>）自动把低于/高于阈值的部分转为掩膜或标注</td>
+      <td class="l"><b class="hl">没有，但很好实现</b>（OpenCV 几分钟的事）。
+          对"腐蚀/污渍/大面积灰度异常"类缺陷，能省掉大量手描</td><td><span class="pill amber">P1</span></td></tr>
+
+  <tr><td>10</td><td class="l"><b>标注区域反转</b></td>
+      <td class="l">掩膜↔非掩膜、标注↔非标注互换</td>
+      <td class="l">相邻/环绕类缺陷（如"环状区以外的都算背景"）能省事。低成本小功能</td><td><span class="pill amber">P1</span></td></tr>
+
+  <tr><td>11</td><td class="l"><b>组内操作绑定（多图）</b></td>
+      <td class="l">2D 多图模式下，在组内一张图上做 ROI/掩膜/标注，<b>自动复制到组内其他图</b></td>
+      <td class="l"><b class="hl">太值钱了。</b>三图数据标注量直接除以 3。
+          <code>ui/multiview_preview.py</code> 已经有参考窗，加一个"同步"开关就行</td><td><span class="pill red">P0</span></td></tr>
+
+  <tr><td>12</td><td class="l"><b>ROI 批量应用 / 重置自适应</b></td>
+      <td class="l">把当前图的 ROI 应用到列表所有图；不满意可重置回"自动适应图片大小"</td>
+      <td class="l">我们改 ROI 是逐图的。批量化 + 可回退（别只有单向覆盖）</td><td><span class="pill amber">P1</span></td></tr>
+
+  <tr><td>13</td><td class="l"><b>训练/推理任务队列</b></td>
+      <td class="l">右击节点 → 训练/执行，<b>进队列</b>排队执行；训练时弹实时 Loss 曲线，结束自动关闭</td>
+      <td class="l">我们是同步调用 + 进度条。任务队列能解锁"挂上训练去干别的"。
+          注意它训练完<b>自动关曲线窗</b>这个小细节（我们容易留一堆窗口）</td><td><span class="pill amber">P1</span></td></tr>
+
+  <tr><td>14</td><td class="l"><b>AI 工具链接</b></td>
+      <td class="l">分割/检测的推理结果<b>可作为下游工具的 ROI 或掩膜</b>；
+          多个结果则下游输入图像数自动增加。实例：分割+分类、分割+检测、检测+分割（省耗时）</td>
+      <td class="l">我们有 <code>flow/</code> DAG，但缺"<b>结果 → ROI</b>"这层语义。
+          <b class="hg">这正是孚能需要的</b>：先分割定位缺陷 → 裁剪 → 分类判类型</td><td><span class="pill red">P0</span></td></tr>
+
+  <tr><td>15</td><td class="l"><b>模态门控连线</b></td>
+      <td class="l">图源类型（2D单/2D多/3D单/2D+3D）决定可用的 AI 工具集，不匹配则无法连线</td>
+      <td class="l">在 <code>flow/node.py</code> 给节点加 modality 声明，连线时校验。
+          <b>把错误拦在配置阶段</b>，而不是训练到一半才炸</td><td><span class="pill amber">P1</span></td></tr>
+
+  <tr><td>16</td><td class="l"><b>模型版本 + 目标架构预导出</b></td>
+      <td class="l"><code>V1…V13</code> 每训一次开新目录；<code>_40_GPU.net</code> 按目标卡导出；
+          目录名可标注"复用自 V4"</td>
+      <td class="l">我们已有版本管理思路（PPT v9→v49 的习惯同源）。
+          补"<b>目标显卡预导出</b>"能消掉现场首次推理的编译等待</td><td><span class="pill amber">P1</span></td></tr>
+
+  <tr><td>17</td><td class="l"><b>Loss 曲线横轴归一化</b></td>
+      <td class="l">横轴不用 epoch，用归一化到 0→1000 的进度，每 step 一点</td>
+      <td class="l">非常便宜，收益直接：<b>不同轮数的训练可以叠在一张图上比</b>。
+          我们现在的曲线换轮数就没法比</td><td><span class="pill amber">P1</span></td></tr>
+
+  <tr><td>18</td><td class="l"><b>单位与 mm/px 标定</b></td>
+      <td class="l">显示单位可选毫米或像素；<b>X 方向与 Y 方向的精度分开设</b>（mm/px）</td>
+      <td class="l"><b class="hg">直接对上你的待办</b>：客户 KPI"最小可识别面积 ≥2 mm²"必须靠这一步换算。
+          我们上次只能把 <code>--min-area</code> 做成开关，因为缺标定。建议把标定做进项目设置</td><td><span class="pill red">P0</span></td></tr>
+
+  <tr><td>19</td><td class="l"><b>标尺与辅助线</b></td>
+      <td class="l">视图菜单里开标尺/辅助线，便于图像查看</td>
+      <td class="l">我们疑似没有。对"量尺寸、比位置"的场景很有用，实现便宜</td><td><span class="pill blue">P2</span></td></tr>
+
+  <tr><td>20</td><td class="l"><b>模型/结果报表</b></td>
+      <td class="l">模型管理栏自动生成评估报表（模型信息/概率分布图/ROC/分割 LTRB 结果）；
+          结果报表页可<b>补填工程信息与检测需求/结果</b></td>
+      <td class="l"><b class="hb">和你的 PPT 工作重合度最高。</b>
+          我们刚做了 <code>eval_seg_metrics.py</code>（10 指标 + HTML），
+          可以把它的"报表可编辑 + 可导出"补上，直接产出给客户的文档</td><td><span class="pill amber">P1</span></td></tr>
+
+  <tr><td>21</td><td class="l"><b>工程多开 + 状态三色</b></td>
+      <td class="l">一个实例里可开多个工程，用<b>底色/字色区分</b>（黑字白底=未打开、蓝字白底=已打开、白字蓝底=当前）；
+          多开实例数据目录隔离；同工程禁双开</td>
+      <td class="l">三色状态是好设计（一眼看出哪个是当前）。
+          但"多开"我们不一定需要，先做"同工程加锁"防误开更实在</td><td><span class="pill blue">P2</span></td></tr>
+
+  <tr><td>22</td><td class="l"><b>结构化日志</b></td>
+      <td class="l">格式：<code>时间 | PID | 级别 | 类别 | 消息 | [File]:x.cpp [Func]:y [Line]:n</code>；
+          工具 DLL <b>并行加载</b>（每个 0–1 ms）并配 SplashScreen</td>
+      <td class="l"><b class="hg">强烈建议学</b>。行号自动带上 ⇒ 任一报错能直接定位到源码行。
+          我们已经有 <code>crash_log.txt</code>，把它升级成这个格式成本很低、收益巨大</td><td><span class="pill amber">P1</span></td></tr>
+
+  <tr><td>—</td><td class="l">私有二进制格式</td>
+      <td class="l"><code>.isf</code>/<code>.node</code> 用 Qt QDataStream 存 blob；模型用私有 <code>.net</code></td>
+      <td class="l"><span class="pill gray">规避</span>不要学。我们继续用 JSON + 标准 <code>.pt</code>/<code>.onnx</code>/<code>.engine</code>，
+          <b>可读、可 diff、可被第三方工具处理</b> —— 这是我们的优势不是劣势</td><td><span class="pill gray">规避</span></td></tr>
+
+  <tr><td>—</td><td class="l">加密狗授权</td>
+      <td class="l">训练端/推理端分权，双品牌狗</td>
+      <td class="l"><span class="pill gray">规避</span>是商业模式选择不是技术问题。要不要做需<b>你/公司拍板</b></td><td><span class="pill gray">规避</span></td></tr>
+</table>
+
+<h2 id="s7">七、DL Studio 落地清单</h2>
+<p>按"改动最小 / 收益最大"排序。括号里是建议落到的文件。</p>
+
+<h3><span class="pill red">P0</span> 直接影响项目效果（建议先做这 6 件）</h3>
+<table>
+  <tr><th class="nowrap" style="width:56px">#</th><th style="width:210px">改造项</th><th class="l">具体做法</th></tr>
+  <tr><td class="n">P0-1</td><td class="l"><b>推理参数（后处理过滤）层</b></td>
+      <td class="l">在推理出口加一层可配置过滤：<code>ScoreThreshold / AreaThreshold / MaxDetectCount</code>（先做三项），
+          每项配 <code>Enable</code> 开关。评估工具 <code>tools/eval_seg_metrics.py</code> 增加
+          <code>--score-thr/--area-thr</code>，让指标口径与产线一致。<br>
+          <span class="small">⚠️ 阈值默认值与是否启用，需你拍板</span></td></tr>
+  <tr><td class="n">P0-2</td><td class="l"><b>图像四态标记</b></td>
+      <td class="l">标注/结果数据结构加 <code>verdict ∈ {正常, 过杀, 漏杀, 存疑}</code> 字段（不影响训练）；
+          列表加四个按钮 + 一列；评估报表按 verdict 分组统计。<br>
+          <span class="small">收益：现场过杀/漏检统计从手工变成一键</span></td></tr>
+  <tr><td class="n">P0-3</td><td class="l"><b>难例筛选器</b></td>
+      <td class="l">在 <code>ui/main_window.py</code> 列表上方加条件构建器（字段/条件/值/AND-OR），
+          支持"结果类别""分数""verdict"，命中后一键"加入训练集"。<br>
+          <span class="small">先做 4 个字段 + 3 个条件，不要一开始就做语法检测</span></td></tr>
+  <tr><td class="n">P0-4</td><td class="l"><b>组内操作绑定（三图）</b></td>
+      <td class="l"><code>ui/multiview_preview.py</code> 加"同步到组内"开关：主画布上的 ROI/标注变更广播到 te_1/te_2。<br>
+          <span class="small">收益：标注工时 ÷3</span></td></tr>
+  <tr><td class="n">P0-5</td><td class="l"><b>结果 → ROI 传递节点</b></td>
+      <td class="l"><code>flow/nodes/</code> 增加 <code>ResultToRoi</code>：把上游分割/检测结果转成下游的 ROI 或掩膜，
+          支持"多结果 → 输入图像数增加"。<br>
+          <span class="small">这是"先定位再判别"流水线的前提</span></td></tr>
+  <tr><td class="n">P0-6</td><td class="l"><b>mm/px 标定</b></td>
+      <td class="l">项目设置里加"显示单位（mm/px）"+"X/Y 方向精度"。所有面积/尺寸类显示按标定换算。<br>
+          <span class="small">⚠️ 标定值必须你提供，我不预设</span></td></tr>
+</table>
+
+<h3><span class="pill amber">P1</span> 显著提效</h3>
+<table>
+  <tr><th class="nowrap" style="width:56px">#</th><th style="width:210px">改造项</th><th class="l">具体做法</th></tr>
+  <tr><td class="n">P1-1</td><td class="l">滑窗训练（PatchSize/StepSize）</td><td class="l">大图分块 + 重叠融合；先支持"整图 / 分块"二选一，块大小与步长给默认值</td></tr>
+  <tr><td class="n">P1-2</td><td class="l">增广参数化（每项独立开关）</td><td class="l">拆掉"总开关 + 三档强度"，改成 10 项 × (值 + Enable)；参数值旁加"悬停预览"</td></tr>
+  <tr><td class="n">P1-3</td><td class="l">参数自适应搜索（增广）</td><td class="l">3×3 网格 × 10 轮短训练，输出参数重要性 + 最佳值。⚠️ 轮数/搜索空间待你定</td></tr>
+  <tr><td class="n">P1-4</td><td class="l">二值化自动标注</td><td class="l">OpenCV 阈值（手调 / Otsu 自适应）→ 直接生成掩膜或标注，支持反转</td></tr>
+  <tr><td class="n">P1-5</td><td class="l">Loss 曲线横轴归一化</td><td class="l">坐标轴改为归一化进度，支持多条曲线叠加对比</td></tr>
+  <tr><td class="n">P1-6</td><td class="l">结构化日志</td><td class="l"><code>时间 | PID | 级别 | 模块 | 消息 | 文件:行号</code>；用 Python <code>logging</code> + <code>%(filename)s:%(lineno)d</code>，几乎零成本</td></tr>
+  <tr><td class="n">P1-7</td><td class="l">任务队列</td><td class="l">训练/推理统一入队，串行执行；队列面板可看/可取消；训练完自动关曲线窗</td></tr>
+  <tr><td class="n">P1-8</td><td class="l">模型按目标卡预导出</td><td class="l"><code>inference/predictor.py</code> 已有 TRT 抽象，补"导出时选择目标 GPU 架构"</td></tr>
+  <tr><td class="n">P1-9</td><td class="l">评估报表可编辑导出</td><td class="l">在现有 HTML 报表上加"工程信息 / 检测需求 / 结论"可填区，直接出客户文档</td></tr>
+</table>
+
+<h3><span class="pill blue">P2</span> 产品化完善</h3>
+<table>
+  <tr><th class="nowrap" style="width:56px">#</th><th style="width:210px">改造项</th><th class="l">具体做法</th></tr>
+  <tr><td class="n">P2-1</td><td class="l">模态门控连线</td><td class="l"><code>flow/node.py</code> 节点声明 input/output modality，<code>ui/flow_editor.py</code> 连线时校验并提示</td></tr>
+  <tr><td class="n">P2-2</td><td class="l">连接端口化</td><td class="l">边从 <code>(from,to)</code> 升级为 <code>(from, from_port, to, to_port)</code>，为多输入节点铺路</td></tr>
+  <tr><td class="n">P2-3</td><td class="l">图像 Uid + 托管副本</td><td class="l">项目内图片引入 Uid 与 <code>SrcPath</code> 溯源，解决换批次断链</td></tr>
+  <tr><td class="n">P2-4</td><td class="l">数据集划分写入标签</td><td class="l">把 <code>train_test_split.json</code> 的内容并入每图标注（或加图级 sidecar），避免改名断链</td></tr>
+  <tr><td class="n">P2-5</td><td class="l">标尺 / 辅助线</td><td class="l">视图菜单加标尺与可拖拽辅助线</td></tr>
+  <tr><td class="n">P2-6</td><td class="l">OpenVINO 后端</td><td class="l">给无 N 卡机器（含 Intel 核显/NPU）加兜底推理后端</td></tr>
+</table>
+
+<div class="box alert">
+  <h3 style="margin-top:0">关于"对比分割 / 对比分类（CP）"—— 单独提一条</h3>
+  <p>它有一个我们没有的工具类别：<b>导入两组图（标准图 + 检测图），按序号一一对应，模型学"差异"</b>。</p>
+  <p style="margin-bottom:0">
+    这在你当前项目里的价值可能被低估了：187 料（3/4 号机，来料好）和 233 料（5/6/8 号机，NG 率 60–78%）的
+    <b>OK 图本身就长得不一样</b>。用普通分割/分类，模型会去学"来料长相"而不是"缺陷"，一换来料就崩。
+    对比式建模从原理上把"来料差异"减掉，只留下差异区域。<br>
+    <b class="hl">这条要不要做、以及要不要先在某个缺陷上试点，需要你判断</b>——我不猜。
+  </p>
+</div>
+
+<h2 id="s8">八、不该照抄的部分 + 待你拍板</h2>
+<div class="two">
+  <div class="box" style="margin:0">
+    <h4 style="margin-top:0"><span class="pill gray">不建议学</span></h4>
+    <ul style="margin-bottom:0">
+      <li><b>私有二进制格式</b>（.isf/.node 的 QDataStream blob、.net 模型）
+          —— 牺牲可读性与可 diff 能力，换取的是"防破解"，不是"好用"。</li>
+      <li><b>OpenCASCADE 整套 CAD 内核</b> —— 换来了 8.9 GB 安装体积。我们用轻量方案即可。</li>
+      <li><b>加密狗</b> —— 商业决策，且会给现场调试添麻烦（换机、驱动、授权服务器）。</li>
+      <li><b>"验证集推荐不设"</b> —— 这是它单一范式下的简化；
+          我们数据集小（柳州项目 val 只有 53 张），<b>验证集恰恰是防过拟合的关键</b>，别学。</li>
+      <li><b>训练塞进 C++ 主进程</b> —— 它这么做是历史包袱。我们 Python 子进程隔离更稳。</li>
+    </ul>
+  </div>
+  <div class="box warnbox" style="margin:0">
+    <h4 style="margin-top:0"><span class="pill amber">待你拍板</span></h4>
+    <ol style="margin-bottom:0">
+      <li><b>这份"借鉴"的合规性质</b>：iCogtiveFlow 与你手上的 iSenseFlow 工程同源
+          （工程标识都是 <code>iSenseFlow_Project</code>）。
+          是自家产品线还是外部竞品，决定我们能借鉴到什么深度 —— <b>这个我需要你明确</b>。</li>
+      <li><b>推理参数默认值</b>（分数阈值 / 面积阈值 / 最大检测数）—— 涉及产线口径，我不预设。</li>
+      <li><b>mm/px 标定值</b>（X/Y 各向）—— 客户 KPI"最小可识别面积 2 mm²"要靠它，
+          这也直接决定我上次做的 <code>--min-area</code> 该取多少。</li>
+      <li><b>参数自适应搜索</b>的算力预算（搜索空间 × 每轮 epoch）。</li>
+      <li><b>对比分割/对比分类</b>要不要立项试点。</li>
+      <li><b>P0 六项要不要排进日程</b>，以及先做哪一项。</li>
+    </ol>
+  </div>
+</div>
+
+<div class="box infobox">
+  <h3 style="margin-top:0">附：本次取证的完整来源（可复核）</h3>
+  <table>
+    <tr><th style="width:230px">来源</th><th class="l">取到了什么</th></tr>
+    <tr><td class="l"><code>documents\iCogtiveFlow说明书V1.4.pdf</code></td>
+        <td class="l">96 页，11 章；书签目录 + 全文（含 22 张参数说明表）</td></tr>
+    <tr><td class="l"><code>dependentList.json</code></td>
+        <td class="l">91 个必需 DLL 清单 → 反推技术栈（libtorch / TensorRT / OpenVINO / OpenCV / OCC）</td></tr>
+    <tr><td class="l"><code>tools\iCogtiveFlowTool_*.dll</code>（22 个）</td>
+        <td class="l">工具清单与命名规范</td></tr>
+    <tr><td class="l"><code>nets\pretrained_dl_*.net</code>（27 个）</td>
+        <td class="l">模型尺寸阶梯与任务缩写</td></tr>
+    <tr><td class="l"><code>logs\2026-10-13.log</code>（387 行）</td>
+        <td class="l">启动流程、并行加载、GPU 探测结果、日志格式</td></tr>
+    <tr><td class="l">国轩工程 <code>...撕裂检测...isf</code>（1.4 MB）</td>
+        <td class="l">1247 图像池 + 2 节点 + 1 连线；<b>Segmentation2D 的完整 52 参数</b>；13 个模型版本</td></tr>
+    <tr><td class="l">孚能工程 <code>...凹凸点...isf</code>（0.36 MB）</td>
+        <td class="l">标注格式 v5.3.1 样本；节点目录结构</td></tr>
+    <tr><td class="l"><code>recentProjects.ini</code> / <code>UserMsg*.ini</code> / <code>ViewTempState.dat</code></td>
+        <td class="l">工程路径、CodeMeter 授权模板、版本号 1.1.1.66</td></tr>
+  </table>
+  <p class="small" style="margin-bottom:0">
+    以上全部为随软件发布的<b>文档、配置与数据文件</b>。未反编译、未修改、未运行其训练/推理功能
+    （该软件当前正在本机运行，PID 5040，我只读取了其目录下的静态文件）。
+  </p>
+</div>
+
+<div class="foot">
+  报告生成 2026-10-13 ｜ 对照对象 DL Studio（<code>E:\00-软件\ai_training_platform</code>）｜
+  全部结论标注了「事实 / 判断 / 待决策」三类来源，凡属判断与决策项均未擅自落地。
+</div>
+
+</div>
+</body>
+</html>

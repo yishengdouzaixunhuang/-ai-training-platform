@@ -9,22 +9,24 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtGui import QColor
 from PyQt5.QtCore import Qt, QSize
 
+# 主题感知的"次级文字"前景色：写死 #cccccc 在浅色主题的白底上会看不清（见 themes.py）
+from ui.themes import fg_muted
+
 STYLE = """
-QDialog { background-color: #0D1220; }
-QListWidget { border: 1px solid #2A3A5C; border-radius: 4px; background-color: #0E1420; font-size: 12px; color: #E6F0FF; }
-QListWidget::item { padding: 3px 6px; border-bottom: 1px solid #1A2440; }
-QListWidget::item:hover { background-color: #131B2E; }
-QPushButton { border: 1px solid #2A3A5C; border-radius: 4px; padding: 6px 14px; background-color: #131B2E; font-size: 13px; color: #D6E4FF; }
-QPushButton:hover { background-color: #1B2740; border-color: #00E5FF; color: #00E5FF; }
+/* 只保留**语义色**（错误红 / 主行动按钮），其余配色一律让位给主题表。
+   为什么必须精简：以前这里是一整套写死的深色皮肤，里面含 #FF2A6D / #061018 / #33ECFF
+   等语义色 —— themes.py 的 sweep_inline_styles 按设计"碰到语义色就整段保留"，
+   于是这段深色皮肤在浅色主题下照旧生效；而它**没覆盖到的属性**（QCheckBox 的背景、
+   普通 QLabel 的文字色…）又回头去浅色主题表取 —— 深底浅字 / 浅底浅字混在一起，
+   整窗看不清（用户实测反馈：「换成浅色主题后，包括但不限于图片列表等地方都看不清文字」）。
+   精简后：背景/文字/边框全交给主题表（深色主题深、浅色主题浅），
+   只把"用颜色表达含义"的几条留在这里。 */
 QPushButton#ok_btn { background-color: #00E5FF; color: #061018; border: none; font-weight: bold; }
 QPushButton#ok_btn:hover { background-color: #33ECFF; }
-QPushButton#ok_btn:disabled { background-color: #0E3A52; color: #55607A; }
-QPushButton#cancel_btn { background-color: transparent; border: 1px solid #2A3A5C; }
-QCheckBox { font-size: 13px; color: #D6E4FF; }
-QLabel#col_header { font-size: 14px; font-weight: bold; color: #00E5FF; }
+QPushButton#ok_btn:disabled { color: #55607A; }
 QLabel#error_label { font-size: 12px; color: #FF2A6D; padding: 4px 0; }
-QLabel#count_label { font-size: 13px; font-weight: bold; color: #8A93A6; }
-QFrame#placeholder { background-color: #0E1420; border: 1px dashed #2A3A5C; border-radius: 4px; }
+QLabel#col_header { font-size: 14px; font-weight: bold; }
+QListWidget::item { padding: 3px 6px; }
 """
 
 class MixedAddImagesDialog(QDialog):
@@ -178,12 +180,12 @@ class MixedAddImagesDialog(QDialog):
                 it = QListWidgetItem(str(i+1) + ". " + os.path.basename(self._gray_files[i]))
                 it.setData(Qt.UserRole, self._gray_files[i]); self._gl.addItem(it)
             else:
-                it = QListWidgetItem(str(i+1) + ". -"); it.setForeground(QColor("#cccccc")); self._gl.addItem(it)
+                it = QListWidgetItem(str(i+1) + ". -"); it.setForeground(fg_muted()); self._gl.addItem(it)
             if i < len(self._height_files):
                 it = QListWidgetItem(str(i+1) + ". " + os.path.basename(self._height_files[i]))
                 it.setData(Qt.UserRole, self._height_files[i]); self._hl.addItem(it)
             else:
-                it = QListWidgetItem(str(i+1) + ". -"); it.setForeground(QColor("#cccccc")); self._hl.addItem(it)
+                it = QListWidgetItem(str(i+1) + ". -"); it.setForeground(fg_muted()); self._hl.addItem(it)
         self._gc_lbl.setText(str(len(self._gray_files)))
         self._hc_lbl.setText(str(len(self._height_files)))
     def _on_hover(self, item):

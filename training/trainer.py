@@ -478,6 +478,12 @@ class Trainer:
             "in_channels": self.in_channels,
             "views": list(self.views),
             "history": self.history,
+            # ★ 2026-10-22：把训练裁剪尺寸写进 checkpoint。
+            #   推理端要按**同一个块尺寸**滑窗，否则同一块缺陷在块里大小对不上，
+            #   "训练 mIoU 0.95、一推理全漏" 这种诡异现象就是这么来的
+            #   （老模型没这个字段，推理端会退回 200 或用 .train_settings.json 兜底）。
+            "image_size": (list(self.image_size) if isinstance(self.image_size, (tuple, list))
+                           else self.image_size),
         }, path)
 
         # ★ 版本留档（对标友商 SG_Tiny_V1/V2/V3…）：往 models/V<n>_<模型名>/ 也放一份，

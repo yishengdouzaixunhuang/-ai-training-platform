@@ -1,0 +1,845 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>DL Studio 对标 iCogtiveFlow · 功能规格与独立实现路线图 V4</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --card:#fff; --ink:#1d2129; --ink2:#4e5969; --ink3:#86909c;
+    --line:#e5e6eb; --accent:#165dff; --accent-bg:#e8f3ff;
+    --ok:#00b42a; --ok-bg:#e8ffea; --warn:#ff7d00; --warn-bg:#fff7e8;
+    --err:#f53f3f; --err-bg:#ffece8; --purple:#722ed1; --purple-bg:#f5e8ff;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font-family:-apple-system,'Segoe UI','Microsoft YaHei',sans-serif;
+       font-size:14px;line-height:1.75;}
+  .wrap{max-width:1120px;margin:0 auto;padding:32px 24px 72px;}
+  header{background:linear-gradient(135deg,#0e2a5c,#165dff);color:#fff;
+         border-radius:14px;padding:28px 32px;margin-bottom:24px;}
+  header h1{margin:0 0 8px;font-size:24px;letter-spacing:.4px;}
+  header .sub{opacity:.92;font-size:13px;}
+  header .meta{margin-top:14px;font-size:12.5px;opacity:.85;
+               border-top:1px solid rgba(255,255,255,.25);padding-top:12px;}
+  h2{font-size:18px;margin:36px 0 12px;padding-left:11px;
+     border-left:4px solid var(--accent);}
+  h3{font-size:15px;margin:22px 0 8px;color:var(--ink);}
+  h4{font-size:13.5px;margin:16px 0 6px;color:var(--ink2);}
+  p{margin:9px 0;color:var(--ink2);}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:11px;
+        padding:18px 20px;margin:14px 0;}
+  table{width:100%;border-collapse:collapse;margin:12px 0;font-size:12.8px;
+        background:var(--card);}
+  th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;
+        vertical-align:top;}
+  th{background:#f2f3f5;font-weight:600;color:var(--ink);}
+  tbody tr:nth-child(even){background:#fafbfc;}
+  code{background:#f2f3f5;padding:1.5px 5px;border-radius:4px;
+       font-family:Consolas,'Courier New',monospace;font-size:12.3px;
+       color:#c7254e;}
+  pre{background:#1d2129;color:#e5e6eb;padding:13px 15px;border-radius:9px;
+      overflow-x:auto;font-size:12.3px;line-height:1.6;}
+  pre code{background:none;color:inherit;padding:0;}
+  .tag{display:inline-block;padding:1px 8px;border-radius:20px;font-size:11.5px;
+       font-weight:600;vertical-align:middle;white-space:nowrap;}
+  .t-ok{background:var(--ok-bg);color:var(--ok);}
+  .t-warn{background:var(--warn-bg);color:var(--warn);}
+  .t-err{background:var(--err-bg);color:var(--err);}
+  .t-info{background:var(--accent-bg);color:var(--accent);}
+  .t-p{background:var(--purple-bg);color:var(--purple);}
+  .t-g{background:#f2f3f5;color:var(--ink3);}
+  .box{border-radius:9px;padding:13px 16px;margin:13px 0;font-size:13.4px;}
+  .box-ok{background:var(--ok-bg);border-left:4px solid var(--ok);}
+  .box-warn{background:var(--warn-bg);border-left:4px solid var(--warn);}
+  .box-err{background:var(--err-bg);border-left:4px solid var(--err);}
+  .box-info{background:var(--accent-bg);border-left:4px solid var(--accent);}
+  .box-p{background:var(--purple-bg);border-left:4px solid var(--purple);}
+  ul,ol{margin:8px 0;padding-left:22px;color:var(--ink2);}
+  li{margin:5px 0;}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px;}
+  .grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;}
+  @media(max-width:800px){.grid2,.grid3{grid-template-columns:1fr}}
+  .k{font-family:Consolas,monospace;font-size:12.3px;color:#c7254e;}
+  .muted{color:var(--ink3);font-size:12.4px;}
+  .hl{background:#fffbe6;padding:1px 4px;border-radius:3px;}
+  .toc{background:var(--card);border:1px solid var(--line);border-radius:11px;
+       padding:14px 22px;font-size:13px;}
+  .toc a{color:var(--accent);text-decoration:none;}
+  .toc a:hover{text-decoration:underline;}
+  .stat{background:var(--card);border:1px solid var(--line);border-radius:10px;
+        padding:12px 14px;text-align:center;}
+  .stat .n{font-size:21px;font-weight:700;color:var(--accent);}
+  .stat .l{font-size:11.5px;color:var(--ink3);margin-top:3px;}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>DL Studio 对标 iCogtiveFlow · 功能规格与独立实现路线图</h1>
+  <div class="sub">把 iCogtiveFlow 的「产品设计意图」转成我们自己的施工图 —— 思想层借鉴，实现全部自研</div>
+  <div class="meta">
+    <b>版本</b> V4 （承接 V1 字符串层 / V2 训练平台层 / V3 Ghidra 架构层）　｜　
+    <b>日期</b> 2026-10-14<br>
+    <b>对标对象</b> <code>iCogtiveFlow V1R1C1B066</code>（22 个工具 dll + 主程序 + 平台 dll，共 8.1 GB）<br>
+    <b>分析通路</b> 官方说明书 V1.4（96 页）＋ PE 导出/RTTI 层（22 个工具）＋ Ghidra 12.1.4 函数级（3 个工具：Segment2D / Classify2D / AnomalyDetect2D）<br>
+    <b>落地对象</b> <code>E:\00-软件\ai_training_platform</code>（DL Studio，164 个 py / 1578 KB）
+  </div>
+</header>
+
+<div class="box box-err">
+  <b>方法声明（先划界）</b><br>
+  本报告只做两件事：① 提取 iCogtiveFlow 的<b>功能规格与工程经验</b>（思想/方法层，不受著作权保护）；
+  ② 映射到 DL Studio 并给出<b>从零自研</b>的实现路线。
+  <b>不包含、也不会产出任何等价源码</b> —— 反编译产物既拿不到原始类型定义、Qt 的 <code>.ui</code>/资源、
+  信号槽连接与训练侧 Python，也无法成为可编译工程。所有 DL Studio 侧代码均由我们独立设计实现。
+</div>
+
+<div class="toc">
+  <b>目录</b>　
+  <a href="#s1">1 摘要：三个结论</a>　
+  <a href="#s2">2 证据链与方法</a>　
+  <a href="#s3">3 iCogtiveFlow 全景</a>　
+  <a href="#s4">4 核心抽象：一个"工具"是什么</a>　
+  <a href="#s5">5 十二项功能规格</a>　
+  <a href="#s6">6 P0 专章：五态标记与难例闭环</a>　
+  <a href="#s7">7 差距矩阵</a>　
+  <a href="#s8">8 实现路线图</a>　
+  <a href="#s9">9 不该照抄的部分</a>　
+  <a href="#s10">10 待拍板</a>　
+  <a href="#s11">11 证据清单</a>
+</div>
+
+<h2 id="s1">1 摘要：三个结论</h2>
+
+<div class="grid3">
+  <div class="stat"><div class="n">11 章 / 22 工具</div><div class="l">iCogtiveFlow 功能面</div></div>
+  <div class="stat"><div class="n">164 py / 1578 KB</div><div class="l">DL Studio 现有规模</div></div>
+  <div class="stat"><div class="n">12 项 / 4 期</div><div class="l">本次规格与排期</div></div>
+</div>
+
+<div class="box box-ok">
+  <b>结论一：差距不在「算子流框架」，那条路我们已经走完大半。</b><br>
+  DL Studio 已有 <code>flow/</code> 包（<code>frame.py</code> / <code>node.py</code> / <code>registry.py</code> / <code>runner.py</code> / <code>batch.py</code>）
+  与 <code>ui/flow_editor.py</code> 流程编辑器，节点已覆盖 cls/det/seg/ocr/ocv/visualize/calculator/output —— 与 iCogtiveFlow 的
+  「流程配置 → 拖工具节点 → 连线」是同一范式。更何况 <code>NodeParam</code> 这套<b>声明式参数 Schema</b>
+  （<code>name/label/ptype/default/min/max/step/choices/unit/tooltip</code>，面板自动生成）比对方的
+  <code>bindFilter(int, IEditControl*, Type)</code> 手工绑定<b>更现代</b>。这一层不需要重做。
+</div>
+
+<div class="box box-warn">
+  <b>结论二：真正的差距是四条「闭环」没闭上。</b><br>
+  ① <b>数据闭环</b> —— 过杀/漏杀只是脑子里的印象，平台上没有沉淀（缺五态标记、缺难例转化）；<br>
+  ② <b>参数闭环</b> —— 训练参数散在 <code>training/</code>、<code>classification/</code>，推理过滤只有单点阈值，没有统一的「训练/增强/推理」三组参数页；<br>
+  ③ <b>评估闭环</b> —— 模型产生后没有「模型管理 + 效果报表」，评估结果（ROC / 概率分布 / 混淆矩阵）无法按模型归档对比；<br>
+  ④ <b>编排闭环</b> —— 训练/推理是同步阻塞调用，没有任务队列，长任务时界面被占住。
+</div>
+
+<div class="box box-info">
+  <b>结论三：现场最痛的两个点，iCogtiveFlow 已经用产品化手段回答过了。</b><br>
+  你们现场是<b>凹点过杀</b> + <b>封印贯穿漏检</b> 并存。对方的答案分别是：
+  <b>「过杀」是一等公民标记</b>（与漏杀并列，可统计、可回看、<b>但不进训练集</b>），以及
+  <b>推理结果可直接"转成标注"</b>（<code>Convert Label</code> / <code>Mask To Label</code>）形成难例回流。
+  这两件事恰好是当前 DL Studio 完全没有的，也是本路线图的一期重点。
+</div>
+
+<h2 id="s2">2 证据链与方法</h2>
+
+<table>
+  <thead><tr><th>层</th><th>来源</th><th>拿到什么</th><th>可信度</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>产品意图</td>
+      <td><code>documents\iCogtiveFlow说明书V1.4.pdf</code>（96 页，修订至 2025-11-26）</td>
+      <td>11 章功能定义、参数语义、工程经验、工具选型建议</td>
+      <td><span class="tag t-ok">最高</span> 厂商自述</td>
+    </tr>
+    <tr>
+      <td>接口面</td>
+      <td>22 个工具 dll 的 PE 导出 / RTTI 类型名 / 字符串</td>
+      <td>每个工具约 50–60 个业务类、任务消息名、参数键名</td>
+      <td><span class="tag t-ok">高</span> 机械提取</td>
+    </tr>
+    <tr>
+      <td>内部结构</td>
+      <td>Ghidra 12.1.4 官方 headless，3 个工具函数级还原</td>
+      <td>类方法分布（谁是框架、谁是工具特有）、任务协议</td>
+      <td><span class="tag t-warn">中</span> 符号可靠、语义靠推断</td>
+    </tr>
+    <tr>
+      <td>落地现状</td>
+      <td>DL Studio 源码与架构文档（2026-08-02 算子流路线）</td>
+      <td>已有能力清单、痛点诊断</td>
+      <td><span class="tag t-ok">高</span> 我们自己的一手代码</td>
+    </tr>
+  </tbody>
+</table>
+
+<h3>2.1 关键手法：用「说明书 × 二进制」互证</h3>
+<p>说明书回答「<b>做什么、为什么</b>」，二进制回答「<b>有哪些、叫什么</b>」。两者一交叉，很多原本要靠猜的设计就落地了。举三个实例：</p>
+<table>
+  <thead><tr><th>问题</th><th>说明书给的</th><th>二进制给的</th><th>合起来得到的结论</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>标记体系到底几态？</td>
+      <td>P32：「可以进行 [正常]、[过杀]、[漏杀]、[存疑] <b>四种</b>标记，该标记<b>不影响训练</b>，只做标记使用」</td>
+      <td>按钮名 <code>btnNormal</code> / <code>btnOverkill</code> / <code>btnEscape</code> / <code>btnDoubt</code>，四个工具里都出现</td>
+      <td>就是<b>四态+纯管理用途</b>。V3 里推测的第五态 "Train" 其实是<b>数据集归属</b>，不是同级标记 —— 本报告已修正</td>
+    </tr>
+    <tr>
+      <td>掩膜到底是什么？</td>
+      <td>P29：「掩膜限制了工具处理的区域，即<b>训练时不会对掩膜区域采样，但推理阶段会采样</b>」</td>
+      <td>框架类 <code>MaskPattern</code> 与 <code>LabelPattern</code> 成对出现，两个工具都有 <code>MaskPattern</code></td>
+      <td>掩膜是<b>训练/推理不对称</b>的一等数据。分割场景下语义是"限制学习范围"，不是"忽略结果"</td>
+    </tr>
+    <tr>
+      <td>工具之间的共性有多强？</td>
+      <td>P21：「由于 Ai 工具具有相似的工作界面，接下来选取 2D 分割工具进行举例」</td>
+      <td>Segment2D / Classify2D / AnomalyDetect2D 三者的<b>共享外壳</b>完全一致，差异只有数据类与消息名</td>
+      <td>存在一个明确的<b>工具插件框架</b>。这决定了我们的节点基类要扩展成什么样（见第 4 章）</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2 id="s3">3 iCogtiveFlow 全景</h2>
+
+<h3>3.1 三层架构（含第三方 AI 栈）</h3>
+<table>
+  <thead><tr><th>层</th><th>模块</th><th>体量</th><th>职责</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>平台层</td>
+      <td><code>VisualEditor_IAL</code> / <code>_ImageProcess</code> / <code>_GraphData</code> / <code>_CAL</code> / <code>_Metrology</code> / <code>_GraphItem</code> / <code>_GraphView</code> / <code>_Base</code> / <code>_ConfigFile</code> / <code>_GeometryFunc</code> / <code>_CloudView</code></td>
+      <td>IAL 44.9 MB<br>CAL 25.2 MB<br>ImageProcess 23.3 MB<br>GraphData 14.9 MB<br>Metrology 13.4 MB</td>
+      <td>图像算法库（IAL）、图像处理、图形数据模型、标定、测量、云图 —— 与 AI 无关的通用视觉底座</td>
+    </tr>
+    <tr>
+      <td>框架层</td>
+      <td><code>iCogtiveFlow_Train</code> / <code>_Tool</code> / <code>_Base</code> / <code>_Data</code> / <code>_FlowEditor</code> / <code>_GraphEditor</code> / <code>_AiTool</code> / <code>_View</code> / <code>_Ui</code> / <code>_Utils</code></td>
+      <td>Train 37.4 MB<br>FlowEditor 391 KB<br>其余 0.1–4 MB</td>
+      <td>训练框架、工具基类、数据模型、流程图编辑器、图形编辑器</td>
+    </tr>
+    <tr>
+      <td>工具层</td>
+      <td><code>tools\</code> 下 22 个 <code>iCogtiveFlowTool_*.dll</code></td>
+      <td>每个 235 KB – 868 KB</td>
+      <td>每个工具一个 dll，体量高度一致（除图片工具）</td>
+    </tr>
+    <tr>
+      <td>AI 运行时</td>
+      <td>LibTorch（<code>torch_cuda</code> 1.4 GB / <code>torch_cpu</code> 252 MB）、TensorRT（<code>nvinfer_10</code> 440 MB）、OpenVINO、OpenCV 4.2.0、cuDNN 9</td>
+      <td>≈ 8 GB</td>
+      <td>训练与推理后端（<span class="tag t-warn">推断</span>训练走 LibTorch，部署走 TensorRT）</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="box box-info">
+  <b>对我们的意义：</b>他们的"平台层 + 框架层 + 工具层"三分离，和 DL Studio 的
+  <code>core/</code>（通用）+ <code>flow/</code>（框架）+ <code>flow/nodes/</code>（算子）<b>结构同构</b>。
+  这说明我们 8 月的算子流重构方向是对的，也说明<b>工具层应该继续薄下去</b>——每个工具只写"自己特有的那点东西"。
+</div>
+
+<h3>3.2 22 个工具矩阵（按图源类型组织）</h3>
+<p>从 PE 层提取：19 个 AI 工具都带一对任务消息 <code>&lt;Tool&gt;Train</code> / <code>&lt;Tool&gt;Infer</code>；
+3 个图片工具（<code>Crop</code> / <code>DiskImage</code> / <code>TrueCrop</code>）没有，它们是纯数据操作节点。</p>
+
+<table>
+  <thead>
+    <tr><th>能力族</th><th>2D 单图</th><th>3D 单图</th><th>2D 多图</th><th>2D+3D 混合</th><th>对比（CP）</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>分割</td><td><code>Segment2D</code></td><td><code>Segment3D</code></td><td><code>MultiSegment</code></td><td><code>SegmentMixed</code></td><td><code>SegmentCP</code></td></tr>
+    <tr><td>分类</td><td><code>Classify2D</code></td><td><code>Classify3D</code></td><td><code>MultiClassify</code></td><td><code>ClassifyMixed</code></td><td><code>ClassifyCP</code></td></tr>
+    <tr><td>目标检测</td><td><code>ObjectDetect2D</code><br><code>RotObjectDetect2D</code></td><td><code>ObjectDetect3D</code></td><td>—</td><td>—</td><td>—</td></tr>
+    <tr><td>其他</td><td><code>InstanceSegmentation2D</code><br><code>EdgeDetect2D</code><br><code>KeyPointDetect2D</code><br><code>OCR2D</code><br><code>AnomalyDetect2D</code></td><td><code>AnomalyDetect3D</code></td><td>—</td><td>—</td><td>—</td></tr>
+  </tbody>
+</table>
+<p class="muted">后缀含义（<span class="tag t-warn">推断</span>，依据说明书第 9 章的图源分类）：
+<code>3D</code> = 高度图/点云；<code>Mixed</code> = 2D+3D 双通道（对应说明书 9.4）；<code>Multi</code> = 一组多张图（对应 9.2 2D多图）；
+<code>CP</code> = 对比类（对应说明书 4.3 对比分割 / 5.3 对比分类，需两组图 Group Size=2）。</p>
+
+<div class="box box-ok">
+  <b>直接映射 DL Studio：</b>我们现有模块已覆盖 <code>Segment2D</code> / <code>Classify2D</code> / <code>ObjectDetect2D</code> /
+  <code>OCR</code> / <code>OCV</code> 这 5 个（+ 混合分类 <code>mixed_viewer</code> / <code>dual_model</code>，对应 <code>ClassifyMixed</code> 的雏形）。
+  <b>缺的高价值项</b>：<code>AnomalyDetect2D</code>（无监督，现场"来料好但样本少"的批次最适用）、
+  <code>InstanceSegmentation2D</code>（计数+面积）、<code>RotObjectDetect2D</code>（我们已有 OBB，可直接对齐命名）、
+  <code>SegmentCP</code>（对比分割 —— 对同一料号同一位置的批次对比极有用）。
+</div>
+
+<h2 id="s4">4 核心抽象：一个"工具"是什么</h2>
+
+<p>这是整份报告最有价值的一节。把三个工具的 dump 叠起来看，框架部分<b>完全重合</b>，工具部分各自不同：</p>
+
+<table>
+  <thead><tr><th>归属</th><th>角色</th><th>类 / 键名</th><th>出现在</th></tr></thead>
+  <tbody>
+    <tr><td rowspan="6">框架<br><span class="muted">（工具间共享）</span></td>
+      <td>图形数据模型</td><td><code>CHhGraphData</code>（160–173 个方法）</td><td>三个都有</td></tr>
+    <tr><td>区域/矩形数据</td><td><code>CHhRegionData</code>、<code>CHhRectData</code>、<code>HHRotBox2D</code></td><td>三个都有</td></tr>
+    <tr><td>标注模式</td><td><code>MaskPattern</code>、<code>LabelPattern</code>、<code>EditPattern</code></td><td>三个都有</td></tr>
+    <tr><td>三个配置页</td><td><code>ParamsPage</code>、<code>LabelManagePage</code>、<code>ModelManagePage</code></td><td>三个都有</td></tr>
+    <tr><td>任务协议</td><td><code>CHhTask</code>、<code>CHhTaskControl</code>、<code>TaskBase</code></td><td>三个都有</td></tr>
+    <tr><td>四态标记</td><td><code>btnNormal</code> / <code>btnOverkill</code> / <code>btnEscape</code> / <code>btnDoubt</code></td><td>三个都有</td></tr>
+    <tr><td rowspan="4">工具<br><span class="muted">（各自实现）</span></td>
+      <td>特有数据类</td>
+      <td>Classify2D → <code>CHhRectData</code>；AnomalyDetect2D → <code>CHhOverlayData</code>（104 方法）+ <code>AuxiliaryLineCanvas</code></td>
+      <td>各不相同</td></tr>
+    <tr><td>任务消息名</td><td><code>Classify2DTrain</code> / <code>Classify2DInfer</code>、<code>AnomalyDetect2DTrain</code> / <code>…Infer</code></td><td>一条命名规范</td></tr>
+    <tr><td>工具键</td><td><code>ScoreThreshold</code>、<code>Epoch</code>、<code>Batch</code>、<code>ModelType</code>、<code>TrainModelId</code>、<code>InferModelId</code>、<code>InferSetType</code>、<code>ChangeInferModel</code>、<code>/TempModel.net</code></td><td>键名统一</td></tr>
+    <tr><td>结果字段</td><td><code>Detected: 0</code>、<code>ResultScore</code>、<code>LabelCount</code>、<code>ClassIds</code>、<code>isLabeled</code></td><td>各不相同</td></tr>
+  </tbody>
+</table>
+
+<h3>4.1 由此得出的「工具规格」</h3>
+<p>一个工具 = <b>1 个节点类型 + 1 份参数 Schema + 2 个任务处理器 + 1 套结果结构 + 1 个标注类型声明</b>。
+DL Studio 的 <code>Node</code> 基类目前只有前三项的雏形，建议扩展为：</p>
+
+<pre><code>class ToolNode(Node):
+    """AI 工具节点的统一外壳（框架提供，工具只填自己特有的部分）。"""
+
+    # ---- 身份（已有）----
+    node_type      = "cls_infer"        # 唯一类型名
+    display_name   = "分类推理"          # 显示名
+    category       = "算法"
+    source_types   = ("2D",)            # 新增：本工具接受的图源类型
+
+    # ---- 参数：三组，而不是一坨（新增分组）----
+    PARAMS_TRAIN   = [...]              # 训练参数：epoch / batch / 网络大小 / 分块 / 采样密度
+    PARAMS_AUGMENT = [...]              # 增强参数：缩放/平移/旋转/亮度/对比度/高斯噪声/翻转
+    PARAMS_INFER   = [...]              # 推理参数：8 维阈值区间 + 排序 + 最大检测数
+    PARAMS = PARAMS_TRAIN + PARAMS_AUGMENT + PARAMS_INFER   # 让编辑器仍能平铺生成
+
+    # ---- 标注契约（新增）----
+    label_kind     = "mask"             # mask / rect / rotbox / point / tag
+    supports_mask  = True               # 是否有掩膜层（训练不采样 / 推理采样）
+
+    # ---- 生命周期（新增）----
+    def train(self, ctx) -> None: ...   # 训练，向队列汇报进度
+    def infer(self, frame) -> Frame: ... # 推理（现有 run 就是它）
+    def convert_result_to_label(self, frame) -> None: ...   # 难例回流：结果 → 标注/掩膜
+</code></pre>
+
+<div class="box box-p">
+  <b>为什么这样切：</b>iCogtiveFlow 把「参数管理 / 标注管理 / 模型管理」做成三个<b>平行</b>页签，
+  而工具之间的差异恰好落在这三处。我们把它显式声明到节点上，就能让
+  <code>ui/flow_editor.py</code> 的参数面板和 <code>ui/annotation_toolbar.py</code> 的工具栏
+  <b>按同一份 Schema 自动适配所有工具</b>，而不是每加一个工具就改一遍 UI。
+</div>
+
+<h2 id="s5">5 十二项功能规格</h2>
+
+<p>每项给四栏：对方怎么做（附证据）→ 我们现在有什么 → 差距 → 规格要点。优先级见图例。</p>
+<p class="muted">优先级：<span class="tag t-err">P0</span> 直接解现场痛点　
+<span class="tag t-warn">P1</span> 显著提效　<span class="tag t-info">P2</span> 锦上添花</p>
+
+<h3>5.1 项目与流程配置</h3>
+<table>
+  <tbody>
+    <tr><th style="width:22%">iCogtiveFlow</th>
+      <td>工程 = 一个目录；进入「流程配置」在画布上拖节点连线（说明书 2.3.1/2.3.2、3.2.1）。
+      图片工具节点在流程里承担数据入口，AI 工具节点必须<b>上级链接图片工具</b>（P27）。<br>
+      工程数据另存于 <code>iCogtiveFlow.db</code>（SQLite，<code>objects</code> 表存序列化的 Project，<code>singles</code> 存
+      <code>$NextId</code> / <code>$currentProjectId</code> / <code>$lastTaskOrder</code> 等游标）。</td></tr>
+    <tr><th>DL Studio 现状</th>
+      <td><span class="tag t-ok">已具备</span> <code>flow/</code> DAG 引擎 + <code>ui/flow_editor.py</code>（拖拽/连线/参数面板/保存加载/单图运行）；
+      <code>core/project_manager.py</code> 管项目目录，架构文档已规划 <code>projects/&lt;项目&gt;/flows/</code>。</td></tr>
+    <tr><th>差距</th>
+      <td>流程画布上的<b>"数据入口"约束</b>没做（现在可以连出非法拓扑而不报错）；时序游标 <code>$lastTaskOrder</code>（任务序号）无对应物。</td></tr>
+    <tr><th>规格要点</th>
+      <td>① 节点声明 <code>source_types</code>，连线时校验"算法节点必须能追到数据源节点"，非法连接直接拒绝并提示；
+      ② 方案 JSON 补 <code>version</code> 字段与向后兼容读取（架构文档第五章已列为配套功课，尚未落地）。</td></tr>
+  </tbody>
+</table>
+
+<h3>5.2 图片工具（Crop / TrueCrop / DiskImage）</h3>
+<table>
+  <tbody>
+    <tr><th style="width:22%">iCogtiveFlow</th>
+      <td>作为流程里的数据节点：<code>DiskImage</code>（本地磁盘，设定图源类型与 <b>Group Size</b>）；
+      <code>Crop</code> / <code>TrueCrop</code>（裁剪，说明书 2.4.2 图像裁剪工具）。
+      强调「先用裁剪工具或在算法工具里调 ROI，可以<b>减少训练/推理的时间占比</b>」（P63）。</td></tr>
+    <tr><th>DL Studio 现状</th>
+      <td><code>flow/nodes/basic.py</code> 有文件源与基础预处理；<code>ui/crop_tool.py</code>（296 行）是现成的循环裁剪工具，
+      但<b>没有节点化</b>。</td></tr>
+    <tr><th>差距</th>
+      <td>裁剪仍是 UI 工具，不是流程节点；缺"把当前图的 ROI 一键套用到整个列表"（对方 P53 有此功能）。</td></tr>
+    <tr><th>规格要点</th>
+      <td>① 新增 <code>CropNode</code>，内部复用 <code>ui/crop_tool.py</code> 的裁剪逻辑，参数 <code>x/y/w/h</code>、
+      支持"按像素/按百分比"两种输入；② ROI 批量套用：<code>Frame.meta["roi_locked"]</code> 机制，
+      列表级操作写一次即可对所有图生效；③ ROI 与裁剪的关系要在 UI 上讲清楚（裁剪改数据，ROI 只改推理范围）。</td></tr>
+  </tbody>
+</table>
+
+<h3>5.3 AI 工具工作界面（三模式 / 四图层 / 光标信息）</h3>
+<table>
+  <tbody>
+    <tr><th style="width:22%">iCogtiveFlow</th>
+      <td><b>操作模式二选一</b>：控件编辑模式（可操作裁剪区/ROI/掩膜/标注）与基础模式（仅缩放拖动）。<br>
+      <b>四个显示开关</b>（表 2-4）：掩膜 / 标注 / <b>结果</b> / <b>可能性图</b>——后者是推理概率热力图，
+      「越接近红色越重要，越接近蓝色越不重要」。<br>
+      <b>图片信息栏</b>（表 2-8）：<code>WH</code> 分辨率、<code>XY</code> 鼠标坐标、<code>RGB</code> 像素值、
+      <code>已标注</code> 数量、<code>已检出</code> 数量、<code>耗时</code> 推理耗时；另有可显隐的 <b>Loss 曲线</b>框。</td></tr>
+    <tr><th>DL Studio 现状</th>
+      <td><span class="tag t-ok">部分</span> <code>core/label_overlay.py</code> + <code>core/mask_overlay.py</code> 已拆出叠加层；
+      <code>ui/heatmap_analyzer.py</code> 有热力图；<code>inference/predictor.py</code> 已能出耗时；
+      Grad-CAM 已能出图（208 张 BMP 的历史产出）。</td></tr>
+    <tr><th>差距</th>
+      <td>① 图层是散的，没有统一的<b>图层开关条</b>（掩膜/标注/结果/可能性图 四开关）；② 没有"控件编辑 vs 基础"模式切换；
+      ③ 光标信息栏缺（<code>XY</code>/<code>RGB</code> 实时取值、<code>已标注</code>/<code>已检出</code> 计数、<code>耗时</code>）；
+      ④ 热力图目前是"事后分析"而非"实时图层"。</td></tr>
+    <tr><th>规格要点</th>
+      <td>① 在画布组件上收口一个 <code>LayerToggles</code>（四布尔），由 <code>Frame.result</code> 驱动渲染；
+      ② 推理耗时写进 <code>Frame.result["infer_ms"]</code>，与统计面板共用（见 5.10）；
+      ③ "可能性图"和我们的 Grad-CAM 是同一诉求，统一叫<b>热力图图层</b>，做成可切换 overlay 而不是单独窗口。</td></tr>
+  </tbody>
+</table>
+
+<h3>5.4 标注体系（掩膜 / 标注 / 智能标注）</h3>
+<table>
+  <tbody>
+    <tr><th style="width:22%">iCogtiveFlow</th>
+      <td>绘制工具（表 2-5）：线 / 矩形 / 圆椭圆 / 多边形 / 橡皮擦 / 多边形橡皮擦 / <b>智能标注</b> /
+      <b>二值化自动识别</b>（按阈值区间选区域，手动或自适应）/ <b>区域反转</b> / 删除选中 / 清空 / 撤销恢复。<br>
+      <b>智能标注</b>（表 2-6/2-7）：AI 先自动画，再由<b>参数区间过滤</b>——网络大小（仅 Tiny）、采样密度、
+      <b>灰度阈值</b>、<b>分数阈值</b>、<b>面积阈值</b>、<b>宽度阈值</b>、<b>高度阈值</b>、<b>角度阈值</b>、排序次序，逐个给上下限。<br>
+      <b>标注管理</b>（表 2-12）：刷新 / <b>多选合并类别</b> / 增删 / 上下移 / 全选 / 自定义颜色；
+      另有<b>标注统计栏</b>（类别、长宽、面积，点行可放大定位）。</td></tr>
+    <tr><th>DL Studio 现状</th>
+      <td><span class="tag t-ok">较好</span> <code>annotation/</code>：画笔/多边形/线条/橡皮擦、LabelMe 兼容 JSON、斜线纹理叠加、
+      标注块统计表（面积/周长/灰度/半径）、版本管理、<b>SAM 辅助标注</b>（<code>sam_assist.py</code>，能力上强于对方的智能标注）。</td></tr>
+    <tr><th>差距</th>
+      <td>① 缺<b>二值化自动识别</b>（阈值区间直接生成掩膜/标注）；② 缺<b>区域反转</b>与<b>多边形橡皮擦</b>；
+      ③ 缺<b>类别合并</b>（多选合一）——现场"同一缺陷多种叫法"历史数据整理时很有用；
+      ④ <b>掩膜层与标注层在概念上没分开</b>（对方是两套独立数据 + 不对称采样语义）。</td></tr>
+    <tr><th>规格要点</th>
+      <td>① 掩膜独立成 <code>mask</code> 数据集（与 label 并列），并在训练采样处实现
+      "<b>掩膜区不采样、推理不屏蔽</b>"；② 补二值化一键生成（阈值区间 + 手动/自适应两模式）；
+      ③ 标注管理加"合并类别"（含把合并映射写进版本记录，可回溯）。</td></tr>
+  </tbody>
+</table>
+
+<h3>5.5 参数管理（训练 / 增强 / 推理 三组）</h3>
+<table>
+  <tbody>
+    <tr><th style="width:22%">iCogtiveFlow</th>
+      <td><b>训练参数</b>（表 2-9）：训练轮数 / 训练批次 / <b>网络大小（小中大）</b> / 模型（迁移基座）/
+      <b>分块</b>（滑窗大小 + 步长）/ <b>图像块</b> / 采样密度。<br>
+      原文关键经验：<span class="hl">网络大小"可以根据 CT 需求、过杀率、漏检率等指标进行平衡选择"</span>；
+      "较大缺陷可设置较大的块，较小的缺陷可设置较小的块；<b>小图像优先整图训练，效果优于分块</b>"。<br>
+      <b>增强参数</b>（表 2-10）：缩放 / 放大 / 平移 / 长宽比 / 裁剪 / 旋转 / 增强亮度 / 对比度 / 对比度反转 /
+      高斯噪声 / 翻转，且<b>悬停即可预览增强效果</b>（图 2-42/2-43）。<br>
+      <b>推理参数</b>（表 2-11）：数据集（所有/测试集/训练集）+ 模型 + <b>八维阈值区间</b>
+      （分数 / 面积 / 宽度 / 高度 / 角度 / 灰度 / 半径 / 中心半径）+ 排序 + <b>最大检测数</b>。</td></tr>
+    <tr><th>DL Studio 现状</th>
+      <td><span class="tag t-ok">部分</span> <code>training/augment_config.py</code>（三档增强）、<code>classification/threshold.py</code> +
+      <code>ui/threshold_panel.py</code>（阈值）、<code>ui/infer_params.py</code>（推理参数）、
+      <code>training/multiview.py</code>（多视图）、分类超参在 <code>classification/trainer.py</code>。</td></tr>
+    <tr><th>差距</th>
+      <td>① 参数<b>分散在各模块</b>，没有统一的"工具参数页"，换个工具就要去别的地方找；
+      ② 推理过滤只有分数等少数几维，<b>缺面积/宽/高/角度/灰度/半径/中心半径</b>；
+      ③ <b>缺"最大检测数"</b>；④ 增强参数<b>不能所见即所得预览</b>；⑤ 缺"分块/图像块/步长"的显式参数（推理侧有 tiled 但训练侧不完整）。</td></tr>
+    <tr><th>规格要点</th>
+      <td>① 参数统一走 <code>NodeParam</code> 声明，按 <code>PARAMS_TRAIN</code> / <code>PARAMS_AUGMENT</code> /
+      <code>PARAMS_INFER</code> 三组渲染成三个折叠区（对应对方的三个配置页）；
+      ② 推理过滤扩展成<b>八维区间 + 上限</b>，每维一个 <code>[min, max]</code>，空值=不过滤；
+      ③ 增强参数面板加<b>悬停预览</b>（用当前图实时跑一次增强，显示在缩略图上）；
+      ④ 分块参数显式化：<code>tile_size</code> / <code>stride</code>，并在 UI 上给出"块大小 vs 缺陷尺度的建议"提示。</td></tr>
+  </tbody>
+</table>
+
+<h3>5.6 数据集划分</h3>
+<table>
+  <tbody>
+    <tr><th style="width:22%">iCogtiveFlow</th>
+      <td>训练集 / 验证集 / 测试集，<b>验证集"推荐不设置"</b>（P42）；常见比例 6:2:2 / 14:3:3 / 8:1:1；
+      操作是<b>右击缩略图 → Change Set → 批量划分</b>（可多选，图 2-48 / 3-8）。<br>
+      两条工程经验：样本尽量<b>均衡</b>，不均衡时用"样本生成 / 图像复用"补；
+      <b>分割工具里训练集可以是 OK 图，也可以是 NG 图</b>（P64）。</td></tr>
+    <tr><th>DL Studio 现状</th>
+      <td><span class="tag t-ok">部分</span> 训练器里能按比例切分，<code>classification/recommend.py</code> 会给数据建议。</td></tr>
+    <tr><th>差距</th>
+      <td>① 划分<b>没有可视化的批量操作界面</b>（现在多是训练时按比例随机切）；
+      ② 没有"这一张属于哪个集合"的显式状态，也就无法在列表里按集合筛选；③ 缺"OK 图也能进训练集"的显式支持说明。</td></tr>
+    <tr><th>规格要点</th>
+      <td>① 图片条目增加 <code>split</code> 字段（<code>train</code>/<code>val</code>/<code>test</code>/<code>none</code>），持久化进项目 JSON；
+      ② 列表支持多选 + 右键"设为训练/验证/测试"；③ 工具栏显示当前比例并可一键按比例重排；
+      ④ 训练时严格按 <code>split</code> 取值，不再随机切（保证可复现）。</td></tr>
+  </tbody>
+</table>
+
+<h3>5.7 图像列表筛选（表达式引擎）</h3>
+<table>
+  <tbody>
+    <tr><th style="width:22%">iCogtiveFlow</th>
+      <td>筛选条件可<b>自定义表达式</b>（图 2-39）：<code>字段</code>（如"结果类别"）+ <code>条件</code>（<code>contain</code> / <code>!contain</code>）
+      + <code>值</code> + <code>连接词</code>（AND / OR），带<b>语法检测</b>；
+      例：「筛选结果为存在 Class1 <b>并且</b> 结果分数大于 0.5 的图像」（P34）。
+      条件可新增/删除/编辑，默认条件不可删；列表表头右键可增删显示列。</td></tr>
+    <tr><th>DL Studio 现状</th>
+      <td><span class="tag t-err">缺</span> 列表目前按文件名/时间等固定项排序，没有表达式筛选。</td></tr>
+    <tr><th>差距</th>
+      <td>这是<b>难例挖掘的入口</b>：现场要看"所有被检出但人工判为过杀的图"、"所有分数在 0.3–0.5 的图"，
+      没有筛选就只能靠肉眼翻列表。</td></tr>
+    <tr><th>规格要点</th>
+      <td>① 定义<b>筛选字段表</b>：文件名 / 标记（正常·过杀·漏杀·存疑）/ 数据集(split) / 结果类别 / 结果分数 /
+      检出数量 / 标注数量 / 图像尺寸 / 推理耗时 / 是否有标注；<br>
+      ② 表达式 = 三元组列表 <code>[(字段, 条件, 值)]</code> + 连接词，条目式 UI（不做自由文本解析，避免注入与语法坑，
+      但提供"语法检测"等价物 = 字段/条件合法性校验）；<br>
+      ③ 筛选结果直接驱动列表与"批量标记/批量转标注"操作 —— 这是 5.8 的前置。</td></tr>
+  </tbody>
+</table>
+
+<h3>5.8 五态标记与难例闭环 <span class="tag t-err">P0</span></h3>
+<div class="box box-warn">这一项是现场两大痛点的直接答案，单独成章，见 <a href="#s6">第 6 章</a>。</div>
+
+<h3>5.9 模型管理与结果报表</h3>
+<table>
+  <tbody>
+    <tr><th style="width:22%">iCogtiveFlow</th>
+      <td><b>模型管理</b>（表 2-13）：模型列表 + 控制栏（刷新 / 导入 / 导出 / 删除）+ <b>模型效果报表</b>；
+      选中模型，下方报表随之变化。点结果右侧可打开<b>报表页面</b>，可"查看整个项目的结果并<b>添加工程相关信息以及检测需求与结果</b>"（P42）。<br>
+      <b>验证结果查看</b>（表 3-1）：模型信息（耗时、损失率）/ <b>概率分数分布图</b> / <b>ROC</b> / 分割结果（LTRB 矩形）。
+      附带配置键 <code>TrainModelId</code> / <code>InferModelId</code> / <code>InferModelType</code> /
+      <code>ChangeInferModel</code> / <code>preModelId</code>、临时模型 <code>/TempModel.net</code>。</td></tr>
+    <tr><th>DL Studio 现状</th>
+      <td><span class="tag t-ok">部分</span> <code>classification/eval.py</code> 与分割评估指标（10 指标，已产出报表 HTML）、
+      <code>classification/gradcam.py</code>、<code>tools/compare_models.py</code>（模型对比）、
+      <code>tools/eval_seg_metrics.py</code>。</td></tr>
+    <tr><th>差距</th>
+      <td>① 评估是"脚本产出 HTML"，<b>没有模型仓库视图</b>（哪个模型对应哪份报表、谁更优）；
+      ② 缺<b>概率分数分布图</b>与 ROC 的常规化输出；③ 缺"把工程信息 + 检测需求 + 结果"写进同一份报表的做法。</td></tr>
+    <tr><th>规格要点</th>
+      <td>① 建"模型仓库"：每次训练产出一份 <code>models/&lt;项目&gt;/&lt;工具&gt;/&lt;时间戳&gt;/</code>（权重 + 超参 + 训练曲线 + 评估指标 + 数据划分快照），
+      列表可对比、可导出、可删除；<br>
+      ② 报表模板固定为：模型信息（耗时/损失）+ 概率分布 + ROC + 指标表 + <b>数据/需求元信息</b>（谁、什么料号、什么 KPI 目标）；
+      <br>③ 推理时选模型，键名对齐 <code>infer_model_id</code>，避免"选了模型但实际跑的是默认权重"。</td></tr>
+  </tbody>
+</table>
+
+<h3>5.10 任务队列与训练曲线</h3>
+<table>
+  <tbody>
+    <tr><th style="width:22%">iCogtiveFlow</th>
+      <td>训练/推理都是<b>任务队列</b>里的任务："点击训练按钮，会在任务队列中添加训练任务，当执行到该任务时，
+      会弹出<b>实时更新的 Loss 曲线</b>，训练完成后 Loss 曲线框<b>自动关闭</b>"（P44）。
+      Loss 曲线判读经验："<b>鱼缸曲线</b>的下降阶段是欠拟合，水平阶段是可以用于检测的"（P57）。
+      任务协议侧有 <code>CHhTask</code> / <code>CHhTaskControl</code>（get / put / start / stop）与
+      <code>TaskBase.checkState()</code> / <code>finishCode()</code>（可编程归因失败原因）。</td></tr>
+    <tr><th>DL Studio 现状</th>
+      <td><span class="tag t-ok">部分</span> 有实时 loss/accuracy 曲线、断点续训、中途停止；但<b>训练/推理是同步调用</b>（架构文档诊断：
+      "无方案概念…硬编码调用链"，批量推理已迁到 <code>flow/batch.py</code>）。</td></tr>
+    <tr><th>差距</th>
+      <td>① 没有队列，多个任务只能串行等；② 长任务期间 UI 被信号回调占住；
+      ③ 失败原因靠日志文本，没有<b>结构化的失败码</b>（对方有 <code>finishCode()</code>）。</td></tr>
+    <tr><th>规格要点</th>
+      <td>① 引入 <code>TaskQueue</code>（单消费者线程 + 任务对象：<code>kind</code> / <code>params</code> / <code>state</code> /
+      <code>progress</code> / <code>finish_code</code> / <code>error</code>）；② 训练/推理/批量推理全部入队，
+      UI 只订阅进度信号；③ 失败码枚举化（<code>OOM</code> / <code>DATA_EMPTY</code> / <code>NO_LABEL</code> / <code>CKPT_MISSING</code> / <code>USER_STOP</code>…），
+      对应到可读提示与处置建议。</td></tr>
+  </tbody>
+</table>
+
+<h3>5.11 工具链接（级联）</h3>
+<table>
+  <tbody>
+    <tr><th style="width:22%">iCogtiveFlow</th>
+      <td>第 10 章：「目标检测、分类、分割都可以链接到其他的工具」；链接前提是<b>上级工具已完成推理、能提供图源</b>；
+      核心机制：<span class="hl">"分割工具和目标检测工具推理后可以将<b>分割结果作为 ROI 或掩膜</b>传递给下工具。
+      若结果存在多个，则将会在下工具的输入上<b>增加图像的数量</b>"</span>（P94）。<br>
+      三个官方范例：分割+分类（判 NG/OK）、分割+目标检测（大范围先筛再计数）、
+      目标检测+分割（先定位限制 ROI 再分割，<b>减少耗时</b>）。</td></tr>
+    <tr><th>DL Studio 现状</th>
+      <td><span class="tag t-ok">框架已支持</span> DAG 天然能串联多节点（<code>seg_filter.py</code> 已是"分割结果过滤"节点）。</td></tr>
+    <tr><th>差距</th>
+      <td>缺<b>语义层面的"结果→ROI / 结果→掩膜"标准转换</b>：现在要自己写胶水；也缺"多结果 → 拆成多个 Frame"的约定。</td></tr>
+    <tr><th>规格要点</th>
+      <td>① 在 <code>Frame</code> 上补两条标准出口：<code>frame.roi_from_result(idx)</code> 与
+      <code>frame.mask_from_result(idx)</code>；② 提供 <code>ExpandResultsNode</code>：一个 Frame 里 N 个结果 →
+      N 个子 Frame（对齐对方"增加图像数量"的行为）；③ 在流程编辑器里给出三个"官方范例模板"
+      （分割+分类 / 分割+计数 / 检测+分割），降低上手成本。</td></tr>
+  </tbody>
+</table>
+
+<h3>5.12 图源类型（2D / 3D / 混合 / 多图 / 对比）</h3>
+<table>
+  <tbody>
+    <tr><th style="width:22%">iCogtiveFlow</th>
+      <td>第 9 章：2D 单图、<b>2D 多图</b>（一组同物体多张）、<b>3D 单图</b>（高度图以<b>点云</b>形式展示，
+      带颜色映射范围/上下阈值/3D 立体视图）、<b>2D+3D</b>；另有<b>对比分割/对比分类</b>（两组图：标准图 + 检测图，Group Size=2）。<br>
+      工程建议：<span class="hl">"3D 相机采集的分辨率比较大，若直接加载…可能因内存占用造成软件崩溃，建议在 3D 工程前先进行<b>截图</b>操作"</span>（P90）。</td></tr>
+    <tr><th>DL Studio 现状</th>
+      <td><span class="tag t-ok">部分</span> <code>training/multiview.py</code> + <code>ui/multiview_preview.py</code>（多视图）、
+      <code>ui/mixed_viewer.py</code> + <code>classification/dual_model.py</code>（灰度+高度图双模态，
+      对应 <code>ClassifyMixed</code> 的思路）、<code>flow/nodes/visualize.py</code> 有 <code>heightmap_rainbow</code>。</td></tr>
+    <tr><th>差距</th>
+      <td>① <b>缺对比类</b>（标准图 vs 检测图）——对孚能"同料号同位置批次比对"非常实用；
+      ② 3D 侧只有彩虹图叠加，没有点云视图与阈值条交互；③ 没有"先降采样/截图再加载"的内存保护。</td></tr>
+    <tr><th>规格要点</th>
+      <td>① 新增 <code>CompareNode</code>（输入两个 Frame：基准 + 待检，输出差异区域）作为对比分割/分类的共用底座；
+      ② 大图内存保护：<code>Frame</code> 增加 <code>load_scale</code> 元信息，列表预览强制降采样；
+      ③ 3D 点云视图列为 P2（现场主要是 2.5D 三通道，优先级低于 ①②）。</td></tr>
+  </tbody>
+</table>
+
+<h2 id="s6">6 P0 专章：五态标记与难例闭环</h2>
+
+<div class="box box-err">
+  <b>为什么是 P0：</b>现场同时存在「凹点 AI 过杀」与「封印贯穿人工漏检」。这两件事在现有平台上<b>都没有沉淀</b>——
+  今天的过杀判断，明天换个人看就没了；今天发现的一条漏检，不会自动变成明天的训练数据。
+  对方的做法是把这两件事直接做进产品。
+</div>
+
+<h3>6.1 标记体系（证据确凿，可直接照规格实现）</h3>
+<p>说明书 P32 原文：「iCogtiveFlow 支持人为对图片进行标记，可以进行 <b>[正常]、[过杀]、[漏杀]、[存疑]</b> 四种标记，
+<b>该标记不影响训练，只做标记使用</b>。单击选中图片然后单击标记按钮为图像进行标记，点击清空按钮可以清空当前图像的标记，
+图像标记信息可以在<b>标注管理</b>一栏查看。」</p>
+<p>二进制侧对应四个按钮：<code>btnNormal</code> / <code>btnOverkill</code> / <code>btnEscape</code> / <code>btnDoubt</code>
+（三个工具 dump 中均出现，说明在框架层）。</p>
+
+<div class="box box-ok">
+  <b>最关键的一句是"不影响训练"。</b>这解决了我们一个长期隐患：如果把「过杀」当成一个类别塞进训练集，
+  模型会学到"过杀长什么样"这种无意义的概念。<b>标记是质检口径的沉淀，标签才是训练数据</b>，两者必须分开。
+</div>
+
+<h3>6.2 建议的数据模型</h3>
+<pre><code># 标记：与"标签"完全分离的一条并行记录，随项目持久化
+MARK_KINDS = ("normal", "overkill", "escape", "doubt")   # 正常 / 过杀 / 漏杀 / 存疑
+
+# 项目图片条目
+ImageEntry = {
+    "path":      "images/xxx_te_0.jpg",
+    "split":     "train",          # 数据集归属（5.6）
+    "label":     "...",            # 训练标签（进训练集）
+    "mark":      "overkill",       # 人工标记（不进训练集，只做统计与筛选）
+    "mark_note": "凹点，人工判为不过杀",   # 可选理由
+    "mark_by":   "Arthur", "mark_at": "2026-10-14T09:00:00",
+    "infer":     {"class": "NG", "score": 0.87, "ms": 42},   # 最近一次推理结果
+}
+</code></pre>
+
+<h3>6.3 界面规格</h3>
+<table>
+  <thead><tr><th>位置</th><th>内容</th><th>交互</th></tr></thead>
+  <tbody>
+    <tr><td>图片列表行</td><td>标记色块（正常绿 / 过杀橙 / 漏杀红 / 存疑紫 / 无标记灰）</td><td>右键直接改；支持多选批量改</td></tr>
+    <tr><td>工具栏</td><td>四个标记按钮 + 清空</td><td>作用域＝当前选中项（单选或多选）</td></tr>
+    <tr><td>信息栏</td><td>已标注数 / 已检出数 / <b>标记</b> / 推理耗时</td><td>随选中图刷新</td></tr>
+    <tr><td>统计面板</td><td>四态计数与占比；<b>按缺陷类型 × 标记</b> 的交叉表</td><td>点击某个格子 → 直接筛选出这批图</td></tr>
+    <tr><td>筛选器</td><td><code>标记 = 过杀</code> 作为一等筛选字段（接 5.7）</td><td>与"结果分数区间"可组合</td></tr>
+  </tbody>
+</table>
+
+<h3>6.4 难例闭环：把"看走眼"变成"下一轮训练集"</h3>
+<p>对方的三个动作（字符串证据 <code>Convert Label</code> / <code>Mask To Label</code> / <code>Recrop images</code>，
+以及提示语 "Successfully converted the selected detection results into annotations"）：</p>
+<table>
+  <thead><tr><th>动作</th><th>语义</th><th>我们的对应规格</th></tr></thead>
+  <tbody>
+    <tr><td><code>Convert Label</code></td>
+      <td>把<b>推理检出的框/区域</b>直接变成<b>标注</b></td>
+      <td>选中若干"被检出"的图 → 一键"结果转标注"。这正是把<b>过杀</b>（AI 检出但人判不是缺陷）
+      <b>或漏检附近的真实缺陷</b>快速变成训练数据的手段：前者提供负样本，后者提供正样本。</td></tr>
+    <tr><td><code>Mask To Label</code></td>
+      <td>把<b>掩膜</b>转成<b>标注</b>（或反向）</td>
+      <td>掩膜与标注的正反向转换。现场意义：先用二值化/智能标注圈一大片当掩膜，人工微调后转成正式标注。</td></tr>
+    <tr><td><code>Recrop images</code></td>
+      <td>按当前 ROI/裁剪设定<b>重新裁剪</b>整批图</td>
+      <td>改一次 ROI 全员生效，避免逐张重裁（接 5.2 的 ROI 批量套用）。</td></tr>
+  </tbody>
+</table>
+
+<div class="box box-p">
+  <b>把它们串成闭环（这是本路线图最想要的成果）：</b><br>
+  推理 → <b>标记过杀/漏杀</b> → <b>筛选出这批图</b> → <b>结果转标注</b>（过杀→负样本/修正框；漏杀→补正样本）
+  → 重新划分数据集 → <b>增量训练</b> → 用<b>模型报表</b>对比新老模型在同一测试集上的过杀率/漏检率。
+  <br>这条链闭上之后，"过杀率 47%" 这种数字才会变成可管理的日常动作，而不是每次重头手工统计。
+</div>
+
+<h2 id="s7">7 差距矩阵</h2>
+
+<table>
+  <thead>
+    <tr><th>#</th><th>功能</th><th>iCogtiveFlow</th><th>DL Studio</th><th>差距</th><th>优先级</th><th>主要涉及文件</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>1</td><td>算子流 / DAG</td><td>流程配置画布</td><td><span class="tag t-ok">已有且更现代</span></td><td>连线合法性校验</td><td><span class="tag t-info">P2</span></td><td><code>flow/node.py</code>、<code>ui/flow_editor.py</code></td></tr>
+    <tr><td>2</td><td>图片工具节点</td><td>Crop / TrueCrop / DiskImage</td><td><span class="tag t-warn">有工具未节点化</span></td><td>节点化 + ROI 批量套用</td><td><span class="tag t-warn">P1</span></td><td><code>flow/nodes/basic.py</code>、<code>ui/crop_tool.py</code></td></tr>
+    <tr><td>3</td><td>图层体系</td><td>掩膜/标注/结果/可能性图 四开关</td><td><span class="tag t-warn">图层散落</span></td><td>统一开关条 + 耗时进结果</td><td><span class="tag t-warn">P1</span></td><td><code>core/*_overlay.py</code>、<code>ui/main_window.py</code></td></tr>
+    <tr><td>4</td><td>光标信息栏</td><td>WH/XY/RGB/已标注/已检出/耗时</td><td><span class="tag t-err">缺</span></td><td>新建</td><td><span class="tag t-info">P2</span></td><td><code>ui/main_window.py</code></td></tr>
+    <tr><td>5</td><td>掩膜（独立数据）</td><td>训练不采样 / 推理采样</td><td><span class="tag t-warn">有 mask_editor 无独立语义</span></td><td>独立数据集 + 不对称采样</td><td><span class="tag t-warn">P1</span></td><td><code>annotation/mask_editor.py</code>、<code>training/dataset.py</code></td></tr>
+    <tr><td>6</td><td>二值化自动标注 / 区域反转</td><td>阈值区间生成 + 反转</td><td><span class="tag t-err">缺</span></td><td>新建</td><td><span class="tag t-warn">P1</span></td><td><code>annotation/</code></td></tr>
+    <tr><td>7</td><td>类别合并</td><td>多选合并</td><td><span class="tag t-err">缺</span></td><td>新建（含版本记录）</td><td><span class="tag t-info">P2</span></td><td><code>annotation/label_manager.py</code></td></tr>
+    <tr><td>8</td><td>参数三组化</td><td>训练/增强/推理 三页</td><td><span class="tag t-warn">分散</span></td><td>统一 Schema 分组</td><td><span class="tag t-warn">P1</span></td><td><code>flow/node.py</code>、<code>ui/infer_params.py</code></td></tr>
+    <tr><td>9</td><td>八维推理过滤</td><td>分数/面积/宽/高/角度/灰度/半径/中心半径 + 上限</td><td><span class="tag t-warn">仅少数维度</span></td><td>扩展到八维 + 最大检测数</td><td><span class="tag t-err">P0</span></td><td><code>classification/threshold.py</code>、<code>ui/threshold_panel.py</code></td></tr>
+    <tr><td>10</td><td>增强预览</td><td>悬停即预览</td><td><span class="tag t-err">缺</span></td><td>新建</td><td><span class="tag t-info">P2</span></td><td><code>training/augment_config.py</code></td></tr>
+    <tr><td>11</td><td>数据集划分 UI</td><td>右击批量设 split</td><td><span class="tag t-warn">仅训练时随机切</span></td><td>split 字段 + 批量操作</td><td><span class="tag t-warn">P1</span></td><td><code>core/project_manager.py</code>、<code>ui/main_window.py</code></td></tr>
+    <tr><td>12</td><td>列表表达式筛选</td><td>字段+条件+值+AND/OR</td><td><span class="tag t-err">缺</span></td><td>新建（条目式）</td><td><span class="tag t-err">P0</span></td><td><code>ui/main_window.py</code></td></tr>
+    <tr><td>13</td><td><b>五态标记</b></td><td>正常/过杀/漏杀/存疑，不进训练</td><td><span class="tag t-err">缺</span></td><td>新建（含统计与筛选）</td><td><span class="tag t-err">P0</span></td><td><code>core/</code>、<code>ui/main_window.py</code></td></tr>
+    <tr><td>14</td><td><b>难例闭环</b></td><td>结果转标注 / 掩膜转标注 / 重裁剪</td><td><span class="tag t-err">缺</span></td><td>新建</td><td><span class="tag t-err">P0</span></td><td><code>annotation/</code>、<code>flow/nodes/</code></td></tr>
+    <tr><td>15</td><td>模型管理与报表</td><td>模型仓库 + 报表页</td><td><span class="tag t-warn">脚本产报告</span></td><td>模型仓库 + 固定报表模板</td><td><span class="tag t-warn">P1</span></td><td><code>classification/eval.py</code>、<code>tools/eval_seg_metrics.py</code></td></tr>
+    <tr><td>16</td><td>概率分布图 / ROC</td><td>常规输出</td><td><span class="tag t-warn">部分</span></td><td>常规化</td><td><span class="tag t-info">P2</span></td><td><code>classification/eval.py</code></td></tr>
+    <tr><td>17</td><td>任务队列</td><td>队列 + 实时曲线 + 自动关闭</td><td><span class="tag t-warn">同步阻塞</span></td><td>TaskQueue + 结构化失败码</td><td><span class="tag t-warn">P1</span></td><td><code>flow/runner.py</code>、<code>ui/main_window.py</code></td></tr>
+    <tr><td>18</td><td>工具链接语义</td><td>结果→ROI/掩膜，多结果→多图</td><td><span class="tag t-warn">DAG 支持但缺语义</span></td><td>标准出口 + ExpandResults</td><td><span class="tag t-info">P2</span></td><td><code>flow/frame.py</code>、<code>flow/nodes/</code></td></tr>
+    <tr><td>19</td><td>对比类工具</td><td>SegmentCP / ClassifyCP</td><td><span class="tag t-err">缺</span></td><td>CompareNode 底座</td><td><span class="tag t-warn">P1</span></td><td><code>flow/nodes/</code></td></tr>
+    <tr><td>20</td><td>异常检测（无监督）</td><td>AnomalyDetect2D</td><td><span class="tag t-err">缺</span></td><td>新建（仅需 OK 样本）</td><td><span class="tag t-warn">P1</span></td><td><code>flow/nodes/</code> 新模块</td></tr>
+  </tbody>
+</table>
+
+<div class="grid3">
+  <div class="stat"><div class="n">5</div><div class="l"><span class="tag t-err">P0</span> 项（含五态+难例+筛选+八维过滤）</div></div>
+  <div class="stat"><div class="n">8</div><div class="l"><span class="tag t-warn">P1</span> 项</div></div>
+  <div class="stat"><div class="n">7</div><div class="l"><span class="tag t-info">P2</span> 项</div></div>
+</div>
+
+<h2 id="s8">8 实现路线图</h2>
+
+<p>排期按「闭环优先」而非「功能数量」：每一期结束时，都要有一条端到端能跑通的链路。</p>
+
+<h3>一期 · 把"看走眼"记下来（P0 闭环地基）</h3>
+<table>
+  <thead><tr><th>工作项</th><th>产出</th><th>涉及</th></tr></thead>
+  <tbody>
+    <tr><td>1.1 标记数据模型</td><td><code>mark</code> / <code>mark_note</code> / <code>mark_by</code> / <code>mark_at</code> 字段，随项目持久化（<b>与 label 分离</b>）</td><td><code>core/project_manager.py</code>、<code>core/config.py</code></td></tr>
+    <tr><td>1.2 标记 UI</td><td>列表行色标 + 工具栏四按钮（含多选批量）+ 清空</td><td><code>ui/main_window.py</code></td></tr>
+    <tr><td>1.3 统计面板</td><td>四态计数与占比；<b>缺陷类型 × 标记</b> 交叉表；点格子即筛选</td><td><code>ui/main_window.py</code></td></tr>
+    <tr><td>1.4 列表表达式筛选</td><td>条目式筛选器（字段/条件/值 + AND/OR），字段含"标记"</td><td><code>ui/main_window.py</code> 新增 <code>core/filter_expr.py</code></td></tr>
+    <tr><td>1.5 结果转标注</td><td>"结果转标注"（过杀→负样本/修正框；漏杀→补正样本），可批量</td><td><code>annotation/labelme_io.py</code>、<code>annotation/mask_editor.py</code></td></tr>
+    <tr><td>1.6 八维推理过滤</td><td>分数/面积/宽/高/角度/灰度/半径/中心半径（区间）+ 最大检测数</td><td><code>classification/threshold.py</code>、<code>ui/threshold_panel.py</code></td></tr>
+  </tbody>
+</table>
+<div class="box box-ok">
+  <b>验收标准：</b>对一批历史图，能在 3 步内完成「筛出所有 AI 检出但我判为过杀的图 → 一键转成负样本标注 → 这批图进入下一轮训练集」，
+  并给出过杀/漏杀计数与占比。这条链路跑通，现场两大痛点就有了管理抓手。
+</div>
+
+<h3>二期 · 把"数据"管起来</h3>
+<table>
+  <thead><tr><th>工作项</th><th>产出</th><th>涉及</th></tr></thead>
+  <tbody>
+    <tr><td>2.1 数据集划分</td><td><code>split</code> 字段 + 右键批量设置 + 比例看板；训练严格按 split 取数</td><td><code>core/project_manager.py</code>、<code>ui/main_window.py</code>、<code>training/dataset.py</code></td></tr>
+    <tr><td>2.2 掩膜独立化</td><td>掩膜成独立数据集；训练不采样、推理不屏蔽</td><td><code>annotation/mask_editor.py</code>、<code>training/dataset.py</code></td></tr>
+    <tr><td>2.3 二值化自动标注</td><td>阈值区间（手动/自适应）一键生成标注或掩膜 + 区域反转 + 多边形橡皮擦</td><td><code>annotation/</code></td></tr>
+    <tr><td>2.4 参数三组化</td><td><code>PARAMS_TRAIN/AUGMENT/INFER</code> 分组渲染；增强悬停预览</td><td><code>flow/node.py</code>、<code>ui/flow_editor.py</code>、<code>ui/infer_params.py</code></td></tr>
+    <tr><td>2.5 图层开关条</td><td>掩膜/标注/结果/热力图 四开关统一收口；<code>infer_ms</code> 进结果</td><td><code>core/*_overlay.py</code>、<code>ui/main_window.py</code></td></tr>
+    <tr><td>2.6 图片工具节点化</td><td><code>CropNode</code>；ROI 改一次全员生效（Recrop 等价物）</td><td><code>flow/nodes/basic.py</code>、<code>ui/crop_tool.py</code></td></tr>
+  </tbody>
+</table>
+<div class="box box-ok">
+  <b>验收标准：</b>一个项目从"导入图片"到"开始训练"全程可视化，数据划分可复现（同一 split 两次训练结果一致），
+  参数在工具页内一处配齐。
+</div>
+
+<h3>三期 · 把"模型"管起来</h3>
+<table>
+  <thead><tr><th>工作项</th><th>产出</th><th>涉及</th></tr></thead>
+  <tbody>
+    <tr><td>3.1 任务队列</td><td><code>TaskQueue</code>（单消费者）+ 结构化失败码 + UI 只订阅信号</td><td><code>flow/runner.py</code>、<code>ui/main_window.py</code></td></tr>
+    <tr><td>3.2 模型仓库</td><td>每次训练落盘"权重+超参+曲线+指标+split 快照"，列表可对比/导出/删除</td><td><code>classification/trainer.py</code>、<code>training/trainer.py</code></td></tr>
+    <tr><td>3.3 报表模板</td><td>模型信息 + 概率分布 + ROC + 指标表 + <b>工程/需求元信息</b>，一键出报表</td><td><code>classification/eval.py</code>、<code>tools/eval_seg_metrics.py</code></td></tr>
+    <tr><td>3.4 耗时与统计收口</td><td>推理耗时、已标注/已检出的统一统计（对齐对方 InferStats/InferMsecs）</td><td><code>inference/predictor.py</code>、<code>ui/main_window.py</code></td></tr>
+  </tbody>
+</table>
+<div class="box box-ok">
+  <b>验收标准：</b>训练中界面不卡；能并排对比新老两个模型在同一测试集上的过杀率/漏检率，并一键出报告（可直接给客户看）。
+</div>
+
+<h3>四期 · 把"能力"铺开</h3>
+<table>
+  <thead><tr><th>工作项</th><th>产出</th></tr></thead>
+  <tbody>
+    <tr><td>4.1 对比类工具</td><td><code>CompareNode</code>（基准图 vs 待检图）→ 对比分割 / 对比分类</td></tr>
+    <tr><td>4.2 异常检测</td><td>无监督通路（仅 OK 样本训练，输出缺陷位置）；<b>适配"来料好但 NG 样本少"的批次</b></td></tr>
+    <tr><td>4.3 工具链接语义</td><td>结果→ROI/掩膜标准出口 + <code>ExpandResultsNode</code> + 三个官方范例模板</td></tr>
+    <tr><td>4.4 实例分割 / 关键点</td><td>计数+面积（<code>InstanceSegmentation2D</code>）、<code>KeyPointDetect2D</code> 的等价能力</td></tr>
+    <tr><td>4.5 采集与 IO 节点</td><td>接 P3 待办：<code>CameraSource</code> / <code>MESPush</code> / <code>PLCTrigger</code> / <code>ResultToExcel</code></td></tr>
+  </tbody>
+</table>
+<div class="box box-ok">
+  <b>验收标准：</b>能在同一个画布上完成"检测定位 → 裁剪 → 分割 → 分类"的四级级联，并直接输出 Excel 结果。
+</div>
+
+<h2 id="s9">9 不该照抄的部分</h2>
+
+<table>
+  <thead><tr><th>对方的做法</th><th>为什么不照抄</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>C++ / Qt 单体桌面 + 每工具一个 dll</td>
+      <td>他们这么做的历史原因是算法库（IAL/Metrology）本就是 C++ 视觉底座，需要与标定、测量共用内存与句柄。
+      我们是 PyTorch 生态，Python 侧的迭代速度与模型生态是核心优势。用 dll 换来的隔离性，我们用 Python 包 + 节点注册替代即可。</td>
+    </tr>
+    <tr>
+      <td>手工参数-控件绑定（<code>bindFilter(int, IEditControl*, Type)</code>）</td>
+      <td>我们要维护 20+ 个工具，手工绑定会导致每加一个参数就要改三处。
+      现有声明式 <code>NodeParam</code> Schema 让面板自动生成，是<b>更优解</b>，保持。</td>
+    </tr>
+    <tr>
+      <td>"验证集推荐不设置"</td>
+      <td>对方的模型相对固定、数据量小，简化流程合理。但我们的场景需要<b>可信的泛化评估</b>（客户 KPI 要对簿），
+      验证集必须保留；不过可以采纳其精神——<b>测试集要固定且不许参与调参</b>。</td>
+    </tr>
+    <tr>
+      <td>训练侧也走 dll + LibTorch</td>
+      <td>训练用 Python/PyTorch 更灵活（自定义 loss、增强、Grad-CAM 都在 Python 侧）。
+      仅在<b>部署推理</b>上做 Turbo 化（我们已有 ONNX / TorchScript / TensorRT 多后端，方向正确）。</td>
+    </tr>
+    <tr>
+      <td>软件多开（multiInstances）</td>
+      <td>是单进程架构下的权宜之计。我们天然可以多进程/多项目，不需要照搬目录结构。</td>
+    </tr>
+    <tr>
+      <td>整体 8 GB 的运行时依赖</td>
+      <td>对方的 <code>torch_cuda</code> 1.4 GB + <code>nvinfer</code> 440 MB 全量随包。我们应按项目按需安装后端，避免交付包失控。</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2 id="s10">10 待拍板</h2>
+<table>
+  <thead><tr><th>#</th><th>问题</th><th>我的建议</th></tr></thead>
+  <tbody>
+    <tr><td>1</td><td>一期是否就按本报告的 6 项启动？（标记 → 筛选 → 转标注 → 八维过滤）</td>
+      <td>建议启动。这 6 项构成一条完整闭环，能立刻回答"我们现在的过杀率是多少、哪些图需要回流"。</td></tr>
+    <tr><td>2</td><td>"过杀/漏杀"的判定基准是什么？</td>
+      <td><b>需要你定义</b>：以人工复判为准，还是以客户标准为准？这决定标记的语义边界（这是阈值与口径类问题，我不擅自定）。</td></tr>
+    <tr><td>3</td><td>标记是否要带"理由/备注"字段？</td>
+      <td>建议带（可选填）。现场"这个凹点为什么算过杀"的经验是最难传承的资产。</td></tr>
+    <tr><td>4</td><td>八维过滤的默认值怎么定？</td>
+      <td>建议先按"只开分数 + 面积"两项上线，其余默认关闭（空=不过滤），避免一次引入太多参数把操作员吓住。</td></tr>
+    <tr><td>5</td><td>是否要做"异常检测"（无监督）？</td>
+      <td>建议做，且优先给 3/4 号机（P187 来料好）——正常样本多、缺陷样本少，正是无监督的主场。</td></tr>
+    <tr><td>6</td><td>对比类工具（SegmentCP）的优先级</td>
+      <td>建议放四期。它对"同料号同位置批次比对"很有价值，但需要先有稳定的 ROI 与对齐机制。</td></tr>
+  </tbody>
+</table>
+
+<h2 id="s11">11 证据清单</h2>
+
+<table>
+  <thead><tr><th>产物</th><th>路径</th><th>说明</th></tr></thead>
+  <tbody>
+    <tr><td>说明书提取全文</td><td><code>E:\rea_target\manual_v14_clean.txt</code></td><td>96 页 → 64439 字，含 11 章全部功能定义（本报告第 5 章的一手依据）</td></tr>
+    <tr><td>22 工具接口面</td><td><code>E:\rea_target\tool_iface.txt</code></td><td>每个工具的 RTTI 类名 / 任务消息名 / 参数键</td></tr>
+    <tr><td>架构 dump（3 个工具）</td><td><code>E:\rea_target\dump_Segment2D.txt</code>（6171 函数）<br><code>dump_Classify2D.txt</code>（6313）<br><code>dump_AnomalyDetect2D.txt</code>（6588）</td><td>函数/符号/字符串三段，共 4.6 MB</td></tr>
+    <tr><td>dump 分析脚本</td><td><code>E:\rea_target\analyze_dump2.py</code></td><td>functionCount / 类分布 / 关键字符串</td></tr>
+    <tr><td>接口扫描脚本</td><td><code>E:\rea_target\scan_tool_iface.py</code></td><td>22 个工具的 PE 层批量提取</td></tr>
+    <tr><td>前序报告</td><td><code>docs\iCogtiveFlow借鉴分析_V2_训练平台.html</code><br><code>docs\iCogtiveFlow借鉴分析_V3_Ghidra内部架构.html</code></td><td>V2 训练平台层 / V3 内部架构层</td></tr>
+    <tr><td>DL Studio 架构基线</td><td><code>docs\架构文档_算子流重构路线.md</code></td><td>本报告第 4/7/8 章的现状依据</td></tr>
+  </tbody>
+</table>
+
+<div class="box box-info">
+  <b>报告定位复述：</b>本报告的全部输入为「厂商公开说明书 + 二进制符号与字符串 + 我们自己代码的现状」。
+  输出为<b>功能规格与自研路线</b>，不含任何来自 iCogtiveFlow 的实现代码、反编译代码或资源文件。
+  DL Studio 侧的每一行实现都将由我们独立编写。
+</div>
+
+<p class="muted" style="margin-top:28px;border-top:1px solid var(--line);padding-top:14px">
+  DL Studio 对标 iCogtiveFlow · 功能规格与独立实现路线图　V4　｜　2026-10-14　｜
+  承接 V1 字符串层 / V2 训练平台层 / V3 Ghidra 架构层
+</p>
+
+</div>
+</body>
+</html>

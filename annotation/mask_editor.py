@@ -50,6 +50,7 @@ class AnnotationCanvas(QWidget):
         self.mask = None
         self._cursor_pt = None      # 上次上报的光标像素坐标（节流用，None = 不在图内）
         self._cached_qimage = None
+        self._cached_overlay_rgba_qimage = None
         self._cached_gray = None  # cached grayscale numpy array
         # Mixed classification dual-image support
         self._mixed_cls_mode = False
@@ -407,7 +408,11 @@ class AnnotationCanvas(QWidget):
         #   原来这里把 **原图全尺寸** 转 QImage：5472×3648 = 60MB，
         #   每次点图 + 每次重绘都要缩放它 → 点一张 5K 图要 300-500ms。
         #   画布最多显示 ~1500px，2048 的预览在 ≤2 倍缩放下**肉眼无差别**；
-        #   放大到更高倍时 paintEvent 会改用原图裁剪（见 _crop_qimage_at）。
+        #   放大超过这个比例时 paintEvent 改走**原图裁切**（`_draw_base_image`）。
+        #   ⚠️ 2026-10-22 补：这条"高倍走原图"的路径**此前只有注释、没有实现**
+        #      （注释里写的 `_crop_qimage_at` 全文件根本不存在）。后果是
+        #      456×7041 的图缓存成 132×2048，用户按 100% 看等于把 0.29× 的图
+        #      放大 3.45 倍 —— 就是"我们的画布为什么这么糊"。
         #   注意：self.image 仍是**原图全尺寸**，所有标注坐标照旧在原图空间计算。
         w0, h0 = self.image.size
         MAXD = 2048
@@ -426,9 +431,87 @@ class AnnotationCanvas(QWidget):
         self._disp_image = disp                    # 降采样 PIL（叠加层按它合成，省 7 倍时间）
         self._cached_qimage_scale = scale          # 显示图 / 原图 的比例
         self._cached_qimage_full = None            # 高倍放大时才懒加载
+        self._base_crop = None                     # 原图裁切缓存：(key, QImage)，换图要清
         # 灰度均值只为"灰度视图"，大图按缩略图算就够准，省几百毫秒
         arr32 = np.array(disp, dtype=np.float32)
         self._cached_gray = np.mean(arr32, axis=2)
+
+    # ────────── 按缩放比例选"缓存图"还是"原图裁切" ──────────
+    # 2026-10-22：用户对比友商截图反馈"我们的画布这么糊"。
+    # 根因是 `_cache_qimage` 把显示图限制在长边 2048（为了切图速度），
+    # 而 456×7041 这种细长图缓存后只有 132×2048（0.29 倍）——
+    # 一旦缩放比例超过这个倍数，画的就是"小图放大"，必然糊。
+    # 这里补上真正的原图裁切：只裁**当前可见区域**（+ 一点余量），
+    # 1:1 或更高倍时都是原图像素，和友商 100% 观感一致。
+    _CROP_MARGIN = 96          # 裁切四周多留的图像像素：小幅平移不用重裁
+
+    def _use_crop_path(self):
+        """现在该不该用「原图裁切」而不是降采样缓存图来显示。
+
+        判据只有一个：显示时缓存图相当于被放大 z/scale_cache 倍，>1.02 就换。
+        底层图与叠加层**必须用同一个判据**，否则会出现"底图清晰、上面盖着一层糊的"。
+        """
+        if self.image is None:
+            return False
+        z = float(getattr(self, "zoom_level", 1.0) or 1.0)
+        sc = float(getattr(self, "_cached_qimage_scale", 1.0) or 1.0)
+        return z > sc * 1.02
+
+    def _draw_base_image(self, painter, rect):
+        """画底层图：缓存图够清晰就用缓存，否则用原图裁切。"""
+        if self.image is None:
+            return
+        z = float(getattr(self, "zoom_level", 1.0) or 1.0)
+        if not self._use_crop_path():
+            painter.drawImage(rect, self._cached_qimage)
+            return
+        got = self._crop_for_view(rect, z)
+        if got is None:
+            painter.drawImage(rect, self._cached_qimage)
+            return
+        qimg, (x0, y0, x1, y1) = got
+        painter.drawImage(QRectF(rect.x() + x0 * z, rect.y() + y0 * z,
+                                (x1 - x0) * z, (y1 - y0) * z), qimg)
+
+    def _crop_for_view(self, rect, z):
+        """返回 (QImage, (x0,y0,x1,y1))：当前可见区域对应的**原图**裁切。
+
+        坐标一律在**原图空间**算：widget 可见矩形 -> 图像坐标 -> 裁切。
+        带 96px 余量 + 单条缓存，平移不超过余量时不会重裁。
+        """
+        try:
+            iw, ih = self.image.size
+            wx0 = max(rect.x(), 0.0)
+            wy0 = max(rect.y(), 0.0)
+            wx1 = min(rect.x() + rect.width(), float(self.width()))
+            wy1 = min(rect.y() + rect.height(), float(self.height()))
+            if wx1 <= wx0 or wy1 <= wy0:
+                return None
+            ix0 = int((wx0 - rect.x()) / z)
+            iy0 = int((wy0 - rect.y()) / z)
+            ix1 = int(np.ceil((wx1 - rect.x()) / z)) + 1
+            iy1 = int(np.ceil((wy1 - rect.y()) / z)) + 1
+            m = self._CROP_MARGIN
+            x0 = max(0, ix0 - m)
+            y0 = max(0, iy0 - m)
+            x1 = min(iw, ix1 + m)
+            y1 = min(ih, iy1 + m)
+            if x1 <= x0 or y1 <= y0:
+                return None
+            key = (x0, y0, x1, y1)
+            cache = getattr(self, "_base_crop", None)
+            if cache is not None and cache[0] == key:
+                return cache[1], key
+            crop = self.image.crop((x0, y0, x1, y1))
+            if crop.mode != "RGB":
+                crop = crop.convert("RGB")
+            arr = np.asarray(crop)
+            h, w, ch = arr.shape
+            qimg = QImage(arr.data, w, h, 3 * w, QImage.Format_RGB888).copy()
+            self._base_crop = (key, qimg)
+            return qimg, key
+        except Exception:
+            return None
 
     def _build_overlay(self):
         """Build annotation overlay (原图 + 掩膜 的合成图)。
@@ -490,6 +573,21 @@ class AnnotationCanvas(QWidget):
             qimg2 = QImage(np.ascontiguousarray(overlay2).data, iw2, ih2, 3 * iw2,
                            QImage.Format_RGB888)
             self._cached_overlay_qimage = qimg2.copy()
+            # ★ 同时留一份**纯掩膜层**（RGBA，按显示尺寸）：
+            #   高倍放大时底层走原图裁切（清晰），这张只需要盖在上面做半透明着色，
+            #   不必把原图再烘一遍 —— 否则烘进去的那份是 0.29× 的显示图，
+            #   **底图再清晰也会被它糊掉**（2026-10-22 实测：只修底层，像素误差一点没变）。
+            try:
+                _rgba = np.ascontiguousarray(rgba2)
+                if _rgba.ndim == 3 and _rgba.shape[2] == 4:
+                    if _rgba.dtype != np.uint8:
+                        _rgba = _rgba.astype(np.uint8)
+                    self._cached_overlay_rgba_qimage = QImage(
+                        _rgba.data, iw2, ih2, 4 * iw2, QImage.Format_RGBA8888).copy()
+                else:
+                    self._cached_overlay_rgba_qimage = None
+            except Exception:
+                self._cached_overlay_rgba_qimage = None
             self._overlay_dirty = False
             return
         except Exception:
@@ -595,13 +693,17 @@ class AnnotationCanvas(QWidget):
             elif self._view_mode == 1 and self._cached_height_qimage is not None:
                 painter.drawImage(rect, self._cached_height_qimage)
             else:
-                painter.drawImage(rect, self._cached_qimage)
+                # ★ 高倍时走原图裁切（否则是把 0.29× 的缓存图放大 ⇒ 糊）
+                self._draw_base_image(painter, rect)
         self._build_overlay()
         # Draw annotation overlay (hatch pattern)
         # 两个开关任一为开都要画（叠加图本身已经按开关过滤过类别/忽略区）
-        if (getattr(self, "_show_annotation", True) or getattr(self, "_show_ignore", True)) \
-                and self._cached_overlay_qimage is not None:
-            painter.drawImage(rect, self._cached_overlay_qimage)
+        if getattr(self, "_show_annotation", True) or getattr(self, "_show_ignore", True):
+            if self._use_crop_path() and getattr(self, "_cached_overlay_rgba_qimage", None) is not None:
+                # 高倍：底层是清晰的原图裁切，这里只叠半透明掩膜颜色
+                painter.drawImage(rect, self._cached_overlay_rgba_qimage)
+            elif self._cached_overlay_qimage is not None:
+                painter.drawImage(rect, self._cached_overlay_qimage)
         # Draw prediction overlay on top
         if self._show_prediction:
             # 标注层（类别或忽略区）任一看得见时，预测层就不再铺底，免得盖住标注
@@ -762,7 +864,13 @@ class AnnotationCanvas(QWidget):
             _disp = self.image
         iw, ih = _disp.size
         if (h, w) != (ih, iw):
-            mask = np.array(Image.fromarray(np.ascontiguousarray(mask)).resize(
+            # ⚠️ 必须显式转 uint8：`Image.fromarray` 认不了 int64，会抛
+            #   `TypeError: Cannot handle this data type: (1, 1), <i8>`
+            #   （滑窗推理返回的就是 int64；在 paintEvent 里抛异常 = 整个程序弹崩溃框）
+            _m = np.ascontiguousarray(mask)
+            if _m.dtype != np.uint8:
+                _m = _m.astype(np.uint8)
+            mask = np.array(Image.fromarray(_m).resize(
                 (iw, ih), Image.NEAREST))
             h, w = mask.shape
         cache_key = (id(mask), with_background, self.current_image_path)
@@ -1189,15 +1297,22 @@ class AnnotationCanvas(QWidget):
             self._close_polygon()
 
     def _zoom_step(self, factor):
-        """以视图中心为基准缩放。"""
+        """以视图中心为基准缩放。
+
+        ★★ 2026-10-22：原来写 `pan = c - actual*(c - pan)`（c=视图中心），
+        这是"锚点=屏幕左上角"的公式，**漏了居中项** ⇒ 每按一次放大/缩小，
+        图像就往左上/右下整块平移一段（滚轮那条路径同一个 bug，见 wheelEvent）。
+        以视图中心为锚点时，正确结果是 pan 同倍缩放：推导
+          屏幕x = W/2 + pan + zoom*u ⇒ 中心像素 u0 = -pan0/z0
+          缩放后要它仍在中心：W/2 + pan1 + z1*u0 = W/2 ⇒ pan1 = f*pan0
+        """
         if self.image is None:
             return
-        c = self.rect().center()
         new_zoom = max(self.MIN_ZOOM, min(self.MAX_ZOOM, self.zoom_level * factor))
         actual = new_zoom / self.zoom_level
         self.zoom_level = new_zoom
-        self.pan_offset_x = c.x() - actual * (c.x() - self.pan_offset_x)
-        self.pan_offset_y = c.y() - actual * (c.y() - self.pan_offset_y)
+        self.pan_offset_x *= actual
+        self.pan_offset_y *= actual
         self.update()
 
     def wheelEvent(self, event):
@@ -1209,8 +1324,20 @@ class AnnotationCanvas(QWidget):
         new_zoom = max(self.MIN_ZOOM, min(self.MAX_ZOOM, new_zoom))
         actual_factor = new_zoom / self.zoom_level
         self.zoom_level = new_zoom
-        self.pan_offset_x = event.pos().x() - actual_factor * (event.pos().x() - self.pan_offset_x)
-        self.pan_offset_y = event.pos().y() - actual_factor * (event.pos().y() - self.pan_offset_y)
+        # ★★ 2026-10-22 修「光标停在图片中央放大，图会往左上角飘」：
+        #   屏幕坐标 = 居中项 + pan + zoom*图像坐标，居中项是 (W - dw)/2 = W/2 - zoom*IW/2。
+        #   要让光标下的像素不动，解出来是
+        #       pan1 = (px - W/2) - f * ((px - W/2) - pan0)
+        #   原代码写的是 pan1 = px - f * (px - pan0) —— **漏掉了 W/2 那一项**。
+        #   后果：每次放大都往 pan 里多加一个 (W/2)(1-f)（放大时 f>1 ⇒ 负），
+        #   于是图像一步步往左上漂；光标恰在正中央时这个漂移最干净地暴露出来
+        #   （中央本该完全不动）。缩小方向同理往右下漂。
+        _cx = self.width() / 2.0
+        _cy = self.height() / 2.0
+        _px = event.pos().x()
+        _py = event.pos().y()
+        self.pan_offset_x = (_px - _cx) - actual_factor * ((_px - _cx) - self.pan_offset_x)
+        self.pan_offset_y = (_py - _cy) - actual_factor * ((_py - _cy) - self.pan_offset_y)
         self.update()
         self.view_changed.emit()      # 滚轮缩放：立即推给多视图参考窗（拖动平移仍靠 40ms 轮询，避免每个鼠标移动都重画）
 
@@ -1765,7 +1892,18 @@ class AnnotationCanvas(QWidget):
         self.update()
 
     def _load_prediction_overlay(self, image_path):
-        """Auto-load prediction overlay from outputs/ folder if exists."""
+        """Auto-load prediction overlay from outputs/ folder if exists.
+
+        ★★ 2026-10-22 切图卡顿：`_overlay.jpg` 是**全尺寸**位图（现场那张
+           4096×9320 = 38MP，解码成 RGB 要 114MB，实测 0.29s/张）。
+           但绘制时 `paintEvent` 优先走 `_build_prediction_overlay()`
+           （用 `_prediction_mask` 按**显示尺寸**现合成，还带缓存），
+           只有那个函数返回 None 时才会退回用这张位图 —— 而它有 mask 就一定有返回值。
+           也就是说：**只要有 `_pred.png`，这张 JPG 就永远不会被画到**，
+           白解码 0.29 秒。
+           ⇒ 现在分开：mask 照读（统计表要它），JPG 只在"没有 mask 的老工程"
+             才解码兜底。老工程的行为一字未变。
+        """
         self._prediction_qimage = None
         if not self.project_dir:
             return
@@ -1774,16 +1912,16 @@ class AnnotationCanvas(QWidget):
                                os.path.basename(self.project_dir), "outputs")
         overlay_path = os.path.join(out_dir, base + "_overlay.jpg")
         mask_path = os.path.join(out_dir, base + "_pred.png")
-        if os.path.exists(overlay_path):
-            overlay_img = Image.open(overlay_path).convert("RGB")
-            arr = np.array(overlay_img)
-            h, w, ch = arr.shape
-            qimg = QImage(arr.data, w, h, 3 * w, QImage.Format_RGB888)
-            self._prediction_qimage = qimg.copy()
-            # Load mask for outline rendering
-            if os.path.exists(mask_path):
+        has_overlay = os.path.exists(overlay_path)
+        if not has_overlay and not os.path.exists(mask_path):
+            return
+
+        # ① 预测掩膜 + 类别：统计表与叠加层合成都要用，立刻读（PNG 单通道，很便宜）
+        if os.path.exists(mask_path):
+            try:
                 self._prediction_mask = np.array(Image.open(mask_path))
-            # Load class names from project
+            except Exception:
+                self._prediction_mask = None
             try:
                 import json as _json
                 proj_json = os.path.join(self.project_dir, "project.json")
@@ -1795,7 +1933,18 @@ class AnnotationCanvas(QWidget):
             except Exception:
                 pass
             self._pred_stats_cache = {}
-            self._pred_overlay_cache.clear()
+            try:
+                self._pred_overlay_cache.clear()
+            except Exception:
+                pass
+
+        # ② 全尺寸叠加位图：只有"没有 _pred.png"的老工程才真的用得上
+        if has_overlay and self._prediction_mask is None:
+            overlay_img = Image.open(overlay_path).convert("RGB")
+            arr = np.array(overlay_img)
+            h, w, ch = arr.shape
+            qimg = QImage(arr.data, w, h, 3 * w, QImage.Format_RGB888)
+            self._prediction_qimage = qimg.copy()
             self.status_message.emit("Prediction loaded (Space to view)")
 
     def _push_undo(self, desc="draw"):

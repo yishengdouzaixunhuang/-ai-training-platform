@@ -1,0 +1,279 @@
+# 交接说明（AI 训练平台 · 2026-10-21）
+
+> 这份文档是给**接手继续开发的那台机器上的 AI** 看的。
+> 读完这一页，你就能立刻上手、并且不会重复踩这半个月踩过的坑。
+
+---
+
+## 1. 这是什么项目
+
+工业视觉**缺陷检测 AI 训练平台**（PyQt5 桌面软件），做电池极片缺陷的
+标注 → 训练 → 推理 → 评估闭环。现场用：孚能/新松等客户的**三视图工程**
+（漫反射 te_0 + 形状图1 te_1 + 形状图2 te_2，早融合 9 通道）。
+
+- 源码根目录：本包解压后的 `ai_training_platform/`
+- **真实工程数据不在仓库里**（在 `E:\05-TrainingProject\`），本包只有代码
+- 真实训练解释器：`C:\aitp_venv\Scripts\python.exe`
+  （仓库里的 `.venv310` / `.venv312` 是**坏的**，已从包里排除，**不要用**）
+
+## 2. 怎么跑
+
+```bash
+# 启动平台
+"C:/aitp_venv/Scripts/python.exe" main.py
+
+# 自测（四个都是只读/临时目录，不会碰用户工程）
+"C:/aitp_venv/Scripts/python.exe" selftest_marks.py       # 标记体系 175 条
+"C:/aitp_venv/Scripts/python.exe" selftest_taskqueue.py  # 任务队列 21 条
+"C:/aitp_venv/Scripts/python.exe" selftest_inchannels.py  # 9 通道训练链路 15 条
+"C:/aitp_venv/Scripts/python.exe" probe_mark_ui.py        # 主 UI 探针 271 条（真窗口）
+"C:/aitp_venv/Scripts/python.exe" scripts/verify_sweep_metrics.py --render   # 主题清洗 16 条
+"C:/aitp_venv/Scripts/python.exe" _probe_dialogs.py       # 数据集划分 / 类别管理 对话框 60 条
+"C:/aitp_venv/Scripts/python.exe" _probe_split_semantics.py # 未划分 = 空集 的取数语义 24 条
+"C:/aitp_venv/Scripts/python.exe" -u _probe_ann_table.py  # 标注统计表按「块」出行 13 条
+"C:/aitp_venv/Scripts/python.exe" -u _probe_switch_perf.py # 真实大图切图耗时拆段（只读）
+"C:/aitp_venv/Scripts/python.exe" _probe_startup_flash.py # 启动闪烁：顶层杂散窗口必须 0 个
+"C:/aitp_venv/Scripts/python.exe" -u _probe_menu_entry.py # 两个菜单入口能打开（原来必崩）
+"C:/aitp_venv/Scripts/python.exe" _probe_dialogs_shot.py  # 把两个对话框渲染成 PNG 看版面
+```
+
+`probe_mark_ui.py` 还支持 `--real-project "<工程名>"`（跑真实工程）与 `--theme light`。
+它的结果会落盘 `_ui_probe_shots/probe_last_{ok,FAIL}.log` —— **间歇性失败时看这个文件**。
+
+## 3. 目录速查
+
+| 目录 | 干什么 |
+|---|---|
+| `main.py` | 入口。**内含全局基础 QSS**（几百行深色主题表），用 AST 可提取 |
+| `ui/` | 全部界面：`main_window.py`（主窗，310KB 单文件，最大）、`annotation_toolbar.py`、`task_queue.py`/`task_queue_panel.py`、`mark_panel.py`、`themes.py`（主题表）、`split_dialog.py`（数据集划分）、`class_dialog.py`（类别管理）… |
+| `core/` | 领域逻辑：`marks.py`（四态标记）、`filter_expr.py`（筛选表达式）、`project_manager.py`、`class_discovery.py` |
+| `training/` | `trainer.py`（单视图训练）、`multiview.py`（**三图 9 通道训练**）、`dataset.py`、`models.py` |
+| `inference/` | `predictor.py`（推理，含多视图推理） |
+| `annotation/` | 标注画布、labelme 导入导出、掩膜编辑 |
+| `flow/` | 推理流程节点（批量推理走这里） |
+| `classification/` `detection/` `ocr/` `ocv/` | 分类/检测/OCR/OCV 任务类型 |
+| `tools/` `scripts/` | 命令行工具、渲染/核验脚本 |
+
+## 4. 2026-10-15 ~ 10-16 这一批改了什么
+
+**UI 侧**（全部对标友商 iCogtiveFlow 截图）
+- 左栏由"上下叠放"改成**竖排页签三页**：工程管理 / 图像管理 / **任务队列**
+- 左右栏折叠：折叠 = 面板整个隐藏（画布占满整宽），恢复按钮是**贴在画布边缘的浮层**（不占布局宽度）
+- 标注/检测工具栏拆成「常驻条 + 可折叠工具行」（默认折叠，Ctrl+B），常驻条含上一张/下一张/保存
+- 图层开关由方块按钮改成「显示 + 真复选框」（勾上=实心青块）
+- 统计表列宽按 max(表头, 内容) 定，「平均灰度」列三视图并列显示（`86.2，188.2，68.3`）
+- 底栏资源占用：CPU 分整机/进程、磁盘分「空间/IO」两个口径、GPU 读不到就明写"不可读"
+- **新模块「任务队列」**：训练+推理统一登记，串行执行，显示进度/剩余时间，每行可取消
+
+**训练侧**
+- `create_model` 支持 `in_channels`（3/6/9），首层按 I3D 式膨胀（复制 RGB 预训练核 × 3/N）
+- `SegmentationDataset` 支持多视图（**按组取样**，一个场景 3 视图 = 1 个样本）
+- `trainer` 识别 `project.json` 的 `views` → 推 `in_channels`，并写进 checkpoint
+- ⇒ **三图工程在 GUI 里也能训了**（此前静默只训第一个视图）
+
+## 5. 已知地雷（★ 都是这半个月实际踩过的，别再踩）
+
+1. **配色一律写进 `ui/themes.py` 的主题表**。控件上的内联白名单色会被
+   `sweep_inline_styles` 剥掉（只留度量）—— 底栏滑块曾因此"占着 84px 一个像素不画"。
+   新增任何自绘/文字型控件，都要问"主题表里有它吗"。
+2. **`torch` 必须先于 `PyQt5` 导入**，否则 `OSError [WinError 1114] c10.dll`。
+3. **`QT_QPA_PLATFORM=offscreen` 在 Windows 上没有字体引擎**，文字会全空白 ——
+   要看文字必须 `windows`；`offscreen` 只适合量几何。
+4. **判"控件画出来了没有"要数像素**，别只看 value/geometry/信号（都会骗你）。
+   数像素前先问"分母是背景还是透明" —— `QCheckBox.grab()` 里占比最大的是**透明像素**。
+5. **`isVisible()` vs `isHidden()`**：前者要求**所有祖先可见**。整页不可见时用
+   `isVisible()` 判"按钮可点"会得到假失败 ⇒ 用 `isHidden()`。
+6. **跨线程投递只能用 Qt 信号**（`pyqtSignal(object)`）。在工作线程里
+   `QTimer.start()` / `invokeMethod(字符串)` 都不可靠（后者只对 slot 有效）。
+   队列回调是 `on_change(tasks)` 带参 ⇒ 信号必须声明带参，否则 TypeError 会被
+   队列里的 `except Exception: pass` **静默吞掉**。
+7. **几何断言要量"谁变形了"**，量"两个控件之间的距离"会被任一方撑大掩盖（假绿实录）。
+8. **批量改文本前，先把"不可动的行"用 `git show HEAD:<file>` 按行号兜底** ——
+   占位符保护法实测失效（把本机路径改成了 `01_维护者`）。
+9. **改完脚本必比对「脚本 mtime vs 输出 mtime」**（脚本尾部崩了、输出还是旧文件）。
+10. **dataclass 的字段必须带注解**：`run=None` 没有注解就不是字段 ⇒
+    `Task(run=...)` 直接报 unexpected keyword argument。
+11. **长跑的 Qt 脚本：输出重定向到文件**（`TerminateProcess` 不 flush stdout，屏幕上看不到），
+    收尾用 `TerminateProcess`（`sys.exit`/`os._exit` 会卡在 DLL_PROCESS_DETACH）。
+12. **行/控件删除要 `removeWidget` + `setParent(None)`**，只 `deleteLater` 会留下
+    "已删但仍在布局里"的幽灵行。
+13. **「未划分」= 不属于任何集（空集）**，别再改回"默认 train"（2026-10-22 按用户要求
+    统一）。以前 `get_train_test_split()` 在内存里补默认 train、`multiview.py` 用
+    `split_map.get(key,"train")`、分类侧三处同样 —— 后果是"没划分"= 偷偷进训练集，
+    而界面显示成空集，**用户核对标注时的判断依据是假的**。
+    现在的口径：`training/dataset.py`、`training/multiview.py`、`classification/dataset.py`、
+    `classification/dual_dataset.py`、`tools/infer_cell_farasis.py` 一律"查不到就取不到"，
+    训练集为空**当场报错**并指路「工具 → 数据集划分管理…」。
+    ⚠️ 连带坑：`annotation/convert.add_to_train()` 以前靠这个默认值才写得进盘，
+    现在它必须**显式** `split_map[b] = "train"`；改回去就是"数着改了 N 条、盘上一字未动"。
+    ⚠️ 分类工程 ImageFolder 布局的划分键是 `类别/文件名`（`ok/a`），不是裸文件名 ——
+    `ui/split_dialog.py` 已按 `images/` 下的相对路径写键，别再改成 basename。
+14. **老工程升级会停在"训练集为空"**：用划分对话框里的「未划分 → 训练集」一键补齐
+    （它只动未划分的，已划好的 val/test 不碰）。
+15. **右栏 Annotation(n) 表是「一个标注块一行」**，标题里的 n 直接取表格行数。    原来的实现是 `for cid in np.unique(mask)` = **一个类别一行**（同类的 40 块面积被求和成一行），
+    而「已标注 40」数的是 JSON shape 数 ⇒ 两个数字对不上，用户以为丢标注。
+    行数据优先取 labelme JSON 的 shape 列表（与列表「标注」列同源，永远相等），
+    无 JSON 时退回"一个连通域一行"。
+    ⚠️ 别用 `scipy.ndimage.find_objects`：`C:\aitp_venv` 里**没装 scipy**。
+    ⚠️ 也别逐块 `np.nonzero(idmap==cid)`：那是每块扫一遍全图，6MP×40 块实测 0.45s；
+    现在用"一次 flatnonzero + 按编号分组"拿到所有 bbox，稳态 0.013s。
+16. **大图切图的两处白解码（2026-10-22 实测 1.62s → 0.62s）**
+    ① `_gray_text_for_region()`：统计表的 region 是**显示尺寸**的，而视图是原图尺寸，
+       旧代码"先 `_load_gray_cached()` 解码 38MB 图 → 再发现形状不匹配 → 丢掉"，
+       每切一张大图白扔 0.6s。现在先 `Image.open(p).size` 读文件头比尺寸，对上了才解码。
+    ② `_load_prediction_overlay()`：`_overlay.jpg` 是**全尺寸**位图（4096×9320，解码
+       成 RGB 114MB，0.29s/张），但 `paintEvent` 优先走 `_build_prediction_overlay()`
+       （用 `_pred.png` 按显示尺寸现合成，且带缓存）⇒ 有 `_pred.png` 时这张 JPG
+       **永远不会被画**。现在只在"没有 _pred.png 的老工程"才解码它。
+       （顺带修好一个旧 bug：以前 `_prediction_mask` 的读取写在 `if overlay.jpg 存在`
+       里面 ⇒ 只有 pred.png 没有 overlay.jpg 的工程，Result 表永远是空的。）
+    剩下的 0.6s ≈ Result 表 97 个连通域 0.35s + 显示图降采样 0.10s + 解码 0.04s，
+    是真实计算量；要再压得把它改成"面板可见时才算"或异步算，属于设计改动。
+17. **`"—"` 是 truthy —— 别用 `if not text.strip()` 判"没算出来"**
+    真实反馈（2026-10-22）：20MP 图上 Result 表的「平均灰度」**整列显示 —**。
+    链条是：大图显示时 `_cache_qimage` 会降采样到 ≤2048 ⇒ 统计表里的 region 是
+    **显示尺寸**的，而 `_gray_text_for_region()` 拿原图尺寸的灰度去套 ⇒ 尺寸不匹配 ⇒
+    按设计返回 `"—"`。调用处写的是 `if not gray_text.strip(): 用 avg_gray 兜底`，
+    而 `"—"` 非空 ⇒ 兜底永不触发 ⇒ 明明算好的 avg_gray 被丢掉。
+    现在统一走 `_gray_cell_text(region, avg_gray)`（两张表共用，判空把 `"—"` 也算进去）。
+    ⚠️ 另外：Annotation 表原来的兜底会去**解码原图全尺寸灰度**（38MB 一张 0.6s），
+    已改成 `_gray_from_display()` 用 `canvas._cached_gray`（显示图灰度）按比例裁切算 ——
+    同一份数据、同一套口径，零额外解码。
+    ⚠️ 已知取舍：**大图 + 多视图**时平均灰度只显示 1 个值（其余视图没有显示尺寸灰度缓存），
+    小图仍是三视图并列。要补就给每个视图加一份"显示尺寸灰度"缓存（每视图约 +50ms）。
+18. **勾选框的 ✓ 是图片，不是 QSS 画出来的**（2026-10-22 用户要求"把蓝色小方块换成√"）：
+    QSS 的 `::indicator` 只有 background / border / image 三种手段，**画不了文字或图形**。
+    所以做了 `resources/check_dark.svg`（青底+近黑勾）和 `resources/check_light.svg`（蓝底+白勾），
+    在 `ui/themes.py` 里用 `image: url(...)` 挂上去（`_res_uri()` 负责把反斜杠换成 `/`，
+    Windows 路径直接写进 url() 会解析失败）。
+    ⚠️ `DARK_CHECK` / `LIGHT_CHECK` 必须拼在 `DARK_INDICATOR` / `LIGHT_OVERLAY` **之后** ——
+       前面那句 `image: none` 靠"同优先级后者胜"才被覆盖。
+    ⚠️ 这两段是**应用级**样式表，`sweep_inline_styles` 只扫控件级内联样式，不会剥它们。
+    ⚠️ 若将来打成 onefile 包，要把 `resources/*.svg` 加进 datas，否则路径失效、勾变回方块。
+19. **画布"糊"= 把降采样缓存图放大**（2026-10-22 用户拿友商截图对比）
+    链条：`_cache_qimage` 为切图速度把显示图限制在**长边 2048**；456×7041 的图缓存成
+    132×2048（0.291 倍）。而注释里承诺的"放大到更高倍时改用原图裁剪（见 `_crop_qimage_at`）"
+    —— **那个方法全文件根本不存在**（`grep -c "def _crop_qimage_at"` = 0）。
+    于是用户按 100% 看图，实际是把 0.29 倍的图**放大 3.45 倍**，必然糊。
+    ① 补上 `_use_crop_path()` / `_crop_for_view()` / `_draw_base_image()`：
+       缩放比例 > 缓存比例×1.02 时，从 `self.image` 按**可见区域**裁切（+96px 余量、单条缓存）。
+    ② **叠加层也必须一起改**：`_build_overlay` 把原图**烘进**了 overlay（显示尺寸），
+       底图再清晰也会被它盖糊 —— 只改底图时实测像素误差一点没变（22.48 → 23.76）。
+       现在同时缓存一份**纯掩膜 RGBA 层**（`_cached_overlay_rgba_qimage`），高倍时只叠它。
+    ⚠️ 底层图与叠加层**必须用同一个判据** `_use_crop_path()`，否则就是"清晰底图 + 糊盖层"。
+    ⚠️ 排查时注意：`resizeEvent` 会把 zoom 拉回 fit，写探针要在绘制前把 `_fit_to_window`
+       屏蔽掉，否则你以为在 100% 测、其实一直在 fit 下测（这次白绕了两轮）。
+20. **`self.trainer` 是"单槽位"共享属性，训练线程必须用局部快照**
+    2026-10-22 用户实拍：一次训练跑到 epoch 206 时又点了一次「开始训练」，
+    再点「停止」→ 报 `'NoneType' object has no attribute 'train'`（main_window 的 run 里）。
+    链条：第二次 `_start_training` 把 `self.trainer` 换成新实例 → 第一个任务的 finally
+    执行 `_cleanup_trainer()` → `self.trainer = None`（清掉的是**第二个**）→
+    第二个任务线程走到 `self.trainer.train()` 时是 None。
+    三处修：① 线程里用 `_trainer_ref` 局部快照；② `_cleanup_trainer(who)` **只清自己那个**
+    （`if self.trainer is target` 才置空，别人的不动）；③ `_start_training` 开头若队列里
+    已有 TRAIN 任务在排队/执行，直接提示并 return，不再允许开第二个。
+    ⚠️ 训练成果不受影响：`best_model.pth` 每次 val 提升就落盘，`last_model.pth` 停机时落盘，
+    报错发生在"第二个任务启动"那一刻，此时第一个任务的东西早就存好了。
+21. **推理的滑窗块尺寸必须等于训练裁剪尺寸，且大图不许"整图缩放"**（2026-10-22）
+    训练这次用的是 `image_size=256` + 原分辨率切块；而 `predict()` 里块尺寸**写死 200**，
+    还把长边 >1500 的图**先缩到 1024**（456×7041 → 66×1024，横向压 7 倍）。
+    实测同一条产线图：旧口径**检出 0 块**，新口径 42 块（GT 40，IoU 0.956）。
+    三处改：
+    ① `trainer.save_model` 写入 `image_size`（老模型没这字段）；
+    ② `Predictor._resolve_train_tile()`：ckpt → 工程/平台 `.train_settings.json` → 200；
+    ③ `predict()`：`_要分块 = tiled or 大图`；精细档 + 分块 + 估算块数 ≤600 时走
+       **原分辨率滑窗**（不再缩整图），块数太多才退回 1024。
+    ⚠️ 「快速」档仍是整图缩放（对标友商 100ms 档），对细长条大图会 0 检出 ——
+       这是设计取舍，不是 bug；精细档才是默认正确路线。
+22. **滑窗推理返回 `int64` 掩膜，喂给 PIL 会当场炸**
+    `_predict_tiled*` 全部 `return np.round(...).astype(np.int64)`；而
+    `mask_editor._build_prediction_overlay()` 会 `Image.fromarray(mask)` ⇒
+    `TypeError: Cannot handle this data type: (1, 1), <i8>`，而且是在 **paintEvent** 里抛，
+    直接被全局 excepthook 兜成"程序遇到未处理异常"弹窗（不是 "Inference failed"）。
+    以前大图走整图前向（uint8）所以从没暴露；第 21 条把大图改成强制分块后就必踩。
+    修：① `predict()` 返回前统一 `astype(uint8)`；② `_build_prediction_overlay` 里
+    `Image.fromarray` 之前兜底强转 uint8（双保险，别再让 dtype 泄漏到绘制层）。
+    ⚠️ 掩膜像素值就是类别 id ⇒ 类别数必须 ≤255，uint8 是硬上限。
+23. **批量推理不保存置信度图 ⇒ Result 表「分数」整列 0.0%**（2026-10-22 用户实拍）
+    「分数」优先取 `prob_map` 里该块的均值；而 `canvas._pred_prob` **只有单张推理才赋值**，
+    批量走 flow 只落 mask/overlay ⇒ 退化成"与标注 IoU"，没标注的图上就是 0.0%。
+    改：① `SegResultWriter` 多存一张 `<base>_prob.png`（uint8 = 概率×255，
+    20MP 也才几百 KB，新参数 `save_prob` 默认开）；
+    ② `_update_stats` 取置信度图的顺序：`canvas._pred_prob` → `_load_prob_for_current()`
+    读 `outputs/<base>_prob.png`（按显示尺寸缩放）。
+    ⚠️ 老结果没有 `_prob.png`，必须**重跑一次批量**分数才会出来。
+    ③ 列表「分数」列同步改成**平均置信度**（前景像素上的概率均值，百分比格式），
+    与 Result 表同口径；没有 `_prob.png` 就**留空**，不再拿 IoU 冒充（那是"和标注比"，
+    没标注的图恒为 0，摆在这一列会被读成"模型没把握"）。
+
+## 6. 这个包里**没有**什么
+
+| 没带 | 原因 / 怎么办 |
+|---|---|
+| `.venv310/` `.venv312/` | 坏的虚拟环境（1.66GB）。用 `C:\aitp_venv` |
+| `models/sam_vit_b_01ec64.pth`（358MB） | SAM 预训练权重。需要的话从原机器拷，或让程序自动下载 |
+| `yolo26n.pt`（5MB） | 同上（YOLO 预训练权重） |
+| `tmp/` `_ui_render/` `_ui_probe_shots/` | 探针与出图的临时产物，可重新生成 |
+| `E:\05-TrainingProject\`（真实工程数据） | **在原机器上**，不在仓库里 |
+
+## 7. 接手前先看这两件事
+
+1. `git status` —— **工作区里有未提交的改动**（10-15/10-16 的 UI 重构 + 训练侧优化，
+   其中 `classification/*`、`ui/infer_params.py` 等是别人在途的训练侧工作）。
+   本包是**按工作区当前状态**打的包（含未提交内容），`.git` 历史也在。
+2. 上面第 5 节的 12 条地雷 —— 那是这个项目"看起来能跑、其实悄悄错"的主要来源。
+
+24. **推理提速两刀（2026-10-22，对标友商 ~120ms/张）**
+    ① **窄条图横向不重叠**：`Predictor._tile_strides()`。456 宽的图用 256 块、stride 128 时
+       横向切 4 列，同一段像素前向算了 2 遍。判定 `w <= tile*2` 时该轴 stride = tile。
+       ⚠️ **不重叠的轴窗口必须换成 1.0**（`np.ones`）—— Hann 两端是 0，
+       零重叠直接拼会在缝上得到 count_map≈0，除出噪声/黑线。
+       实测 predict 0.71s → **0.194s**（warm），检出 42 不变，IoU 0.9560 → 0.9558。
+    ② **连通域属性按 bbox 裁切算**：`inference/params.component_props()`。
+       原来每个块都 `lab == i` + findContours + `gray[region]` 扫**整幅** 20MP，
+       41 个块要 0.227s（比模型推理还贵）。改成只在 bbox 子图内算，→ 约 0.02s。
+       结果不变（面积/宽高仍取 stats bbox 口径，角度/灰度/分数只看块内像素）。
+       整条批量流程 0.68s → **0.46s/张**。
+    ⚠️ 剩余构成：模型前向 ~0.22s、overlay 合成 0.08s、落盘 0.045s。
+       **TRT 只能优化那 0.22s**，想压到 120ms 还得砍 overlay 落盘/合成。
+    ⚠️ 本机 `C://aitp_venv` **没有** tensorrt / onnx / onnxruntime，也没有 py3.12 TRT venv
+       —— 上 TRT 前必须先装包并验证 CUDA 版本匹配。
+
+25. **缩放锚点公式漏了"居中项"，图像会往左上漂**（2026-10-22 用户实拍）
+    屏幕坐标 = `(W - dw)/2 + pan + zoom*u`，而在**光标不动**的前提下解出的正确更新是
+        `pan1 = (px - W/2) - f * ((px - W/2) - pan0)`
+    原实现（`wheelEvent` 与 `_zoom_step` 两处）写的是 `pan1 = px - f*(px - pan0)`，
+    **少了 `W/2` 那一项** ⇒ 每次缩放都往 pan 里多塞一个 `(W/2)(1-f)`：
+    放大时 f>1 ⇒ 负 ⇒ 图像一步步往**左上**漂；缩小则往右下漂。
+    光标恰在正中央时该漂移最纯粹（中央本该完全不动），所以最容易被发现。
+    `_zoom_step`（按钮/快捷键/滑块）以视图中心为锚点时，正确结果就是 `pan *= f`。
+    实测修复后：滚轮连放大 10 次中心像素偏移 **1.00px**（旧实现约 900px 量级），
+    按钮路径 **0.00px**，且缩回原倍率偏移 0.00px（可逆）。
+    ⚠️ `ui/multiview_preview.py` 的参考窗用的是另一套公式（`(iw/2 - cx) * nz`），
+       本次**未动**；若参考窗也出现类似漂移，照这条推导重算。
+
+26. **批量不再合成/落 overlay JPG**（2026-10-22，用户选的"方案 C"）
+    批量每张要在 20MP 上合成一次 RGB 叠加图（实测 0.084s）再编码成 JPG，
+    而画布根本不用它 —— `_build_prediction_overlay()` 是按 `_pred.png` 在**显示尺寸**现合成的。
+    改：`SegInfer` 新增参数 `return_overlay`（默认 False，不调 `_create_overlay`）；
+        `SegResultWriter` 的 `save_overlay` 默认改 False。
+    实测整条批量流程 **0.46s → 0.36s/张**，产物只剩 `_pred.png` + `_prob.png`，块数 41 不变。
+    ⚠️ 只有"没有 `_pred.png` 的老工程"才真的需要 overlay.jpg（`_load_prediction_overlay`
+       拿它当兜底位图）。那种工程要手动把 `save_overlay` 打开。
+    ⚠️ 已有 outputs 里历史遗留的 `_overlay.jpg` 不用管，不影响任何计算。
+
+27. **ONNX Runtime 提速试过，结论是"不用"**（2026-10-22，方案 A 的实测）
+    背景：对标友商 ~120ms/张，想用 ORT CUDA 替掉 PyTorch 前向。
+    过程与坑：
+    ① `pip install onnxruntime-gpu` 默认装到 **1.31**，它要求 **CUDA 13.x**，而本机 torch 是
+       cu128（CUDA 12.8）⇒ CUDAExecutionProvider 加载失败、静默退回 CPU，
+       单块 16.7ms（PyTorch 1.8ms），**慢 9 倍**。
+    ② 降到 `onnxruntime-gpu==1.22.0`（CUDA 12 + cuDNN 9）并 `os.add_dll_directory(torch/lib)`
+       （复用 torch 自带的 cublasLt64_12.dll / cudnn64_9.dll）后 CUDA EP 才真正加载。
+    ③ 但**端到端反而更慢**：ONNX 0.309s vs PyTorch 0.215s（同一张图，3 次取最快），
+       掩膜只差 6 个像素（数值等价）。
+    原因：这个模型太小（MultiViewUNet 1.96M，单块前向 0.5~1.2ms），
+    ORT 的 per-run 开销 + 固定 batch=16 + 每块现算 numpy 窗，把收益吃光了。
+    ⇒ 已 `pip uninstall onnxruntime-gpu onnx` 并删除 `models/model.onnx`，环境复原。
+    ⚠️ 以后想再试 ORT，直接测**整图端到端**，别只看单块前向——单块数字会骗人。
+    ⚠️ 真的要再快，方向是**更小的网络**（友商 "SGTiny" 那种），不是换运行时。

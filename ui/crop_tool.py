@@ -18,7 +18,10 @@ class ROICanvas(QLabel):
         super().__init__()
         self.setAlignment(Qt.AlignCenter)
         self.setMinimumSize(400, 300)
-        self.setStyleSheet("background-color: #1a1a1a; border: 1px solid #444;")
+        # ⚠️ 深色底 + **主题**字色 = 浅色主题下"深字压深底"（这段样式含 #444 三位色，
+        #    不在主题色白名单里，不会被 themes.py 清扫）。文字色必须显式给，
+        #    否则「Drop image here or click Browse」在浅色主题下看不见。
+        self.setStyleSheet("background-color: #1a1a1a; border: 1px solid #444; color: #D6E4FF;")
         self.setText("Drop image here or click Browse")
         self.setFont(QFont("Sans", 12))
         self._orig_pixmap = None

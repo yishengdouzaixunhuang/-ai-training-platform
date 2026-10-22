@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>语义分割模型评估 · 10 项指标报表</title>
+<style>
+:root{
+  --bg:#F4F6FA; --panel:#FFFFFF; --line:#E2E8F0; --ink:#16213A; --mut:#5C6B85;
+  --blue:#2F6FED; --green:#12855A; --amber:#B87413; --red:#C6362C; --violet:#6A4CD1;
+  --tint:#EDF2FB;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);padding:30px 34px 70px;
+  font:14px/1.7 -apple-system,"Segoe UI","Microsoft YaHei","PingFang SC",sans-serif;}
+h1{font-size:25px;margin:0 0 6px;letter-spacing:-.01em}
+h2{font-size:17px;margin:36px 0 14px;padding-left:11px;border-left:4px solid var(--blue)}
+h3{font-size:14.5px;margin:22px 0 10px;color:#2A3A5C}
+.sub{color:var(--mut);font-size:13px}
+.wrap{max-width:1180px;margin:0 auto}
+.hero{background:linear-gradient(135deg,#FFFFFF 0%,#F0F5FF 100%);border:1px solid var(--line);
+  border-radius:14px;padding:20px 24px;margin-bottom:6px;box-shadow:0 1px 3px rgba(16,24,40,.05)}
+.hero .meta{color:var(--mut);font-size:12.5px;margin-top:8px}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px;margin-top:16px}
+.kpi{background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:13px 15px}
+.kpi .t{font-size:12px;color:var(--mut);margin-bottom:5px}
+.kpi .n{font-size:21px;font-weight:680;font-variant-numeric:tabular-nums}
+.kpi .d{font-size:11.5px;color:var(--mut);margin-top:3px}
+.kpi.bad{border-left:4px solid var(--red)} .kpi.bad .n{color:var(--red)}
+.kpi.good{border-left:4px solid var(--green)} .kpi.good .n{color:var(--green)}
+.kpi.warn{border-left:4px solid var(--amber)} .kpi.warn .n{color:var(--amber)}
+table{border-collapse:separate;border-spacing:0;width:100%;background:var(--panel);font-size:13px;
+  border:1px solid var(--line);border-radius:10px;overflow:hidden}
+th,td{padding:9px 11px;border-bottom:1px solid var(--line);text-align:center;vertical-align:top}
+th{background:#EBF0F8;font-weight:640;color:#2E3E60;font-size:12.5px;white-space:nowrap}
+td:first-child,th:first-child{text-align:left}
+tr:last-child td{border-bottom:none}
+td.l{text-align:left}
+code{background:#F0F3F9;border:1px solid #E1E7F1;border-radius:4px;padding:1px 5px;
+  font:12px/1.5 "Consolas","Courier New",monospace;color:#25406E;white-space:nowrap}
+.mono{font-family:"Consolas","Courier New",monospace;font-variant-numeric:tabular-nums}
+.grp-tag{display:inline-block;font-size:11px;padding:1px 8px;border-radius:20px;font-weight:600;
+  margin-right:6px;vertical-align:1px}
+.t1{background:#E4EDFF;color:#2F6FED}
+.t2{background:#E3F5EC;color:#12855A}
+.t3{background:#FDF0DC;color:#B87413}
+.t4{background:#EAE4FB;color:#6A4CD1}
+.box{background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:16px 20px;
+  margin:14px 0;box-shadow:0 1px 2px rgba(16,24,40,.04)}
+.box.warnbox{background:#FFFCF3;border-color:#F2DCA8}
+.box.alert{background:#FFF6F5;border-color:#F3CBC6}
+.box.okbox{background:#F4FCF7;border-color:#C8E8D6}
+ul{margin:8px 0 8px 20px;padding:0} li{margin:5px 0}
+b.hl{color:var(--red)} b.hg{color:var(--green)} b.hb{color:var(--blue)} b.ha{color:var(--amber)}
+.foot{color:var(--mut);font-size:12px;margin-top:36px;border-top:1px solid var(--line);padding-top:14px}
+.legend{font-size:12px;color:var(--mut);margin-top:8px}
+.bar-row{display:grid;grid-template-columns:190px 1fr 76px;gap:10px;align-items:center;margin:7px 0;font-size:13px}
+.bar{height:15px;border-radius:3px;background:#E8EDF5;overflow:hidden}
+.bar > i{display:block;height:100%;border-radius:3px}
+.small{font-size:12px;color:var(--mut)}
+.pill{display:inline-block;font-size:11.5px;padding:2px 9px;border-radius:20px;font-weight:600}
+.pill.red{background:#FBE9E7;color:#C6362C} .pill.green{background:#E3F5EC;color:#12855A}
+.pill.amber{background:#FDF0DC;color:#B87413} .pill.blue{background:#E4EDFF;color:#2F6FED}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+@media(max-width:900px){.two{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<div class="hero">
+  <h1>语义分割模型评估 · 10 项指标报表</h1>
+  <div class="sub">DL Studio（E:\00-软件\ai_training_platform）｜ 缺陷分割场景 ｜ 2026-10-13</div>
+  <div class="meta">
+    配套工具 <code>tools/eval_seg_metrics.py</code>（已自测 <b>41/41</b>）｜
+    报表依据：真实凹点标注 <code>17_31_凹点_te_0/1/2</code>（1640×4200，前景占 0.0103%）
+  </div>
+</div>
+
+<div class="box alert">
+  <h3 style="margin-top:0">先看结论：为什么必须看 10 项而不是 1 项</h3>
+  <p style="margin:6px 0">
+    拿本项目真实数据跑一个"中等质量"的模型，同一份预测结果算出来的数字是这样的：
+  </p>
+  <div class="bar-row"><span>像素准确率 PA</span>
+    <span class="bar"><i style="width:99.98%;background:#12855A"></i></span>
+    <span class="mono">0.9998</span></div>
+  <div class="bar-row"><span>FWIoU</span>
+    <span class="bar"><i style="width:99.97%;background:#12855A"></i></span>
+    <span class="mono">0.9997</span></div>
+  <div class="bar-row"><span>mIoU（含背景）</span>
+    <span class="bar"><i style="width:64.44%;background:#B87413"></i></span>
+    <span class="mono">0.6444</span></div>
+  <div class="bar-row"><span>Macro Recall（不漏）</span>
+    <span class="bar"><i style="width:98.58%;background:#B87413"></i></span>
+    <span class="mono">0.9858</span></div>
+  <div class="bar-row"><span>Boundary F1（轮廓）</span>
+    <span class="bar"><i style="width:58.63%;background:#B87413"></i></span>
+    <span class="mono">0.5863</span></div>
+  <div class="bar-row"><span><b>Region F1（目标级）</b></span>
+    <span class="bar"><i style="width:31.58%;background:#C6362C"></i></span>
+    <span class="mono"><b>0.3158</b></span></div>
+  <div class="bar-row"><span><b>mIoU（仅前景）</b></span>
+    <span class="bar"><i style="width:28.90%;background:#C6362C"></i></span>
+    <span class="mono"><b>0.2890</b></span></div>
+  <p style="margin:12px 0 0">
+    PA = <b class="hg">0.9998</b> 看起来"几乎完美"，但同一份结果：
+    <b class="hl">9 个真缺陷里漏了 6 个</b>，还<b class="hl">多报了 7 个假缺陷</b>。
+    原因很简单——缺陷只占全图 <b>0.0103%</b> 的像素，
+    <b class="hl">全判背景也有 0.9999 的 PA</b>。
+  </p>
+</div>
+
+<h2>一、十项指标：分四层看</h2>
+<p class="small" style="margin-top:-4px">
+  顺序是有讲究的：像素级 → 类别级 → 边界级 → 目标级。越往下越接近产线关心的事，
+  也越不容易被"类不平衡"骗到。宏平均一律<b>只统计前景类</b>（排除 background）。
+</p>
+
+<table>
+<thead>
+<tr>
+  <th style="width:30px">#</th><th style="width:172px">指标</th><th style="width:1px">公式</th>
+  <th style="width:74px">范围</th><th style="width:120px">工程判据</th>
+  <th>含义与坑（★ = 本项目实测到的）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td rowspan="3" style="background:#F7FAFF;font-weight:700;color:#2F6FED">像<br>素<br>级</td>
+  <td class="l"><b>1. Pixel Accuracy</b><br><span class="small">像素准确率 PA</span></td>
+  <td><code>Σ TPc / N</code></td>
+  <td>0 ~ 1</td>
+  <td><span class="pill green">≥0.99</span></td>
+  <td class="l">所有像素里判对的比例。<br>
+  ★ <b class="hl">本项目实测：零检出（全判背景）也有 PA = 0.9999</b> ——
+  前景只占 0.01%，PA 是安慰剂，<b>不可单独用</b>，只能用来解释"模型有没有整体崩掉"。</td>
+</tr>
+<tr>
+  <td class="l"><b>2. Cohen's Kappa</b><br><span class="small">去掉瞎猜的分</span></td>
+  <td><code>(pₒ−pₑ)/(1−pₑ)</code></td>
+  <td>−1 ~ 1</td>
+  <td><span class="pill amber">≥0.8 良好</span></td>
+  <td class="l">扣除"按类别频率随机猜也能拿到的一致率"。<br>
+  ★ 实测：轻微膨胀 5px 就让 κ 从 1.00 掉到 <b class="hl">0.57</b>，而 PA 还是 0.9998 ——
+  κ 对"少数类判错"比 PA 敏感得多，适合当<b>告警指标</b>。</td>
+</tr>
+<tr>
+  <td class="l"><b>3. FWIoU</b><br><span class="small">频率加权 IoU</span></td>
+  <td><code>Σ (n_c/N)·IoU_c</code></td>
+  <td>0 ~ 1</td>
+  <td><span class="pill green">≥0.95</span></td>
+  <td class="l">按真值像素频率给各类 IoU 加权。<br>
+  ★ 因为前景占比极低，本项目 FWIoU ≈ PA（实测 0.9997 vs 0.9998），
+  <b>它基本就是"像素加权版 PA"</b>，小缺陷几乎影响不到它。</td>
+</tr>
+
+<tr>
+  <td rowspan="4" style="background:#F4FBF7;font-weight:700;color:#12855A">类<br>别<br>级</td>
+  <td class="l"><b>4. mIoU / 逐类 IoU</b></td>
+  <td><code>IoU_c = TP/(TP+FP+FN)</code><br><code>mIoU = mean(IoU_c)</code></td>
+  <td>0 ~ 1</td>
+  <td><span class="pill green">≥0.85 优秀</span><br><span class="pill amber">≥0.65 可用</span></td>
+  <td class="l">分割任务的事实标准，<b>逐类 IoU 比 mIoU 更有信息量</b>。<br>
+  ★ 坑一：含不含背景差距巨大（实测 <b>0.6444 → 0.2890</b>），报告里必须写明口径。<br>
+  ★ 坑二：本项目口径 = <b>宏平均只算前景类</b>，并与"含背景"并列展示。</td>
+</tr>
+<tr>
+  <td class="l"><b>5. Macro Precision</b><br><span class="small">宏平均精确率</span></td>
+  <td><code>mean(TP/(TP+FP))</code></td>
+  <td>0 ~ 1</td>
+  <td><span class="pill green">≥0.90 优秀</span><br><span class="pill amber">≥0.75 可用</span></td>
+  <td class="l"><b>对应"过杀"</b>：报出来的里面有多少是真的。<br>
+  ★ 实测：膨胀 5px → P 掉到 0.39；加一个远距离假缺陷 → P 掉到 0.10。</td>
+</tr>
+<tr>
+  <td class="l"><b>6. Macro Recall</b><br><span class="small">宏平均召回率</span></td>
+  <td><code>mean(TP/(TP+FN))</code></td>
+  <td>0 ~ 1</td>
+  <td><span class="pill green">≥0.99</span></td>
+  <td class="l"><b>对应"漏检"</b>：该找的找到了多少。客户漏检 KPI ≤0.2%，本项要求应最严。<br>
+  ★ 实测：腐蚀 5px → R 掉到 0.16；漏掉 1 个碎片 → 区域 R 从 1.0 掉到 0.667。</td>
+</tr>
+<tr>
+  <td class="l"><b>7. Macro Dice / F1</b></td>
+  <td><code>2TP/(2TP+FP+FN)</code><br><code>Dice = 2IoU/(1+IoU)</code></td>
+  <td>0 ~ 1</td>
+  <td><span class="pill green">≥0.85</span></td>
+  <td class="l">与 IoU 单调对应，<b>同样的分割质量 Dice 数值永远≥IoU</b>，对小目标更敏感。<br>
+  ★ 汇报时要说清用的是哪个，否则和客户/论文对比会显得"我们的模型更好"。</td>
+</tr>
+
+<tr>
+  <td rowspan="2" style="background:#FFFBF2;font-weight:700;color:#B87413">边<br>界<br>级</td>
+  <td class="l"><b>8. Boundary F1</b><br><span class="small">BF Score</span></td>
+  <td>容差 <code>tol</code> 内<br>轮廓点命中率 F1</td>
+  <td>0 ~ 1</td>
+  <td><span class="pill green">≥0.85</span></td>
+  <td class="l">轮廓是否"贴着走"，只在需要量面积/尺寸时才有意义。<br>
+  ★ 它是<b>有参数的指标</b>：<code>tol</code> 从 2px 改到 5px 结果就变 ——
+  必须和 tol 一起记录，否则数字不可比。当前默认 <code>tol=2px</code>。</td>
+</tr>
+<tr>
+  <td class="l"><b>9. HD95</b><br><span class="small">豪斯多夫 95 分位</span></td>
+  <td>双向边界距离的<br>95 分位数（px）</td>
+  <td>≥0（px）</td>
+  <td><span class="pill green">≤2px</span><br><span class="pill amber">≤5px</span></td>
+  <td class="l">只看最坏的那 5% 轮廓点，抓"飞出去的碎块/毛刺"。<br>
+  ★ 实测：轮廓变糊 → <b class="hl">960px</b>；漏检 → <b class="hl">2018px</b>；多一个远处假缺陷 → 743px。<br>
+  ★ 坑：某一方为空时<b>无定义（NaN）</b>，绝不能当 0 计入平均，否则"漏光了"反而显得很好。</td>
+</tr>
+
+<tr>
+  <td style="background:#F9F6FF;font-weight:700;color:#6A4CD1">目<br>标<br>级</td>
+  <td class="l"><b>10. Region P / R / F1</b><br><span class="small">连通域级</span></td>
+  <td>连通域一对一匹配<br>（IoU ≥ 0.5 判命中）</td>
+  <td>0 ~ 1</td>
+  <td><span class="pill green">R ≥0.99</span><br><span class="pill green">P ≥0.90</span></td>
+  <td class="l"><b>唯一能和产线 KPI 对齐的一层</b>：<br>
+  区域 Recall = 命中的真值目标 ÷ 真值目标总数 → <b>漏检</b>；<br>
+  区域 Precision = 命中的预测目标 ÷ 预测目标总数 → <b>过杀</b>。<br>
+  ★ 实测：模型把 3 个相邻缺陷膨胀粘连成 2 个 → 区域级直接归零（P=R=0）。</td>
+</tr>
+</tbody>
+</table>
+
+<h2>二、实测：六个受控场景，十项指标怎么动</h2>
+<p class="small" style="margin-top:-4px">
+  用真实凹点标注（1 张图，真值 3 个缺陷连通域，面积 643 / 30 / 32 px）人为构造 6 种预测，
+  看十项指标各自的变化。这是判断"某个指标能不能用"最直接的办法。
+</p>
+
+<table>
+<thead>
+<tr><th class="l">场景</th><th>PA</th><th>Kappa</th><th>FWIoU</th><th>mIoU<br><span class="small">仅前景</span></th>
+<th>Macro<br>Prec</th><th>Macro<br>Rec</th><th>Macro<br>Dice</th><th>BF</th><th>HD95<br><span class="small">px</span></th><th>Region<br>F1</th></tr>
+</thead>
+<tbody class="mono">
+<tr><td class="l">① 完美预测</td><td>1.0000</td><td>1.0000</td><td>1.0000</td><td>1.0000</td><td>1.0000</td><td>1.0000</td><td>1.0000</td><td>1.0000</td><td>0.00</td><td>1.0000</td></tr>
+<tr><td class="l">② 膨胀 +5px（过杀倾向）</td><td>0.9998</td><td>0.5657</td><td>0.9998</td><td>0.3945</td><td>0.3945</td><td>1.0000</td><td>0.5658</td><td>0.1266</td><td>7.07</td><td>0.0000</td></tr>
+<tr><td class="l">③ 腐蚀 −5px（漏检倾向）</td><td>0.9999</td><td>0.2805</td><td>0.9998</td><td>0.1631</td><td>1.0000</td><td>0.1631</td><td>0.2805</td><td>0.0000</td><td>963.64</td><td>0.0000</td></tr>
+<tr><td class="l">④ 漏最小缺陷 + 多 1 个假缺陷</td><td>0.9991</td><td>0.1828</td><td>0.9990</td><td>0.1007</td><td>0.1011</td><td>0.9574</td><td>0.1829</td><td>0.4878</td><td>2018.46</td><td>0.6667</td></tr>
+<tr><td class="l">⑤ 轮廓粗糙（模糊后二值）</td><td>0.9999</td><td>0.6257</td><td>0.9999</td><td>0.4553</td><td>1.0000</td><td>0.4553</td><td>0.6257</td><td>0.2844</td><td>960.42</td><td>0.0000</td></tr>
+<tr><td class="l">⑥ 全部判背景（零检出）</td><td><b>0.9999</b></td><td>0.0000</td><td>0.9998</td><td>0.0000</td><td>n/a</td><td>0.0000</td><td>0.0000</td><td>0.0000</td><td>n/a</td><td>0.0000</td></tr>
+</tbody>
+</table>
+
+<div class="two">
+  <div class="box">
+    <h3 style="margin-top:0">区域级（产线口径）明细</h3>
+    <table style="font-size:12.5px">
+      <thead><tr><th class="l">场景</th><th>真值/预测/命中</th><th>Recall</th><th>Precision</th><th>漏检</th><th>过杀</th></tr></thead>
+      <tbody class="mono">
+      <tr><td class="l">① 完美</td><td>3 / 3 / 3</td><td>1.000</td><td>1.000</td><td>0</td><td>0</td></tr>
+      <tr><td class="l">② 膨胀 +5px</td><td>3 / 2 / 0</td><td>0.000</td><td>0.000</td><td>3</td><td>2</td></tr>
+      <tr><td class="l">③ 腐蚀 −5px</td><td>3 / 1 / 0</td><td>0.000</td><td>0.000</td><td>3</td><td>1</td></tr>
+      <tr><td class="l">④ 漏1多1</td><td>3 / 3 / 2</td><td>0.667</td><td>0.667</td><td>1</td><td>1</td></tr>
+      <tr><td class="l">⑤ 轮廓粗糙</td><td>3 / 1 / 0</td><td>0.000</td><td>0.000</td><td>3</td><td>1</td></tr>
+      <tr><td class="l">⑥ 零检出</td><td>3 / 0 / 0</td><td>0.000</td><td>0.000</td><td>3</td><td>0</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="box">
+    <h3 style="margin-top:0">从这张表读出的三条规律</h3>
+    <ul style="margin-left:18px">
+      <li><b class="hb">PA / FWIoU 全程 ~0.9999</b>，六种场景（含零检出）几乎不动
+        → 它们只能证明"模型没崩"，不能用来评价好坏。</li>
+      <li><b class="ha">Kappa / mIoU / Dice 同步动</b>，适合做模型迭代的主指标：
+        ① → ⑤ 是 1.00 → 0.63 / 0.46 / 0.63，单调、可比较。</li>
+      <li><b class="hl">只有区域级能分辨"漏检 vs 过杀"</b>：
+        ② 膨胀造成的是"目标粘连"（3→2 个），④ 造成的是"1 漏 1 多"。
+        像素级看不出这个区别，产线却只关心这个区别。</li>
+    </ul>
+    <p class="small" style="margin-bottom:0">
+      注意 ②：膨胀 5px 把两个相距很近的缺陷<b>粘成一个</b>，区域 IoU 掉到 0.5 以下 →
+      区域指标全归零。这类"粘连"缺陷在产线上比"漏检"更常见。
+    </p>
+  </div>
+</div>
+
+<h2>三、本场景的 8 个坑（都是实测踩到的）</h2>
+<div class="box warnbox">
+<ol style="margin-left:20px">
+  <li><b>类极不平衡</b>：凹点前景只占全图 0.0103% 的像素。
+    PA、FWIoU、Specificity 这一族指标会<b>系统性虚高</b>，只用它们等于没评估。</li>
+  <li><b>ignore 区域必须排除</b>：标注里的 <code>__ignore__</code> 多边形在掩膜里是 <code>255</code>
+    （本样本有 <b>43,380</b> 个 ignore 像素）。不排除的话，这些区域的预测差异会直接算进 FP/FN。</li>
+  <li><b>宏平均必须排除背景</b>：否则 background 的 IoU≈0.9998 会把 mIoU 拉到 0.64 这种"看着还行"的假象
+    （仅前景只有 0.289）。</li>
+  <li><b>空类不能当 0</b>：某类在预测里完全没出现时，Dice/P/R 无定义、HD95 无定义。
+    → 工具已将其记为 <code>n/a</code> 并单独计数，绝不悄悄当 0 摊进平均。</li>
+  <li><b>碎块会绑架 Recall</b>：本样本标注里有 <b>30px 和 32px</b> 的小碎片。
+    按客户"最小可识别面积 ≥2mm²"的口径，这类碎片可能<b>根本不该算漏检</b>，
+    否则模型 Recall 会被无关紧要的小点压死。
+    → 工具已提供 <code>--min-area</code> 开关（默认 0 = 不过滤，<b>阈值待你拍板</b>）。</li>
+  <li><b>IoU 0.5 的匹配阈值会放大"粘连"</b>：膨胀 5px 就足以让两个相邻缺陷粘成一个、
+    区域 IoU 跌到 0.5 以下。这个阈值本身也是判据的一部分，要和报告一起记录。</li>
+  <li><b>全局累计 vs 逐图平均</b>：本工具用<b>全局累计</b>（把全数据集的 TP/FP/FN 加起来再算），
+    避免"小图/空图"把平均值拉偏；HD95 这类几何量只能逐图算，则报均值 + 最差值。</li>
+  <li><b>测试数据的 GT/Pred 语义必须一致</b>：我们自测第一版就把 GT 的 ignore 区填成 0/1 噪声
+    却让预测保持原样，凭空造出 <b>2 万个"伪缺陷目标"</b>，把 BF/HD95/区域指标全部打崩 ——
+    当时差点误判成工具 bug。<b>负样本的构造方式本身就会污染指标。</b></li>
+</ol>
+</div>
+
+<h2>四、从像素指标 → 产线 KPI</h2>
+<div class="box okbox">
+  <p style="margin-top:0">
+    客户 KPI 是<b>电池级</b>的：过杀率 ≤5%（分母 = 总产能）、漏检率 ≤0.2%。
+    分割指标是<b>像素/目标级</b>的，两者不能直接划等号。换算关系：
+  </p>
+  <table style="font-size:12.5px">
+    <thead><tr><th class="l">层级</th><th class="l">口径</th><th class="l">与产线的关系</th></tr></thead>
+    <tbody>
+      <tr><td class="l">像素级</td><td class="l">PA / mIoU / Dice</td>
+        <td class="l">只说明"模型学到了没有"，<b>不能泄漏给客户当过杀/漏检承诺</b></td></tr>
+      <tr><td class="l">目标级</td><td class="l">区域 Recall / Precision</td>
+        <td class="l">缺陷目标级的漏检/过杀，是<b>最接近</b>产线的中间量</td></tr>
+      <tr><td class="l">电池级</td><td class="l">一块电池 = 一图或一组三视图</td>
+        <td class="l">
+          电池级漏检率 = 存在漏检目标的电池数 ÷ 总电池数<br>
+          电池级过杀率 = 被判 NG 而实际 OK 的电池数 ÷ 总电池数
+        </td></tr>
+    </tbody>
+  </table>
+  <p style="margin-bottom:0">
+    <b class="hl">关键提醒</b>：分割做到区域 P/R 双 100%，产线仍可能过杀爆表 ——
+    因为最终 NG/OK 是由<b>判定阈值</b>（<code>ui/threshold_panel.py</code> /
+    <code>Predictor.classify_with_threshold</code>）决定的，不是分割精度决定的。
+    评估分割模型用这 10 项；调过杀/漏检要去调判定阈值。
+  </p>
+</div>
+
+<h2>五、怎么用</h2>
+<div class="box">
+<pre style="margin:0;overflow-x:auto;font:12.5px/1.7 Consolas,monospace;color:#25406E"># 模式 1：已有"预测掩膜目录"（零 torch 依赖，最快；导出 HTML 报表）
+python tools/eval_seg_metrics.py --gt-dir GT --pred-dir PRED \
+    --class-names background,Atd --html report.html --json result.json
+
+# 模式 2：直接评 DL Studio 项目（加载 best_model.pth，走部署同款推理路径）
+python tools/eval_seg_metrics.py --project &lt;项目目录&gt; --split val \
+    --model-file best_model.pth --html report.html
+
+# 只评前 10 张先看趋势
+python tools/eval_seg_metrics.py --project &lt;项目目录&gt; --limit 10
+
+# 客户"最小可识别面积"口径过滤碎块（阈值待定）
+python tools/eval_seg_metrics.py --project &lt;项目目录&gt; --min-area 100</pre>
+  <table style="font-size:12.5px;margin-top:14px">
+    <thead><tr><th class="l">参数</th><th class="l">默认</th><th class="l">说明</th></tr></thead>
+    <tbody>
+      <tr><td class="l"><code>--tol</code></td><td class="l">2.0</td>
+        <td class="l">边界级容差（像素）。影响 BF；HD95 不受它影响。<b>改了就不可与旧报告直接比</b></td></tr>
+      <tr><td class="l"><code>--region-iou</code></td><td class="l">0.5</td>
+        <td class="l">连通域配对阈值。放宽到 0.3 会容忍更多形态差异</td></tr>
+      <tr><td class="l"><code>--min-area</code></td><td class="l">0</td>
+        <td class="l">区域级最小面积（像素）。小于它的碎块不计漏检/过杀。<b>默认不过滤</b></td></tr>
+      <tr><td class="l"><code>--split</code></td><td class="l">val</td>
+        <td class="l">项目模式的评估集（train / val / all）</td></tr>
+    </tbody>
+  </table>
+  <p class="small" style="margin:12px 0 0">
+    输出三样：① 控制台分层报表；② <code>--json</code> 机器可读结果（含混淆矩阵、逐类、逐图）；
+    ③ <code>--html</code> 带判定色和混淆矩阵热力图的可视化报表。
+    右侧指标卡片按红/黄/绿着色，判据见上表。
+  </p>
+</div>
+
+<h2>六、拿一个样例结果看看</h2>
+<p class="small" style="margin-top:-4px">
+  用三张真实凹点图 + 模拟的中等质量模型（轻微外扩 2px、轮廓偏糊、一图漏一个小碎片、一图多一个假缺陷）跑出的报表：
+  <code>docs/eval_report_demo.html</code>
+</p>
+<table>
+<thead><tr><th class="l">层级</th><th class="l">数字</th><th class="l">怎么读</th></tr></thead>
+<tbody>
+<tr><td class="l">像素级</td>
+  <td class="l mono">PA 0.9998 ｜ Kappa 0.4483 ｜ FWIoU 0.9997</td>
+  <td class="l">PA 依然"完美"，但 Kappa 已经掉到 0.45 → <b>自动告警生效</b></td></tr>
+<tr><td class="l">类别级</td>
+  <td class="l mono">mIoU 0.6444（含背景）/ 0.2890（仅前景）<br>
+    P 0.2902 ｜ R 0.9858 ｜ Dice 0.4484</td>
+  <td class="l">过杀严重（P=0.29），漏检很低（R=0.99）→ 典型"宁可错报"的模型</td></tr>
+<tr><td class="l">边界级</td>
+  <td class="l mono">BF 0.5863 ｜ HD95 743.37 px</td>
+  <td class="l">HD95 七百多像素 = <b>有轮廓点飞到了远处</b>（那 1 个远距离假缺陷），
+    说明这模型不能用来量面积</td></tr>
+<tr><td class="l">目标级</td>
+  <td class="l mono">真值 9 / 预测 10 / 命中 3<br>
+    漏检 6 ｜ 过杀 7 ｜ Region F1 0.3158</td>
+  <td class="l"><b class="hl">这才是产线会遇到的数字</b>：9 个真缺陷只报对 3 个</td></tr>
+</tbody>
+</table>
+
+<h2>七、待你拍板的四件事</h2>
+<div class="box alert">
+<ol style="margin-left:20px">
+  <li><b><code>--min-area</code> 取多少？</b> 客户口径"最小可识别面积 2mm²"折成像素需要先确认标定
+    （按 0.14mm/px 约 102px，按 0.037mm/px 约 1460px，两者差 14 倍，<b>必须先定标定</b>）。
+    定下来之前默认不过滤。</li>
+  <li><b><code>--tol</code>（边界容差）默认 2px 是否合适？</b> 取决于缺陷边缘的判定精度要求。</li>
+  <li><b>各指标的合格线</b>：报表里现在用的是工程经验值（PA≥0.99、mIoU≥0.85、区域 R≥0.99…），
+    是否按客户 KPI 重新标定？</li>
+  <li><b>要不要接进 DL Studio 界面？</b> 目前训练只打印 mIoU + 逐类 IoU，
+    评估结果没有落到界面。可以加一个"评估"页签（10 项指标卡片 + 混淆矩阵 + 区域漏检/过杀）。</li>
+</ol>
+</div>
+
+<div class="foot">
+  <b>工具</b>：<code>tools/eval_seg_metrics.py</code>（自测 <code>tmp/eval_selftest.py</code> 41/41 通过）<br>
+  <b>自测覆盖</b>：混淆矩阵/Kappa 与 sklearn 对拍 ｜ 逐类 IoU/Dice/P/R 手算对拍 ｜
+  边界与 HD95 的 tol 行为 ｜ 区域匹配（平移/分离）｜ ignore 不变性 ｜ 多图累计 ｜ min_area 过滤<br>
+  <b>判据说明</b>：表中的红/黄/绿阈值是工程经验值，不是论文标准；HD95 单位统一为像素。
+  宏平均仅统计前景类。所有数字来自真实凹点标注（1640×4200）。
+</div>
+
+</div>
+</body>
+</html>

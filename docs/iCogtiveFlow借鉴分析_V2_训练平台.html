@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>iCogtiveFlow 训练平台借鉴分析 · 符号级（V2）</title>
+<style>
+  :root{
+    --bg:#f5f6f8; --card:#fff; --ink:#1c1e21; --ink2:#4a4f57; --ink3:#7c828c;
+    --line:#e3e6ea; --line2:#cfd4da;
+    --blue:#185fa5; --blue-bg:#e6f1fb;
+    --purple:#534ab7; --purple-bg:#eeedfe;
+    --teal:#0f6e56; --teal-bg:#e1f5ee;
+    --amber:#8a5209; --amber-bg:#faedda;
+    --red:#a32d2d; --red-bg:#fcebeb;
+    --green:#3b6d11; --green-bg:#eaf3de;
+    --coral:#993c1d; --coral-bg:#faece7;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font:14px/1.75 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif}
+  .wrap{max-width:1120px;margin:0 auto;padding:36px 28px 80px}
+  header{border-bottom:2px solid var(--ink);padding-bottom:18px;margin-bottom:8px}
+  h1{font-size:25px;margin:0 0 8px;font-weight:600;letter-spacing:.2px}
+  .sub{color:var(--ink2);font-size:13.5px}
+  .sub b{color:var(--ink)}
+  h2{font-size:18px;margin:44px 0 14px;padding-left:11px;
+     border-left:4px solid var(--blue);font-weight:600}
+  h3{font-size:15px;margin:26px 0 10px;font-weight:600;color:var(--ink)}
+  p{margin:9px 0}
+  .card{background:var(--card);border:1px solid var(--line);
+        border-radius:10px;padding:18px 20px;margin:14px 0}
+  .kv{display:flex;flex-wrap:wrap;gap:10px;margin:10px 0}
+  .kv span{background:var(--bg);border:1px solid var(--line);border-radius:6px;
+           padding:5px 11px;font-size:12.5px;color:var(--ink2)}
+  .kv span b{color:var(--ink)}
+  table{width:100%;border-collapse:collapse;margin:12px 0;font-size:13px;
+        background:var(--card);border:1px solid var(--line);border-radius:8px;overflow:hidden}
+  th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}
+  th{background:#eef0f3;font-weight:600;font-size:12.5px;color:var(--ink2);white-space:nowrap}
+  tr:last-child td{border-bottom:none}
+  td code,p code,li code{background:#eef0f3;padding:1px 6px;border-radius:4px;
+        font:12.5px/1.5 "Cascadia Mono",Consolas,monospace;color:#243}
+  pre{background:#1f2430;color:#dfe4ee;padding:14px 16px;border-radius:8px;overflow-x:auto;
+      font:12.5px/1.65 "Cascadia Mono",Consolas,monospace;margin:10px 0}
+  pre b{color:#8fd6ff;font-weight:400}
+  pre i{color:#98c379;font-style:normal}
+  ul,ol{margin:9px 0 9px 4px;padding-left:22px}
+  li{margin:5px 0}
+  .tag{display:inline-block;padding:2px 8px;border-radius:5px;font-size:11.5px;
+       font-weight:600;white-space:nowrap}
+  .t-blue{background:var(--blue-bg);color:var(--blue)}
+  .t-purple{background:var(--purple-bg);color:var(--purple)}
+  .t-teal{background:var(--teal-bg);color:var(--teal)}
+  .t-amber{background:var(--amber-bg);color:var(--amber)}
+  .t-red{background:var(--red-bg);color:var(--red)}
+  .t-green{background:var(--green-bg);color:var(--green)}
+  .t-coral{background:var(--coral-bg);color:var(--coral)}
+  .grid{display:grid;gap:12px}
+  .g2{grid-template-columns:1fr 1fr}
+  .g3{grid-template-columns:repeat(3,1fr)}
+  .box{border:1px solid var(--line);border-left:4px solid var(--blue);
+       background:var(--card);border-radius:8px;padding:13px 15px}
+  .box.warn{border-left-color:var(--amber)}
+  .box.bad{border-left-color:var(--red)}
+  .box.good{border-left-color:var(--green)}
+  .box h4{margin:0 0 6px;font-size:13.5px;font-weight:600}
+  .box p{margin:4px 0;font-size:13px;color:var(--ink2)}
+  .num{font-variant-numeric:tabular-nums}
+  strong{font-weight:600}
+  .foot{margin-top:46px;padding-top:16px;border-top:1px solid var(--line2);
+        color:var(--ink3);font-size:12.5px}
+  .mono{font-family:"Cascadia Mono",Consolas,monospace;font-size:12.5px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>iCogtiveFlow 训练平台借鉴分析 · 符号级取证（V2）</h1>
+  <div class="sub">
+    分析对象：<b>iCogtiveFlow V1R1C1B066</b>（<span class="mono">D:\00_软件安装\00_Flow\iCogtiveFlow_V1R1C1B066</span>，约 <b>7.7 GB</b>，2026-10-01 构建）<br>
+    目的：<b>借鉴训练平台的设计思路</b>，反哺 <span class="mono">ai_training_platform</span>（DL Studio）<br>
+    取证方式：<b>只读静态分析</b>（用户手册 / 依赖清单 / 导出表 / 符号表 / 资源命名 / 配置）——<b>未反编译、未运行、未修改任何目标文件</b><br>
+    报告日期：2026-10-13
+  </div>
+</header>
+
+<div class="card" style="border-left:4px solid var(--amber)">
+  <h3 style="margin-top:0">⚠ 合规边界（本次实际执行的口径）</h3>
+  <p>1. 本套软件是 <b>CodeMeter（威步 WIBU）+ 深思数盾 Virbox 双加密狗保护</b>的商业软件（依据 <span class="mono">UserMsgZh.ini</span> 头部版权声明与 <span class="mono">UserMsgUs.dll</span>）。<b>本次分析不涉及、不尝试、不讨论任何绕过授权的行为。</b></p>
+  <p>2. 本次只取"<b>对外可见的接口与命名</b>"（PE 导出表 / 符号名 / 资源文件名 / 公开用户手册），属于产品结构的观察，<b>不还原具体算法实现</b>。</p>
+  <p>3. 报告结论的用途是<b>抄思路、不抄代码</b>：借鉴其<b>模块划分、接口分层、参数体系、流程设计</b>；<b>禁止</b>把其符号名、接口签名、数据格式直接落到我们的产品里，也<b>禁止</b>对其模型文件（<span class="mono">.net</span>）做权重提取或复用。</p>
+  <p>4. 若本软件属于我司自研引擎的兄弟品牌（见 §3 证据），则上述边界应按下调口径执行，但<b>仍需 Arthur 确认权属</b>后再决定。</p>
+</div>
+
+<h2>一、本次最值得看的 7 条结论</h2>
+
+<div class="grid g2">
+  <div class="box good">
+    <h4>1. AI 工具是"插件"，接口契约完整暴露</h4>
+    <p><span class="mono">iCogtiveFlow_AiTool.dll</span> 导出 <b>311</b> 个符号，构成一个完整的工具插件框架：<code>CHhAiTool</code>（基类）/ <code>CHhAiToolAPI</code>（<b>190 个方法的流式 API</b>）/ <code>Context</code> / <code>DataMgr</code> / <code>Metrics</code> / <code>Recordable</code>。</p>
+    <p>22 个工具 DLL <b>各自只是一个薄壳</b>（0.24–0.87 MB），真正的算法在 <span class="mono">VisualEditor_IAL.dll</span>（44.9 MB）。<b>我们的 DL Studio 目前是单体，这是最值得学的一刀。</b></p>
+  </div>
+  <div class="box good">
+    <h4>2. 参数体系用"区间"统一表达</h4>
+    <p>所有后处理过滤参数的类型都是 <code>IAL::AiInterval</code> 的 vector：<code>areaThreshold</code> / <code>angleThreshold</code> / <code>grayThreshold</code> / <code>heightThreshold</code> / <code>widthThreshold</code> / <code>scoreThreshold</code> / <code>radius</code> / <code>centerRegionRadius</code>。</p>
+    <p>手册印证："<b>必须在这两个值中间才会被保留</b>"——<b>统一的上下限区间 + 排序 + 最大检测数</b>，比"单阈值"表达力强得多，且天然可复用到标注/推理/评估三处。</p>
+  </div>
+  <div class="box good">
+    <h4>3. 参数自适应搜索已产品化，且有专门 API</h4>
+    <p><code>initAutoDLHandle</code> / <code>releaseAutoDLHandle</code> / <code>getAutoDLRecommendDataAugment</code> / <code>getAutoDLRecommendTrialNumber</code> / <code>getAutoDLResult</code> / <code>autoDLDataAugment</code>。</p>
+    <p>流程：设试验轮数（<b>推荐 10</b>）→ 添加待搜参数并给范围 → 开始 → 做<b>参数重要性分析</b> → 一键应用回增强参数。<b>这正是我们上次 P0 清单里的那一项。</b></p>
+  </div>
+  <div class="box good">
+    <h4>4. 训练流程本身是一张图 + 异步</h4>
+    <p><span class="mono">iCogtiveFlow_Train.dll</span> 里出现 <code>dmd::NodeModel</code> / <code>dmd::NodeSetBase</code> / <code>dmd::CanvasModel</code> / <code>HHRuntimeNode</code> / <code>HHGraphBase</code>，以及 <code>ivalue::Future</code> / <code>ivalue::Await</code>（LibTorch JIT 的异步原语）。</p>
+    <p>即：<b>训练管线不是硬编码 if-else，而是节点图 + Future/Await 的异步执行</b>。这是支撑"工具链接"的底层能力。</p>
+  </div>
+  <div class="box">
+    <h4>5. 模型库按"任务 × 尺寸档"成矩阵</h4>
+    <p><span class="mono">nets/</span> 下 <b>27 个</b> 预训练模型：<span class="mono">pretrained_dl_{ad|cl|cl3d|clmixed|sg|sg3d|sgmixed|od|od3d|rod|ed|isg|kpd|ocr|ia|mcl|msg}_{tiny|small|medium|large}.net</span>，体积 <b>5.7 MB（sg_tiny）→ 150 MB（ocr_small）</b>。</p>
+    <p>手册里的"网络大小 小/中/大"<b>就是一个模型文件对应一个档</b>，用户不用懂网络结构，只选档位。<b>容器格式 magic = 0x12345678，是自研格式，不是 TorchScript。</b></p>
+  </div>
+  <div class="box">
+    <h4>6. 推理与模型优化是两个独立动作</h4>
+    <p>"模型管理"里可选<b>优化模型</b>（选设备 → 选保存路径 → 确认），对应其依赖栈里的 <b>TensorRT 10 + OpenVINO</b>；另有<b>修改推理块大小</b>以降低大图推理耗时。</p>
+    <p>依赖清单同时含 <b>LibTorch(c10/cudnn9/cublas12) + TensorRT(nvinfer_10/nvonnxparser_10) + OpenVINO(含 genai/多前端)</b>——<b>多后端推理，不是单栈</b>。</p>
+  </div>
+  <div class="box warn">
+    <h4>7. 授权按"训练端 / 推理端"分权</h4>
+    <p>手册明写：训练端（<b>威步 CodeMeter</b>）可训练+推理，推理端（<b>深思数盾 Virbox</b>，产品码 48503200 / 28506200）<b>只能推理</b>。</p>
+    <p>这是纯商业设计而非技术设计，但<b>直接决定产品形态</b>——我们若做 DL Studio 商业化，这套分权模型可以直接参考。</p>
+  </div>
+</div>
+
+<h2>二、产品模块分解（本次新发现）</h2>
+<p>此前只看到 <span class="mono">VisualEditor_*</span> 一层；这次解析导出表，发现另有一整套 <span class="mono">iCogtiveFlow_*</span> 模块，<b>这才是产品真正的分层</b>：</p>
+
+<table>
+  <thead><tr><th>模块</th><th>导出符号</th><th>推断职责</th><th>对我们的意义</th></tr></thead>
+  <tbody>
+    <tr><td><span class="mono">iCogtiveFlow_View.dll</span></td><td class="num">3157</td><td>视图层（最大）</td><td>图像/图元显示与交互是最大头，<b>别低估 UI 工量</b></td></tr>
+    <tr><td><span class="mono">iCogtiveFlow_Tool.dll</span></td><td class="num">1446</td><td>工具框架与调度</td><td>对应我们缺的"工具注册/生命周期"层 <span class="tag t-blue">P0</span></td></tr>
+    <tr><td><span class="mono">iCogtiveFlow_Base.dll</span></td><td class="num">1196</td><td>基础库</td><td>—</td></tr>
+    <tr><td><span class="mono">iCogtiveFlow_Train.dll</span></td><td class="num">1097</td><td>训练管线（图 + 异步）</td><td>我们训练模块的架构对照 <span class="tag t-blue">P0</span></td></tr>
+    <tr><td><span class="mono">iCogtiveFlow_Data.dll</span></td><td class="num">967</td><td>数据集/样本/标注数据</td><td>数据层单独成模块 <span class="tag t-blue">P0</span></td></tr>
+    <tr><td><span class="mono">iCogtiveFlow_FlowEditor.dll</span></td><td class="num">486</td><td>流程编辑器</td><td>对应"流程图式"交互</td></tr>
+    <tr><td><span class="mono">iCogtiveFlow_GraphEditor.dll</span></td><td class="num">454</td><td>图编辑器</td><td>与上者分工：流程 vs 图元</td></tr>
+    <tr><td><span class="mono">iCogtiveFlow_Ui.dll</span></td><td class="num">343</td><td>通用 UI 组件</td><td>—</td></tr>
+    <tr><td><span class="mono">iCogtiveFlow_AiTool.dll</span></td><td class="num">311</td><td><b>AI 工具插件契约</b></td><td><b>本次最核心借鉴对象</b> <span class="tag t-purple">P0</span></td></tr>
+    <tr><td><span class="mono">iCogtiveFlow_Utils.dll</span></td><td class="num">250</td><td>工具函数</td><td>—</td></tr>
+  </tbody>
+</table>
+
+<h3>2.1 各工具 DLL 为什么这么"薄"</h3>
+<p>22 个工具 DLL 每个仅 <b>0.24–0.87 MB</b>，而算法库 <span class="mono">VisualEditor_IAL.dll</span> 有 <b>44.9 MB</b>。说明分工是：</p>
+<pre>
+iCogtiveFlowTool_&lt;Name&gt;.dll      ← <b>薄壳</b>：UI 配置 + 参数校验 + 调用 API（~0.8MB）
+        ↓
+iCogtiveFlow_AiTool.dll        ← <b>契约定型</b>：CHhAiTool / CHhAiToolAPI / Context / Metrics
+        ↓
+VisualEditor_IAL.dll (44.9MB)  ← <b>算法本体</b>：namespace <i>IAL</i>
+VisualEditor_CAL.dll (25.2MB)  ← 标定/几何
+VisualEditor_ImageProcess.dll  ← 图像处理
+VisualEditor_Metrology.dll     ← 测量
+VisualEditor_GraphData.dll     ← 图形数据（图元模型）
+</pre>
+
+<h2>三、权属线索：这套引擎的"血统"</h2>
+<div class="card">
+  <p>三条独立证据指向同一结论：</p>
+  <ol>
+    <li><b>工程文件夹名</b>：<span class="mono">recentProjects.ini</span> 里 Arthur 自己的工程路径全在 <span class="mono">D:/01_Arthur/<u>iSenseFlow工程</u>/</span> 下，工程文件名为 <span class="mono">…_icotiveFlow6103_Arthur_20260816.isf</span>。</li>
+    <li><b>工程文件标识</b>：上次静态检出的 SQLite 里 <span class="mono">singles.$identifier = "iSenseFlow_Project"</span>。</li>
+    <li><b>符号命名前缀</b>：本次符号级取证显示核心类/类型统一用 <code>HH</code> / <code>CHh</code> 前缀（<code>HHImage</code>、<code>HHMatrix</code>、<code>HCloudObject</code>、<code>CHhRegionData</code>、<code>HhFlow</code>），命名空间是 <code>IAL</code>。<b>HH = 华汉拼音首字母</b>。</li>
+  </ol>
+  <p style="margin-top:10px"><b>判断</b>：iCogtiveFlow 与华汉 iSense 平台<b>共用同一套引擎</b>（同引擎、多品牌，或同集团的 ODM/OEM 关系）。手册里第 3 章的操作流程小标题甚至直接写着"<b>iSenseFlow 使用步骤</b>"——这是产品化时没改干净的一处痕迹。</p>
+  <p><b>需要 Arthur 确认</b>：这套软件的权属与授权范围（自研 / 合作 / 竞品）。<b>这决定后续能借鉴多深</b>，也决定本节结论能否对外说。</p>
+</div>
+
+<h2>四、AI 工具插件契约（最核心的可借鉴资产）</h2>
+
+<h3>4.1 类骨架</h3>
+<pre>
+namespace <i>IAL</i> {                       <b>// 华汉 AI 库</b>
+  enum   AiStatus;
+  struct AiInterval;         <b>// 统一区间类型：所有阈值的载体</b>
+  struct AiDataAugment;      <b>// 数据增强配置</b>
+  struct AiMetaData;         <b>// 样本元数据</b>
+  struct AiModelInformation; <b>// 模型信息</b>
+  enum   AiNetworkCapacity;  <b>// 网络容量档：小/中/大</b>
+  class  HHImage;
+}
+
+CHhAiTool            <b>// 工具基类（QObject 派生，带 qt_metacall）</b>
+CHhAiToolAPI         <b>// 对工具的流式配置 API（190 个方法）</b>
+CHhAiToolContext     <b>// 执行上下文（check / log / errorMessage / end）</b>
+CHhAiToolContextRecorder  <b>// 上下文录制（可回放？）</b>
+CHhAiToolDataMgr     <b>// 样本与标注数据管理（addMetaData/getMetaDataList…）</b>
+CHhAiToolMetrics     <b>// 指标统计（混淆矩阵 / Precision / Recall / 混淆检测消息）</b>
+CHhAiToolRecordable  <b>// 可记录基类（异常与消息上报）</b>
+</pre>
+<p><b>要点</b>：<code>Metrics</code> 被单独抽出成一个类，并且有 <code>initConfusionMatrix</code> / <code>getConfusionMatrix</code> / <code>getPrecision</code> / <code>getRecall</code> / <code>pushClassifyData</code> / <code>pushDetectionData</code> / <code>pushSegmentData</code>。<br>
+→ <b>指标不是散在各处的计算，而是"按任务类型分别灌入、统一出报表"的一条通道。</b>这一点直接对应我们上次做的分割 10 指标与分类混淆矩阵——应该收口成一个 Metrics 组件，而不是留在评估脚本里。</p>
+
+<h3>4.2 训练 / 推理参数全集（来自 API 名）</h3>
+<table>
+  <thead><tr><th>类别</th><th>API</th><th>说明</th></tr></thead>
+  <tbody>
+    <tr><td>训练规模</td><td><code>epochs</code> <code>batchSize</code> <code>getOneEpochIterations</code> <code>getOptimizedTrainBatchSize</code></td><td>注意最后一项：<b>批量大小会被系统自动优化</b>，不是用户填多少就是多少</td></tr>
+    <tr><td>网络</td><td><code>capacity</code>(AiNetworkCapacity) <code>networkType</code> <code>networkMode</code> <code>networkPath</code> <code>buildNetwork</code></td><td>容量档 + 类型 + 权重路径 + 显式建网</td></tr>
+    <tr><td>特征与采样</td><td><code>featureSize</code> <code>density</code></td><td>对应手册"特征尺寸""采样密度"</td></tr>
+    <tr><td>分块</td><td><code>byPatch</code> <code>patchSize</code> <code>patchWidth</code> <code>patchHeight</code> <code>getStepSize</code> <code>getStepWidth</code> <code>getStepHeight</code></td><td>滑窗块 + <b>步长按宽高分别设</b></td></tr>
+    <tr><td>输入</td><td><code>inputChannels</code> <code>groupSize</code> <code>getROI</code> <code>region</code> <code>fillRegion</code></td><td>多图组大小、ROI、区域填充</td></tr>
+    <tr><td>后处理过滤</td><td><code>scoreThreshold</code> <code>areaThreshold</code> <code>widthThreshold</code> <code>heightThreshold</code> <code>angleThreshold</code> <code>grayThreshold</code> <code>radius</code> <code>centerRegionRadius</code> <code>sortOrder</code> <code>maxDetectNum</code></td><td><b>全部为区间</b>；含排序与最大检测数</td></tr>
+    <tr><td>评估</td><td><code>iouValue</code> <code>getIOUThreshold</code> <code>getSegmentRegionIoU</code> <code>isExecuteValidation</code> <code>fakeValidate</code></td><td>"假验证"开关（只算指标不落模型？）</td></tr>
+    <tr><td>类别</td><td><code>classId</code> <code>className</code></td><td>—</td></tr>
+    <tr><td>设备</td><td><code>deviceIndex</code> <code>platform</code></td><td>平台抽象</td></tr>
+    <tr><td>自适应</td><td><code>getAutoDLRecommendDataAugment</code> <code>getAutoDLRecommendTrialNumber</code> <code>getAutoDLResult</code> <code>autoDLDataAugment</code> <code>getTrialNumber</code></td><td><b>参数自适应搜索</b></td></tr>
+    <tr><td>结果</td><td><code>getDetectResult</code> <code>getSegmentResult</code> <code>getClassifyResult</code> <code>getKPDResult</code> <code>getOCRResult</code> <code>getOCRString</code> <code>getLoss</code></td><td>按任务类型分别取结果</td></tr>
+    <tr><td>推荐值</td><td><code>getRecommendThresholdValue</code></td><td><b>系统会给出阈值推荐</b></td></tr>
+  </tbody>
+</table>
+
+<h3>4.3 数据增强 API 全集（手册只写"12 种"，这里是精确签名）</h3>
+<div class="kv">
+  <span><b>GaussianNoise</b> 高斯噪声</span>
+  <span><b>ImageAspectRatio</b> 长宽比</span>
+  <span><b>ImageBright</b> 亮度</span>
+  <span><b>ImageContrast</b> 对比度</span>
+  <span><b>ImageInvertContrast</b> 对比度反转</span>
+  <span><b>ImageFlip</b> 翻转</span>
+  <span><b>ImageMove</b> 平移</span>
+  <span><b>ImageRotate</b> 旋转</span>
+  <span><b>ImageShear</b> <span class="tag t-amber">手册未列</span></span>
+  <span><b>ImageZoom</b> 缩放</span>
+  <span><b>ImageZoomIn</b> <span class="tag t-amber">手册未列</span></span>
+</div>
+<p>签名高度统一：<code>(const HHImage&amp; 输入, …, const float&amp; 参数, …, 输出 HHImage&amp;)</code>——<b>一个"增强算子 = 同名同参族函数"</b>，因此能被参数自适应搜索统一遍历。这是"自动搜参"能成立的前提：<b>增强算子必须先接口统一</b>。</p>
+
+<h2>五、训练模块的架构（iCogtiveFlow_Train.dll）</h2>
+<pre>
+dmd::Node / NodeModel / NodeSetBase / CanvasModel / Community   <b>// 训练节点图模型</b>
+HHRuntimeNode / HHGraphBase / HhSGRuntime                       <b>// 运行时节点与图执行</b>
+ivalue::Future / ivalue::Await / ivalue::Object                 <b>// 异步原语（LibTorch JIT）</b>
+c10::RRefInterface                                              <b>// 确认链 LibTorch</b>
+Augmentation / AiDataAugmentSwitch                              <b>// 增强配置</b>
+HHPose / HHMatrix / HHMat33D / HHCoordinateSys2D / 3D / HHCanvas2D  <b>// 几何与坐标系统</b>
+HHCircle2D / HHCircleArc / HHCircleRing / HHCircleSector2D / AiRotRect / AiTextBox  <b>// 图元</b>
+</pre>
+<p><b>三条可借鉴</b>：</p>
+<ol>
+  <li><b>训练管线图化</b>：<code>NodeSetBase</code>（节点集合）+ <code>CanvasModel</code>（画布）+ <code>HHRuntimeNode</code>（运行态）是把"流程配置"与"训练执行"统一到同一套图模型上——这与我们讨论的"AI 工具链接（分割结果作为下游 ROI）"是同一个底座。</li>
+  <li><b>异步原语来自 LibTorch JIT</b>：<code>Future/Await</code> 让"训练排队 + 推理并发"能自然实现（对应手册的"任务队列"）。</li>
+  <li><b>几何库独立成层</b>：<code>HHPose/HHMat33D/HHCoordinateSys2D/3D</code> 说明他们从一开始就准备了<b>标定与坐标系</b>这一层——这正是我们抓 mm/px 定标和 2mm² 换算需要的底座。</li>
+</ol>
+
+<h2>六、模型库设计（nets/ 27 个）</h2>
+<table>
+  <thead><tr><th>任务前缀</th><th>含义</th><th>尺寸档</th><th>体积范围</th></tr></thead>
+  <tbody>
+    <tr><td><span class="mono">sg / sg3d / sgmixed</span></td><td>分割 / 3D 分割 / 混合分割</td><td>tiny→large</td><td>5.7 MB → 49.8 MB</td></tr>
+    <tr><td><span class="mono">cl / cl3d / clmixed</span></td><td>分类 / 3D 分类 / 混合分类</td><td>tiny→medium</td><td>10.4 MB → 82.1 MB</td></tr>
+    <tr><td><span class="mono">od / od3d / rod</span></td><td>目标检测 / 3D / 旋转框</td><td>tiny, small</td><td>10.8 MB → 38.2 MB</td></tr>
+    <tr><td><span class="mono">ad</span></td><td>异常检测</td><td>tiny</td><td>81.9 MB</td></tr>
+    <tr><td><span class="mono">isg</span></td><td>实例分割</td><td>tiny</td><td>67.2 MB</td></tr>
+    <tr><td><span class="mono">kpd</span></td><td>关键点检测</td><td>tiny</td><td>53.0 MB</td></tr>
+    <tr><td><span class="mono">ocr</span></td><td>字符识别</td><td>tiny, small</td><td>145.8 MB → 150.1 MB</td></tr>
+    <tr><td><span class="mono">mcl / msg</span></td><td>多分类 / 多分割</td><td>tiny</td><td>19.7 MB / 44.8 MB</td></tr>
+    <tr><td><span class="mono">ed / ia</span></td><td>边缘检测 / 图像分析</td><td>tiny, small</td><td>0.3 MB → 17.7 MB</td></tr>
+  </tbody>
+</table>
+<p><b>三个设计要点</b>：① <b>预训练权重按 (任务 × 尺寸档) 预置到安装目录</b>，用户开箱即用，不联网也不下载；② 用户只选"小/中/大"，<b>不暴露网络结构</b>；③ 容器 magic <code>0x12345678</code> 自研 + <b>OCR 模型最大（150MB）</b>，说明 OCR 是重量级能力。<br>
+<b>我们的现状</b>：DL Studio 目前没有预置权重矩阵，用户需要自己选 backbone。<b>"任务×档位"是对工业现场最友好的抽象。</b></p>
+
+<h2>七、交互与流程设计的可借鉴点</h2>
+<table>
+  <thead><tr><th>设计点</th><th>它的做法</th><th>为什么值得抄</th><th>优先级</th></tr></thead>
+  <tbody>
+    <tr><td>图像四态标记</td><td>可标 <b>正常 / 过杀 / 漏杀 / 存疑</b>；手册明写"<b>不影响训练，只做标记使用</b>"</td><td>人工复盘用的元数据与训练标签<b>显式解耦</b>，避免误入训练集污染</td><td><span class="tag t-purple">P0</span></td></tr>
+    <tr><td>推理后处理过滤</td><td>8 个区间参数 + 排序 + 最大检测数，按"所有/测试集/训练集"分别套用</td><td>过杀/漏检调优不重训模型，只调过滤——<b>现场最需要的旋钮</b></td><td><span class="tag t-purple">P0</span></td></tr>
+    <tr><td>参数自适应搜索</td><td>试验轮数推荐 10 → 选参数给范围 → 重要性分析 → 一键应用</td><td>把"调参玄学"变成 <b>可点击的引导流程</b></td><td><span class="tag t-purple">P0</span></td></tr>
+    <tr><td>分块训练/推理</td><td><code>byPatch</code> + 块大小 + 步长（宽高可分设）；手册给了选块规则</td><td>1640×4200 这类大图<b>不降分辨率也能跑</b>；块大小有明确规则："大缺陷用大块，小图优先整图"</td><td><span class="tag t-purple">P0</span></td></tr>
+    <tr><td>模型效果报表</td><td>模型信息 / <b>概率分数分布图</b> / <b>ROC</b> / 分割结果(LTRB)；可导出报表页并附"检测需求与结果"</td><td>把评估做成<b>可交付给客户的一页纸</b></td><td><span class="tag t-purple">P0</span></td></tr>
+    <tr><td>工具链接</td><td>分割/检测结果可作为下游的 <b>ROI 或掩膜</b>；结果有多个时<b>下游输入图数自动增加</b></td><td>复杂项目不必重训一个大模型，<b>用小模型串起来</b></td><td><span class="tag t-blue">P1</span></td></tr>
+    <tr><td>筛选表达式</td><td>字段 + 条件(contain/!contain…) + 值 + <b>AND/OR 连接词</b> + <b>语法检测</b>；示例"结果含 Class1 且分数&gt;0.5"</td><td>让用户自己定义"我要看哪些图"，比固定筛选项强得多</td><td><span class="tag t-blue">P1</span></td></tr>
+    <tr><td>任务队列</td><td>训练/推理都进队列；训练时弹出实时 Loss 曲线，<b>完成后自动关闭曲线窗</b></td><td>长任务不阻塞界面，且不必手动关窗</td><td><span class="tag t-blue">P1</span></td></tr>
+    <tr><td>智能标注</td><td>AI 预标注 + 二值化自动标注（阈值可手动/自适应）+ 反转 + 多边形橡皮擦</td><td>标注效率是工业落地瓶颈</td><td><span class="tag t-blue">P1</span></td></tr>
+    <tr><td>单位与标定</td><td>显示单位可选 mm/像素，且 <b>X / Y 方向分别设精度（mm per pixel）</b></td><td><b>直接支撑"缺陷面积 ≥2mm²"的换算</b>，且承认了各向异性</td><td><span class="tag t-blue">P1</span></td></tr>
+    <tr><td>软件多开</td><td>多次启动生成 <span class="mono">multiInstances/user_x/</span>，各自含 logs/projects/.db/.dat；<b>同一工程不允许同时打开</b></td><td>多工位并行标注/训练的干净做法</td><td><span class="tag t-amber">P2</span></td></tr>
+    <tr><td>数据集划分建议</td><td>推荐 6:2:2，但明写"<b>验证集此项由用户自行选择是否设置，推荐为不设置</b>"，初期训练集占大头</td><td>与"验证集怎么切"这个老问题直接相关</td><td><span class="tag t-amber">P2</span></td></tr>
+    <tr><td>模型优化技巧</td><td>数据增强 / <b>数据重用（避免灾难性遗忘，同样本多次用）</b> / 数据生成(自家 iFusion) / <b>K 折交叉验证</b></td><td>成体系的"过拟合药方"，其中"数据重用"很少见</td><td><span class="tag t-amber">P2</span></td></tr>
+  </tbody>
+</table>
+
+<h3>7.1 它自己写在手册里的经验值（可直接对照我们的口径）</h3>
+<ul>
+  <li>分类适用判据：<b>图片特征差异超过 30%</b> 才适合做分类</li>
+  <li>项目起步样本量：<b>初始阶段每个类别约 50 张</b></li>
+  <li>标注策略：<b>先标一部分 → 先训一版 → 把输出导回标注做精细化修改</b>（主动学习闭环）</li>
+  <li>Loss 判读：用"<b>鱼缸曲线</b>"形容——下降阶段=欠拟合，水平阶段=可用于检测</li>
+  <li>实施方案要同时考虑 <b>显存占有率与 CT（节拍）</b></li>
+  <li>3D 大分辨率图：<b>先截图再进工程</b>，否则图一多会内存崩溃</li>
+  <li>异常检测只标注 Normal/Defect，训练集必须全 OK；<b>它不能精确测缺陷大小，要精确测量请改用分割</b></li>
+</ul>
+
+<h2>八、落到 DL Studio 的清单</h2>
+
+<h3>8.1 P0（直接吃当前项目痛点）</h3>
+<ol>
+  <li><b>AI 工具插件化 + 契约层</b>：抽 <span class="mono">ToolAPI / ToolContext / ToolMetrics / ToolDataMgr</span> 四个角色，工具只写"配置 + 调用"。<span class="tag t-red">架构级</span></li>
+  <li><b>指标收口成 Metrics 组件</b>：按任务类型灌入（分类/检测/分割各一条 push 通道），统一出报表；替代当前散落的评估脚本。</li>
+  <li><b>区间型后处理过滤层</b>：分数/面积/宽/高/角度/灰度/半径/中心半径，全部上下限区间 + 排序 + 最大检测数；<b>不改模型就能调过杀漏检</b>。</li>
+  <li><b>图像四态标记（正常/过杀/漏杀/存疑）</b>，且<b>明确不入训练集</b>。</li>
+  <li><b>参数自适应搜索</b>：前置条件是先把增强算子做成同签名函数族。</li>
+  <li><b>分块训练/推理</b>：块大小 + 宽高步长，配"大缺陷用大块、小图优先整图"的默认策略。</li>
+  <li><b>模型效果报表导出</b>：模型信息 + 概率分数分布 + ROC + 结果清单（LTRB）。</li>
+  <li><b>几何与标定层独立</b>：坐标系/位姿/矩阵/双轴 mm-per-pixel，撑住客户 2mm² 口径。</li>
+</ol>
+
+<h3>8.2 P1</h3>
+<ol>
+  <li>预训练权重矩阵（任务 × tiny/small/medium）预置到安装目录，用户只选档位。</li>
+  <li>工具链接：上游分割/检测结果作为下游 ROI 或掩膜，多结果自动扩下游输入。</li>
+  <li>筛选表达式（字段 + 条件 + 值 + AND/OR + 语法校验）。</li>
+  <li>任务队列 + Loss 曲线随任务弹出、完成自动关闭。</li>
+  <li>智能标注（AI 预标注 + 二值化自动标注 + 阈值区间过滤 + 反转 + 多边形橡皮擦）。</li>
+  <li>训练流程图化（节点集合 + 画布 + 运行时节点），为多任务流水线留底。</li>
+</ol>
+
+<h3>8.3 P2 / 需商业决策</h3>
+<ol>
+  <li>训练端 / 推理端分权授权（涉对外发布与成本，<b>交 Arthur 拍板</b>）。</li>
+  <li>软件多开（multiInstances/user_x）。</li>
+  <li>多后端推理抽象（LibTorch 训练 + TensorRT/OpenVINO 推理优化），当前我们只有 PyTorch 一条路。</li>
+</ol>
+
+<h2>九、不该照抄的部分</h2>
+<div class="card" style="border-left:4px solid var(--red)">
+  <ul>
+    <li><b>不抄代码与接口命名</b>：不要在我们的代码里出现 <code>CHh*</code> / <code>HH*</code> / <code>IAL::</code> / <code>dmd::</code> 这类命名，也不要照搬 <code>CHhAiToolAPI</code> 的方法名——法务上说不清，识读上也容易混淆。</li>
+    <li><b>不碰模型文件</b>：<span class="mono">.net</span> 不能反序列化、不能提取权重、不能转格式复用。</li>
+    <li><b>不复刻加密狗方案</b>：CodeMeter/Virbox 是采购品，不是设计。</li>
+    <li><b>不照抄它的"验证集推荐不设"</b>：这条要结合我们自己的数据量与客户 KPI 单独定口径。</li>
+    <li><b>不为了"流程图"而流程图</b>：我们的用户是产线工程师，流程图的复杂度收益需要单独评估。</li>
+  </ul>
+</div>
+
+<h2>十、待 Arthur 拍板</h2>
+<div class="card" style="border-left:4px solid var(--amber)">
+  <ol>
+    <li><b>权属确认</b>：iCogtiveFlow 与华汉 iSense 是同引擎多品牌，还是外部竞品？——决定本报告能否对外引用，也决定后续还能挖多深。</li>
+    <li><b>要不要补 Ghidra 通道</b>：本机实测 GitHub 下载 <b>21.6 KB/s</b>，570 MB 需 <b>7 小时+</b>，且需另装 JDK 21。<b>我的判断是不值</b>——符号层已给出架构、接口、参数体系；反汇编只能多给"某个函数怎么实现"，对"借鉴思路"边际收益最低、合规风险最高。若确需，建议换网络环境再下。</li>
+    <li><b>P0 三项排期</b>：我建议先做 <b>区间型后处理过滤层 + 图像四态标记 + 指标收口</b>（最便宜、直接对过杀/漏检），插件化重构放第二批。</li>
+    <li><b>mm/px 标定值</b>：它的做法是 X/Y 分设精度，我们需要具体数值才能把 2mm² 落地。</li>
+    <li><b>是否需要模型效果报表模板</b>：是否要我按客户交付口径做一版报表模板。</li>
+  </ol>
+</div>
+
+<h2>十一、证据清单（全部可复核）</h2>
+<table>
+  <thead><tr><th>产物</th><th>路径</th><th>内容</th></tr></thead>
+  <tbody>
+    <tr><td>说明书全文</td><td class="mono">tmp/rea_probe/manual_clean.txt</td><td>96 页官方手册抽取+清洗，2174 行</td></tr>
+    <tr><td>PE 导出表</td><td class="mono">tmp/rea_probe/pe_exports.json</td><td>218 个模块、17 MB，全部导出符号</td></tr>
+    <tr><td>接口清单</td><td class="mono">tmp/rea_probe/api_iCogtiveFlow_*.txt</td><td>AiTool/Train/Tool/Data 四个模块的可读接口还原</td></tr>
+    <tr><td>名字清单</td><td class="mono">tmp/rea_probe/names_clean.log</td><td>类分布 + 去重方法名</td></tr>
+    <tr><td>字符串库</td><td class="mono">tmp/rea_probe/strings/</td><td>22 个工具 DLL 共 25.5 万条字符串</td></tr>
+    <tr><td>符号清单</td><td class="mono">tmp/rea_probe/symbol_inventory.json</td><td>跨模块 token 统计</td></tr>
+    <tr><td>分析脚本</td><td class="mono">tmp/rea_probe/*.py</td><td>全部只读，可重跑复现</td></tr>
+  </tbody>
+</table>
+
+<div class="foot">
+  本报告基于 <b>只读静态取证</b> 生成，未反编译、未运行、未修改目标程序，未触及任何授权校验逻辑。<br>
+  结论中"事实"与"推断"已分别标注：凡引用导出符号/文件名/手册原文的为事实；凡推断职责与架构意图的为判断，已在文中说明依据。<br>
+  生成时间：2026-10-13 ｜ 分析工具：REA 6.4.0（doctor 记录）+ 自研只读解析脚本
+</div>
+
+</div>
+</body>
+</html>

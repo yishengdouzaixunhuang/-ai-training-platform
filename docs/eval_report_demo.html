@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<title>语义分割评估报告</title>
+<style>
+:root{--bg:#F5F7FA;--panel:#FFF;--line:#E3E8EF;--ink:#1A2233;--mut:#5B6B84;}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);
+ font:14px/1.65 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif;padding:28px 32px 56px;}
+h1{font-size:22px;margin:0 0 4px}
+h2{font-size:16px;margin:28px 0 10px;padding-left:10px;border-left:4px solid #4285F4}
+h3.grp{font-size:13px;color:var(--mut);margin:18px 0 8px;letter-spacing:.06em}
+.sub{color:var(--mut);font-size:13px;margin-bottom:8px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 14px;
+ box-shadow:0 1px 2px rgba(16,24,40,.04)}
+.card .k{font-size:12px;color:var(--mut);margin-bottom:6px}
+.card .v{font-size:24px;font-weight:650;font-variant-numeric:tabular-nums}
+.card .v .u{font-size:12px;font-weight:400;color:var(--mut);margin-left:2px}
+.card .n{font-size:11px;color:var(--mut);margin-top:4px}
+.card.good{border-left:4px solid #1E8E3E}.card.good .v{color:#1E8E3E}
+.card.warn{border-left:4px solid #E8A33D}.card.warn .v{color:#B87413}
+.card.bad{border-left:4px solid #D93025}.card.bad .v{color:#D93025}
+.card.na{border-left:4px solid #9AA5B4}
+table{border-collapse:collapse;width:100%;background:var(--panel);font-size:13px;
+ border:1px solid var(--line);border-radius:8px;overflow:hidden}
+th,td{padding:7px 10px;border-bottom:1px solid var(--line);text-align:center}
+th{background:#EEF2F7;font-weight:600;color:#33415C}
+td:first-child,th:first-child{text-align:left}
+.meta{max-width:640px}
+.meta th{width:120px;text-align:left}
+.region{background:#FFF7E6;border:1px solid #F5D08A;border-radius:8px;padding:10px 14px;font-size:13px}
+.bad{color:#D93025}.warn{color:#B87413}
+.foot{color:var(--mut);font-size:12px;margin-top:24px;border-top:1px solid var(--line);padding-top:10px}
+</style></head><body>
+<h1>语义分割评估报告</h1>
+<div class="sub">DL Studio · 10 项指标 · 生成于 2026-10-13 18:09:11</div>
+
+<h2>十项指标总览</h2>
+<h3 class="grp">像素级</h3><div class="grid"><div class="card good"><div class="k">像素准确率 PA</div><div class="v">0.9998<span class="u"></span></div><div class="n">优秀</div></div><div class="card bad"><div class="k">Cohen's Kappa</div><div class="v">0.4483<span class="u"></span></div><div class="n">偏低</div></div><div class="card good"><div class="k">FWIoU</div><div class="v">0.9997<span class="u"></span></div><div class="n">优秀</div></div></div><h3 class="grp">类别级</h3><div class="grid"><div class="card bad"><div class="k">mIoU（含背景）</div><div class="v">0.6444<span class="u"></span></div><div class="n">偏低</div></div><div class="card bad"><div class="k">mIoU（仅前景）</div><div class="v">0.2890<span class="u"></span></div><div class="n">偏低</div></div><div class="card bad"><div class="k">Macro Precision</div><div class="v">0.2902<span class="u"></span></div><div class="n">偏低</div></div><div class="card good"><div class="k">Macro Recall</div><div class="v">0.9858<span class="u"></span></div><div class="n">优秀</div></div><div class="card bad"><div class="k">Macro Dice / F1</div><div class="v">0.4484<span class="u"></span></div><div class="n">偏低</div></div></div><h3 class="grp">边界级</h3><div class="grid"><div class="card bad"><div class="k">Boundary F1</div><div class="v">0.5863<span class="u"></span></div><div class="n">偏低</div></div><div class="card bad"><div class="k">HD95 (px)</div><div class="v">743.37<span class="u"> px</span></div><div class="n">需改进 >5px</div></div></div><h3 class="grp">目标级</h3><div class="grid"><div class="card bad"><div class="k">Region F1</div><div class="v">0.3158<span class="u"></span></div><div class="n">偏低</div></div></div>
+
+<h2>目标级结果（产线口径）</h2>
+<div class="region">共 9 个真值目标，预测出 10 个，命中 3 个；<b class="bad">漏检 6</b> 个，<b class="warn">过杀 7</b> 个。</div>
+
+<h2>逐类明细</h2>
+<table><thead><tr><th>类别</th><th>IoU</th><th>Dice</th><th>Precision</th>
+<th>Recall</th><th>Specificity</th><th>真值像素占比</th></tr></thead><tbody><tr><td>background</td><td>0.9998</td><td>0.9999</td><td>1.0000</td><td>0.9998</td><td>0.9858</td><td>99.9897%</td></tr><tr><td>Atd</td><td>0.2890</td><td>0.4484</td><td>0.2902</td><td>0.9858</td><td>0.9998</td><td>0.0103%</td></tr></tbody></table>
+
+<h2>混淆矩阵（像素数）</h2>
+<table><thead><tr><th>真值 ↓ / 预测 →</th><th>background</th><th>Atd</th></tr></thead><tbody><tr><th>background</th><td style="background:rgba(66,102,255,0.850);color:#fff">20.53M</td><td style="background:rgba(66,102,255,0.100);color:#1A2233">5100</td></tr><tr><th>Atd</th><td style="background:rgba(66,102,255,0.100);color:#1A2233">30</td><td style="background:rgba(66,102,255,0.100);color:#1A2233">2085</td></tr></tbody></table>
+
+<h2>运行配置</h2>
+<table class="meta"><tbody><tr><th>真值目录</th><td>tmp/_eval_demo/gt</td></tr><tr><th>预测目录</th><td>tmp/_eval_demo/pred</td></tr><tr><th>类别</th><td>background, Atd</td></tr><tr><th>耗时</th><td>1.98 s</td></tr><tr><th>边界容差 tol</th><td>2.0 px</td></tr><tr><th>区域匹配 IoU</th><td>0.5</td></tr><tr><th>区域最小面积</th><td>不过滤</td></tr></tbody></table>
+
+<div class="foot">宏平均仅统计前景类（排除背景），避免背景稀释。HD95 单位：像素，越小越好。
+判据为工程经验阈值，非论文标准；请结合产线过杀/漏检 KPI 综合判断。</div>
+</body></html>

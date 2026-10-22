@@ -112,6 +112,7 @@ class MultiViewSegDataset(Dataset):
 
         self.samples = []          # [(key, {view: path}, mask_path)]
         missing = 0
+        unassigned = 0             # 划分表里没有这一组（= 未划分 = 空集，不进任何集）
         seen = set()               # 每个 key 只能生成一个样本（否则三视图各算一次，样本数虚增 3 倍）
         if not self.img_dir.exists():
             _log(f"images 目录不存在: {self.img_dir}")
@@ -124,9 +125,14 @@ class MultiViewSegDataset(Dataset):
                 continue
             seen.add(key)
             # split 过滤（split_map 以 "key_te_0" 或 "key" 为键）
+            # ★★ 2026-10-22：默认值从 "train" 改成 None —— 没划分的组**不属于任何集**。
+            #    原来 `split_map.get(key, "train")` 让"没划分"悄悄等于"进训练集"，
+            #    于是用户以为只训了自己划的那批，实际把整个 images/ 都训了。
             if split != "all":
-                s = split_map.get(f"{key}_{self.views[0]}", split_map.get(key, "train"))
+                s = split_map.get(f"{key}_{self.views[0]}", split_map.get(key))
                 if s != split:
+                    if s is None:
+                        unassigned += 1
                     continue
             # 找齐三视图
             paths = {}
@@ -165,6 +171,9 @@ class MultiViewSegDataset(Dataset):
             self.samples.append((key, paths, mask_path))
         if missing:
             _log(f"[{split}] 跳过 {missing} 组（缺视图或缺掩膜）")
+        if unassigned:
+            _log(f"[{split}] 跳过 {unassigned} 组（未划分 —— 训练/验证/测试都不取，"
+                 f"要它进训练请到「工具 → 数据集划分管理…」显式设为训练集）")
         _log(f"[{split}] 多视图样本 {len(self.samples)} 组 × {len(self.views)} 图 "
                  f"→ 输入 {len(self.views) * 3} 通道；类别 {self.num_classes}")
 

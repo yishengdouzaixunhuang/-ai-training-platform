@@ -20,6 +20,57 @@ class Predictor:
             self.load(model_filename, backend=backend)
         except FileNotFoundError as e:
             self._load_error = e
+        # ★★ 2026-10-22：推理用的**滑窗块尺寸**必须等于训练时的裁剪尺寸。
+        #   原来 `predict()` 里写死 200（注释还写着"模型是 200×200 训的"），
+        #   而这次工程是按 256 训的 ⇒ 推理时同一块焊印在块里"变小变糊"，
+        #   检测尺度整个错位（用户先问"能训吗"，训完再一推理就会踩这个）。
+        #   取值顺序：checkpoint 的 image_size → 工程/平台的 .train_settings.json → 200。
+        self._智能块尺寸 = None
+        try:
+            self._智能块尺寸 = self._resolve_train_tile(model_filename)
+        except Exception:
+            self._智能块尺寸 = None
+
+    def _resolve_train_tile(self, model_filename="best_model.pth"):
+        """训练时的裁剪尺寸（块大小）；读不到就返回 None（沿用老默认 200）。"""
+        def _pick(v):
+            if isinstance(v, (list, tuple)) and v:
+                try:
+                    return int(v[0])
+                except Exception:
+                    return None
+            if isinstance(v, (int, float)) and int(v) > 0:
+                return int(v)
+            return None
+
+        # ① checkpoint（新训练的模型会写进去）
+        try:
+            p = os.path.join(self.project_dir, "models", model_filename)
+            if os.path.exists(p):
+                ck = torch.load(p, map_location="cpu", weights_only=False)
+                if isinstance(ck, dict):
+                    got = _pick(ck.get("image_size"))
+                    if got:
+                        return got
+        except Exception:
+            pass
+        # ② 工程/平台的训练参数文件（老模型没有 image_size 字段，靠这个兜底）
+        cands = [
+            os.path.join(self.project_dir, ".train_settings.json"),
+            os.path.join(self.project_dir, ".cls_train_settings.json"),
+            os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                         ".train_settings.json"),
+        ]
+        for cp in cands:
+            try:
+                if os.path.exists(cp):
+                    with open(cp, "r", encoding="utf-8") as f:
+                        got = _pick(json.load(f).get("image_size"))
+                    if got:
+                        return got
+            except Exception:
+                continue
+        return None
 
     def _find_trt_python(self):
         """Find a Python interpreter that can import tensorrt."""
@@ -468,14 +519,35 @@ class Predictor:
             image = Image.fromarray(image)
 
         orig_w, orig_h = image.size
-        # ★★ 智能推理（2026-10-22）：大图自动缩到**长边 1024**再推。
+        # 滑窗块尺寸 = **训练时的裁剪尺寸**（`_智能块尺寸`，读 checkpoint 得来；读不到退回 200）
+        _块 = int(getattr(self, "_智能块尺寸", 0) or 0) or 200
+        _叠 = max(8, _块 // 2)
+        # ★★ 智能推理（2026-10-22）：大图默认缩到**长边 1024**再推。
         #   为什么：模型是 200×200 训的，直接喂 5472×3648 会
         #   ① 显存炸（整图激活值上 GB）② 1050ms 以上 ③ 细节本来也被缩放抹掉。
-        #   缩到 1024 后按 200（= 训练尺寸）滑窗，既快又保留细节。
         #   长边 ≤ 1500 的图（如 200×200 小图）**原样不动**。
+        #
+        # ⚠️ 2026-10-22 补：**分块推理（精细档）不能先缩整图**。
+        #   训练是在**原分辨率**上按 256 切块，推理若先把 456×7041 缩到 66×1024
+        #   再按 256 切，同一块焊印在块里只剩 1/7 大小 —— 尺度整个错位，
+        #   现场表现就是"训练 mIoU 0.95，一推理啥也检不到"。
+        #   所以：精细档 + 分块 + 块数可控（≤600）时走**原分辨率滑窗**；
+        #   块数太多（38MP 那种）才退回 1024 缩放，避免一次推理几分钟。
+        # 大图一律分块：不勾 Tiled 时"整图前向"意味着把整图缩成一个方形喂进去，
+        # 对 456×7041 这种细长条等于把焊印压扁 7 倍 —— 实测一检一个 0 块。
+        _大图 = (orig_w * orig_h) > (1500 * 1500)
+        _要分块 = bool(tiled) or _大图
         _长边 = max(orig_w, orig_h)
         _智能缩放 = 1.0
-        if _长边 > 1500 and scale >= 1.0:
+        _原生滑窗 = False
+        if _要分块 and mode != "fast":
+            _步 = max(1, _块 - _叠)
+            _估块数 = (((orig_w + _步 - 1) // _步) *
+                       ((orig_h + _步 - 1) // _步))
+            _原生滑窗 = _估块数 <= 600
+        if _原生滑窗:
+            _智能缩放 = 1.0
+        elif _长边 > 1500 and scale >= 1.0:
             _智能缩放 = 1024.0 / float(_长边)
         if _智能缩放 < 1.0:
             scale = _智能缩放
@@ -487,22 +559,14 @@ class Predictor:
             sw, sh = orig_w, orig_h
 
         w, h = downsampled.size
-        # 滑窗块尺寸 = 训练尺寸 200；50% 重叠（步长 100）——
-        #   原来 25% 重叠时 1024 宽上要切 180 块，光滑窗就 900ms；
-        #   改 50% 后约 50 块，拼接缝对十字/横杠这种大目标看不出来。
-        _块 = int(getattr(self, "_智能块尺寸", 200) or 200)
-        _叠 = max(8, _块 // 2)
         if mode == "fast":
             # 快速档：缩到 1024 后**整图一次前向**，对标友商
             pred = self._predict_full(downsampled, fallback_tiled=False)
-        elif tiled and (w > 1024 or h > 1024):
+        elif _要分块 and (w > 1024 or h > 1024 or _原生滑窗):
             pred = self._predict_tiled(downsampled, tile_size=_块, overlap=_叠)
-        elif not tiled:
-            # 精细档：大图走滑窗（块=200，与训练一致）
-            if w * h > 1500 * 1500:
-                pred = self._predict_tiled(downsampled, tile_size=_块, overlap=_叠)
-            else:
-                pred = self._predict_full(downsampled, fallback_tiled=True)
+        elif not _要分块:
+            # 只有小图才会走到这里：整图一次前向
+            pred = self._predict_full(downsampled, fallback_tiled=True)
         elif self.ort_session is not None:
             # ONNX Runtime
             img_tensor = TF.to_tensor(downsampled).unsqueeze(0).numpy()
@@ -533,6 +597,17 @@ class Predictor:
                 p_img = Image.fromarray((self.last_prob * 255).astype(np.uint8))
                 self.last_prob = (np.array(p_img.resize((orig_w, orig_h), Image.BILINEAR))
                                   .astype(np.float32) / 255.0)
+
+        # ★★ 2026-10-22：**掩膜一律按 uint8 返回**。
+        #   `_predict_tiled*`（滑窗）返回的是 `np.int64`（np.round(...).astype(np.int64)），
+        #   而调用方会把它当"类别编号图"直接喂给 PIL / cv2：
+        #     mask_editor._build_prediction_overlay → `Image.fromarray(int64)` 直接抛
+        #     `TypeError: Cannot handle this data type: (1, 1), <i8>`（用户实拍崩溃）。
+        #   以前大图走"整图前向"返回 uint8，所以从没暴露；现在大图强制分块，必踩。
+        #   类别数 ≤255 是硬约束（掩膜像素值就是类别 id），uint8 足够。
+        pred = np.ascontiguousarray(pred)
+        if pred.dtype != np.uint8:
+            pred = pred.astype(np.uint8)
 
         if return_overlay:
             overlay = self._create_overlay(image, pred)
@@ -569,15 +644,33 @@ class Predictor:
                 return self._predict_tiled(image)
             raise
 
+    @staticmethod
+    def _tile_strides(w, h, tile_size, overlap):
+        """每轴步长 + 该轴是否用 Hann 窗（窄条图横向不重叠）。
+
+        ★★ 2026-10-22 提速（对标友商 ~120ms/张）：
+        重叠的唯一目的是"拼缝平滑"。但 456 宽的图用 256 块、stride 128 时，
+        横向切 4 列（0/128/256/384）—— 同一段像素被前向算了 2 遍，
+        而宽度方向根本没有内容变化，纯浪费。实测 224 块 → 112 块。
+
+        ⚠️ 某轴不重叠时，**该轴窗口必须用 1.0**：Hann 窗两端是 0，
+        零重叠直接拼会在缝上得到 count_map≈0，除出来是噪声/黑线。
+        用均匀窗时，边缘 clamp 造成的天然重叠会被 count_map 自动平均掉，不会重影。
+        """
+        ov_x = 0 if w <= tile_size * 2 else overlap
+        ov_y = 0 if h <= tile_size * 2 else overlap
+        return (max(1, tile_size - ov_x), max(1, tile_size - ov_y),
+                ov_x > 0, ov_y > 0)
+
     @torch.inference_mode()
     def _predict_tiled_torch(self, image, tile_size=512, overlap=64):
         """Tiled inference with CPU-side Hanning-window blending.
         GPU scatter is slow; keeping blending on CPU is faster for accumulation."""
         w, h = image.size
-        stride = tile_size - overlap
+        stride_x, stride_y, use_hx, use_hy = self._tile_strides(w, h, tile_size, overlap)
         tiles, positions = [], []
-        for y in range(0, h, stride):
-            for x in range(0, w, stride):
+        for y in range(0, h, stride_y):
+            for x in range(0, w, stride_x):
                 x2 = min(x + tile_size, w); y2 = min(y + tile_size, h)
                 x1 = max(0, x2 - tile_size); y1 = max(0, y2 - tile_size)
                 tile = image.crop((x1, y1, x2, y2))
@@ -591,8 +684,11 @@ class Predictor:
         count_map = np.zeros((h, w), dtype=np.float32)
         prob_sum = np.zeros((h, w), dtype=np.float32)
 
-        # Pre-compute Hanning window (NumPy is fast for this)
-        hann = np.sqrt(np.hanning(tile_size).reshape(-1, 1) * np.hanning(tile_size).reshape(1, -1))
+        # Pre-compute blending window (NumPy is fast for this)
+        # 某轴不重叠时该轴用均匀窗 1.0（Hann 两端为 0，会拼出黑缝）
+        _wx = np.hanning(tile_size) if use_hx else np.ones(tile_size)
+        _wy = np.hanning(tile_size) if use_hy else np.ones(tile_size)
+        hann = np.sqrt(_wy.reshape(-1, 1) * _wx.reshape(1, -1))
 
         # Dynamic batch size for better GPU utilization
         free_mb = (torch.cuda.get_device_properties(0).total_memory - torch.cuda.memory_allocated()) / 1024**2
@@ -625,10 +721,10 @@ class Predictor:
 
     def _predict_tiled_onnx(self, image, tile_size=512, overlap=64):
         w, h = image.size
-        stride = tile_size - overlap
+        stride_x, stride_y, use_hx, use_hy = self._tile_strides(w, h, tile_size, overlap)
         tiles = []
-        for y in range(0, h, stride):
-            for x in range(0, w, stride):
+        for y in range(0, h, stride_y):
+            for x in range(0, w, stride_x):
                 x2 = min(x + tile_size, w); y2 = min(y + tile_size, h)
                 x1 = max(0, x2 - tile_size); y1 = max(0, y2 - tile_size)
                 tile = image.crop((x1, y1, x2, y2))
@@ -647,8 +743,8 @@ class Predictor:
             batch_preds = self.ort_session.run(None, {input_name: batch})[0].argmax(1)
             for j, (_, x1, y1, x2, y2, ph, pw) in enumerate(tiles[i:i+batch_size]):
                 tp = batch_preds[j][:tile_size-ph, :tile_size-pw].astype(np.float32)
-                gy = np.hanning(tp.shape[0]).reshape(-1, 1)
-                gx = np.hanning(tp.shape[1]).reshape(1, -1)
+                gy = (np.hanning(tp.shape[0]) if use_hy else np.ones(tp.shape[0])).reshape(-1, 1)
+                gx = (np.hanning(tp.shape[1]) if use_hx else np.ones(tp.shape[1])).reshape(1, -1)
                 wgt = np.sqrt(gy * gx)
                 pred_sum[y1:y2, x1:x2] += tp * wgt
                 count_map[y1:y2, x1:x2] += wgt

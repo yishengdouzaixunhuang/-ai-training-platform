@@ -1,8 +1,8 @@
 {
-  "epochs": 500,
+  "epochs": 1000,
   "batch_size": 8,
   "model": "unet",
-  "image_size": 512,
+  "image_size": 256,
   "k_folds": 1,
   "loss": "ce+lovasz",
   "resume": true,
@@ -21,5 +21,9 @@
     "invert": false,
     "noise": false,
     "flip": true
-  }
+  },
+  "infer_mode": "fine",
+  "tile": true,
+  "tile_size": 256,
+  "tile_stride": 75
 }

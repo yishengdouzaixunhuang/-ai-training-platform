@@ -84,3 +84,17 @@ crash_log.txt
 
 # 本机专属启动脚本（含本机 venv 路径）
 启动_本机.bat
+
+# 备份 / 构建产物 / 运行日志（2026-10-22 补）
+*.bak_*
+*.bak-*
+build2/
+dist2/
+*.exe
+*.spec
+*.log
+crash_log.txt
+platform_error.log
+_dlg_shots/
+_ui_render/
+.ui_settings.json

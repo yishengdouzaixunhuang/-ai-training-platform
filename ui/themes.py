@@ -42,6 +42,35 @@ QTableWidget#imageList::item:selected { background-color: #0E3A52; color: #00E5F
 QTableWidget#imageList::item:selected:!active { background-color: #0E3A52; color: #00E5FF; }
 """
 
+
+def _res_uri(name):
+    """`resources/` 下资源的绝对路径（QSS 的 url() 用正斜杠，Windows 反斜杠会解析失败）。"""
+    import os as _os
+    p = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))),
+                      "resources", name)
+    return p.replace("\\", "/")
+
+
+# ── 勾选框：勾上显示 ✓（而不是一坨实心方块）──────────────────────────
+# 2026-10-22 用户要求："把这些蓝色小方块换成√"。
+# 为什么用 SVG 图片而不是 QSS 画：QSS **画不了文字/图形**，`::indicator` 只有
+# background / border / image 三种手段。所以给两种主题各配一张 14×14 的勾图，
+# 底色沿用原来的高饱和实心块（青 / 蓝），只把"里面是空的"改成"里面有个勾"。
+#
+# ⚠️ 这两段必须写在 DARK_INDICATOR / LIGHT_OVERLAY 的**后面**：
+#    同优先级的选择器，后出现的生效；前面那句 `image: none` 就是靠这个被覆盖的。
+# ⚠️ 颜色不要往这里写死主题皮肤色 —— 勾的描边色是要表达"已勾选"的语义色，
+#    不属于主题皮肤，`sweep_inline_styles` 也不会碰应用级样式表（它只扫控件级）。
+DARK_CHECK = """
+QCheckBox::indicator:checked { image: url("%s"); }
+QCheckBox::indicator:checked:disabled { image: url("%s"); }
+""" % (_res_uri("check_dark.svg"), _res_uri("check_dark.svg"))
+
+LIGHT_CHECK = """
+QCheckBox::indicator:checked { image: url("%s"); }
+QCheckBox::indicator:checked:disabled { image: url("%s"); }
+""" % (_res_uri("check_light.svg"), _res_uri("check_light.svg"))
+
 # ── 滑块（QSlider）：**必须写在主题表里，不能写在控件的内联样式里** ──
 # 2026-10-14 踩过，代价是"一个像素都不画"：
 # 底栏缩放滑块的内联 QSS 用了 #2A3A5C / #0E3A52 / #00E5FF 三个色，**全在
@@ -257,6 +286,40 @@ QCheckBox#layerSw::indicator:hover { border-color: #0077B6; }
 QCheckBox#layerSw::indicator:checked {
     background: #0077B6; border: 1px solid #0077B6;
 }
+"""
+
+
+# ── 任务队列（左栏第三页，2026-10-16 对标友商同名模块）──
+# 颜色一律写在这里：控件上的内联白名单色会被 sweep_inline_styles 剥掉（滑块"空槽"同型坑）。
+_DARK_TASK_Q = """
+QWidget#taskRow { border: 1px solid #2A3A5C; border-radius: 3px; }
+QLabel#taskKind { color: #00E5FF; font-size: 11px; font-weight: bold; }
+QLabel#taskTitle { color: #D6E4FF; font-size: 11px; }
+QLabel#taskState { color: #8A93A6; font-size: 11px; }
+QLabel#taskStatus { color: #8A93A6; font-size: 11px; }
+QLabel#taskDetail { color: #6C7688; font-size: 10px; }
+QLabel#taskEmpty { color: #6C7688; font-size: 11px; }
+QProgressBar#taskProgress { background: #0E1420; border: none; border-radius: 3px; }
+QProgressBar#taskProgress::chunk { background: #00E5FF; border-radius: 3px; }
+QPushButton#taskCancelBtn { color: #8A93A6; font-size: 13px; padding: 0px; margin: 0px;
+    border: 1px solid #2A3A5C; border-radius: 3px; background: transparent; }
+QPushButton#taskCancelBtn:hover { color: #ff4444; border-color: #ff4444; }
+QPushButton#taskClearBtn { font-size: 11px; padding: 1px 8px; }
+"""
+_LIGHT_TASK_Q = """
+QWidget#taskRow { border: 1px solid #C9D3E0; border-radius: 3px; }
+QLabel#taskKind { color: #0077B6; font-size: 11px; font-weight: bold; }
+QLabel#taskTitle { color: #1A2233; font-size: 11px; }
+QLabel#taskState { color: #4A5568; font-size: 11px; }
+QLabel#taskStatus { color: #4A5568; font-size: 11px; }
+QLabel#taskDetail { color: #6B7684; font-size: 10px; }
+QLabel#taskEmpty { color: #6B7684; font-size: 11px; }
+QProgressBar#taskProgress { background: #E4EAF2; border: none; border-radius: 3px; }
+QProgressBar#taskProgress::chunk { background: #0077B6; border-radius: 3px; }
+QPushButton#taskCancelBtn { color: #4A5568; font-size: 13px; padding: 0px; margin: 0px;
+    border: 1px solid #C9D3E0; border-radius: 3px; background: transparent; }
+QPushButton#taskCancelBtn:hover { color: #C0392B; border-color: #C0392B; }
+QPushButton#taskClearBtn { font-size: 11px; padding: 1px 8px; }
 """
 
 THEME_LABELS = [("深色（默认）", "dark"), ("浅色", "light")]
@@ -490,11 +553,13 @@ def apply_theme(app, name="dark"):
     if name == "light":
         # 先还原上一次清扫（否则深色主题暂存的样式会丢），再按新主题清扫一遍
         sweep_inline_styles(app, restore=True)
-        app.setStyleSheet(base_qss() + LIGHT_OVERLAY + _LIGHT_SLIDER + _LIGHT_TOOLBAR_SW)
+        app.setStyleSheet(base_qss() + LIGHT_OVERLAY + LIGHT_CHECK
+                          + _LIGHT_SLIDER + _LIGHT_TOOLBAR_SW + _LIGHT_TASK_Q)
         sweep_inline_styles(app, restore=False)
     else:
         sweep_inline_styles(app, restore=True)
-        app.setStyleSheet(base_qss() + DARK_INDICATOR + _DARK_SLIDER + _DARK_TOOLBAR_SW)
+        app.setStyleSheet(base_qss() + DARK_INDICATOR + DARK_CHECK
+                          + _DARK_SLIDER + _DARK_TOOLBAR_SW + _DARK_TASK_Q)
     # 记住选择：直接写 .ui_settings.json（不依赖主窗口的 _save_ui_setting 落在哪个文件）
     try:
         import json as _json, os as _os

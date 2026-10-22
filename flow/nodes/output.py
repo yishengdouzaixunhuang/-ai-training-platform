@@ -83,7 +83,14 @@ class SegResultWriter(Node):
     PARAMS = [
         NodeParam("out_dir", "输出目录", ptype="str", default="outputs"),
         NodeParam("save_mask", "保存Mask", ptype="bool", default=True),
-        NodeParam("save_overlay", "保存Overlay", ptype="bool", default=True),
+        # ★ 2026-10-22 提速：默认不写 `<base>_overlay.jpg`。
+        #   它是 20MP 的 JPEG，批量时每张要多编码一次；预览/结果表都走 `_pred.png`，
+        #   只有"没有 _pred.png 的老工程"才需要这张图兜底。
+        NodeParam("save_overlay", "保存Overlay", ptype="bool", default=False),
+        # ★ 2026-10-22：置信度图也要落盘。Result 表「分数」列优先用模型置信度，
+        #   而批量推理不写 `canvas._pred_prob` ⇒ 不存这张图，批量结果的分数就只能是
+        #   IoU（没标注时整列 0.0%）。uint8 存（概率×255）够用，20MP 也就几百 KB。
+        NodeParam("save_prob", "保存置信度图", ptype="bool", default=True),
     ]
 
     def run(self, frame: Frame) -> Frame:
@@ -98,6 +105,13 @@ class SegResultWriter(Node):
             Image.fromarray(np.asarray(mask, dtype=np.uint8)).save(os.path.join(out_dir, base + "_pred.png"))
         if overlay is not None and self.params["save_overlay"]:
             Image.fromarray(np.asarray(overlay)).save(os.path.join(out_dir, base + "_overlay.jpg"))
+        prob = frame.result.get("prob")
+        if prob is not None and self.params.get("save_prob", True):
+            try:
+                p8 = np.clip(np.asarray(prob, dtype=np.float32) * 255.0, 0, 255).astype(np.uint8)
+                Image.fromarray(p8).save(os.path.join(out_dir, base + "_prob.png"))
+            except Exception:
+                pass
         return frame
 
 

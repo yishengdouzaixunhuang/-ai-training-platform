@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 14 14">
+  <!-- 浅色主题：勾选框底色是实心蓝(#0077B6)，勾用白色 -->
+  <path d="M3.2 7.35 L5.9 10 L10.8 4.2" fill="none" stroke="#FFFFFF"
+        stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

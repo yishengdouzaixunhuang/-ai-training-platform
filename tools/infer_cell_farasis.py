@@ -133,7 +133,9 @@ def main():
         if gid in groups:
             continue
         if args.split != "all":
-            s = split_map.get(f"{t['base']}_te_0", "train")
+            # ★ 2026-10-22：未划分不再默认算 train（与训练侧同一口径），
+            #   没登记的组不属于任何集 —— 用它做评估等于拿"没核对过的图"算指标。
+            s = split_map.get(f"{t['base']}_te_0", split_map.get(t["base"]))
             if s != args.split:
                 continue
         groups[gid] = t["src"]

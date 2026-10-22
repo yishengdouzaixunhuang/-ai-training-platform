@@ -73,9 +73,12 @@ def _list_images_mapping(project_dir, split, split_map):
 
                 if label_id is not None:
                     # Check split
+                    # ★★ 2026-10-22：默认值从 "train" 改成 None（未划分 = 不属于任何集）。
+                    #    与分割侧 training/dataset.py 口径一致：没在 train_test_split.json
+                    #    里登记的图，训练/验证/测试都取不到，宁可报"训练集为空"也不偷偷训。
                     base = os.path.splitext(entry.name)[0]
                     rel_key = f"{rel_prefix}{base}" if rel_prefix else base
-                    file_split = split_map.get(rel_key, "train")
+                    file_split = split_map.get(rel_key)
                     if split == "all" or file_split == split:
                         pairs.append((rel, abs_path, label_id))
 
@@ -162,6 +165,14 @@ class ClassificationDataset(Dataset):
 
         split_map = _default_split_map(project_dir)
         pairs, class_names = _list_images_mapping(project_dir, split, split_map)
+        # ★ 未划分 = 空集之后，"训练集 0 张"是很容易撞上的状态（新工程、或只在
+        #   列表里标了类别没做划分）⇒ 必须在这里就说清楚，不能等 trainer 训到一半
+        #   报个 IndexError、或者更糟——静默训 0 张。
+        if split == "train" and not pairs:
+            raise RuntimeError(
+                "训练集为空：没有任何一张图被划分到 train。\n\n"
+                "请先打开「工具 → 数据集划分管理…」，把核对无误的标注显式设为训练集，"
+                "再开始训练。\n\n（标注过 ≠ 进训练集 —— 未划分的图不属于任何集）")
 
         self._pairs = pairs  # [(rel_path, abs_path, label_id), ...]
         self._target_size = self._compute_target_size() if scale_factor != 1.0 else None
@@ -189,15 +200,25 @@ class ClassificationDataset(Dataset):
         else:
             self.transform = transform
 
-        # 全局增强参数面板：启用时替换内置 Random* 增强，改为可配置增强
-        if (transform is None and split == "train" and augment_flags
-                and augment_flags.get("enabled")):
+        # 全局增强参数面板
+        # - augment_flags=None                     → 用内置增强（翻转 + ±10° 旋转 + 色彩抖动）
+        # - {"enabled": False, ...}                → 明确关闭全部增强
+        #   （旧实现在这里直接 return，静默回落到内置增强，与 UI 上「无增强」标签不符）
+        # - {"enabled": True, ...}                 → 用可配置增强替换内置增强
+        self.augment_desc = "关闭" if split != "train" else "内置(翻转+旋转±10°+色彩抖动)"
+        if transform is None and split == "train" and augment_flags is not None:
             keep = []
             for s in self.transform.transforms:
                 if isinstance(s, (T.RandomHorizontalFlip, T.RandomRotation, T.ColorJitter)):
                     continue
                 keep.append(s)
-            self.transform = T.Compose([_GlobalAugment(augment_flags)] + keep)
+            if augment_flags.get("enabled"):
+                self.transform = T.Compose([_GlobalAugment(augment_flags)] + keep)
+                on = [k for k, v in augment_flags.items() if k != "enabled" and v]
+                self.augment_desc = ("全局[" + ",".join(on) + "]") if on else "全局(无启用项)"
+            else:
+                self.transform = T.Compose(keep)
+                self.augment_desc = "关闭"
 
     def _build_resize_step(self):
         """返回 resize 变换；keep_aspect=True 时用 letterbox 等比填边，否则 T.Resize 直接拉伸。
@@ -255,13 +276,15 @@ class ClassificationDataset(Dataset):
     def __getitem__(self, idx):
         rel_path, abs_path, label = self._pairs[idx]
         image = Image.open(abs_path).convert("RGB")
-        # Pre-scale
-        if isinstance(self.scale_factor, (tuple, list)):
-            sw, sh = self.scale_factor
-            w, h = image.size
-            image = image.resize((max(1, int(w * sw)), max(1, int(h * sh))), Image.BILINEAR)
-        elif self.scale_factor != 1.0 and self._target_size is not None:
-            image = image.resize(self._target_size, Image.BILINEAR)
+        # Pre-scale 只在「没有固定输入尺寸」时才需要：image_size 已固定时
+        # transform 里还会再 resize 一次，先缩一遍只是多一次重采样、白掉画质。
+        if self.image_size is None:
+            if isinstance(self.scale_factor, (tuple, list)):
+                sw, sh = self.scale_factor
+                w, h = image.size
+                image = image.resize((max(1, int(w * sw)), max(1, int(h * sh))), Image.BILINEAR)
+            elif self.scale_factor != 1.0 and self._target_size is not None:
+                image = image.resize(self._target_size, Image.BILINEAR)
         if self.transform:
             image = self.transform(image)
         return image, label
