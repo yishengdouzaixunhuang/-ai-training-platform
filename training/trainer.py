@@ -4,6 +4,17 @@ import json
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, random_split
+
+# ⚠️ 为什么 num_workers=0（单进程加载）：
+#   Windows 的 DataLoader 用 spawn 起子进程，需要把 augment_fn **pickle** 过去；
+#   而 build_augment_fn() 返回的是个**闭包**（本地函数），pickle 不了 →
+#   `AttributeError: Can't get local object 'build_augment_fn.<locals>.augment'`
+#   直接训练就崩。改成 0 就完全绕开。
+#   （注意 workers=0 时不能再传 prefetch_factor，否则 torch 报
+#    "prefetch_factor option could only be specified in multiprocessing"）
+#   本项目 200×200 小图 + 几十张，单进程加载一点不慢。
+#   —— 以后要恢复多进程，得先把 augment 改成可 pickle 的**类**（实现 __call__），
+#      再把这里改回 4 / prefetch_factor=2。
 from tqdm import tqdm
 import numpy as np
 from training.dataset import SegmentationDataset
@@ -33,7 +44,20 @@ class Trainer:
         if "background" not in self.classes:
             self.classes.insert(0, "background")
         self.num_classes = len(self.classes)
-        
+
+        # ★ 多视图（三图）工程：project.json 里 views=[...] ⇒ 输入是 3N 通道而不是 3。
+        #   不识别的话：模型是 3 通道、数据是 3 通道 ⇒ **能训但只用了第一个视图**，
+        #   看起来"训练成功"其实三图信息全丢（静默降级，比报错更坏）。
+        _views = self.meta.get("views") or []
+        self.views = tuple(v for v in _views if isinstance(v, str) and v)
+        self.in_channels = 3 * (len(self.views) if self.views else 1)
+        if self.views:
+            _declared = self.meta.get("in_channels")
+            if _declared and int(_declared) != self.in_channels:
+                # 以 views 为准（views 是真数据来源），但把不一致记下来，别闷着
+                print("[Trainer] 警告：project.json 的 in_channels=%s 与 views=%s ×3=%d 不一致，"
+                      "按 views 计算" % (_declared, list(self.views), self.in_channels), flush=True)
+
         self.model = None
         self.optimizer = None
         self.criterion = nn.CrossEntropyLoss(ignore_index=255)
@@ -61,7 +85,7 @@ class Trainer:
                      plot_callback, batch_callback, loss_name="cross_entropy", augment="none"):
         """K-fold cross-validation training."""
         # Load all annotated images
-        full_ds = SegmentationDataset(self.project_dir, split="all", image_size=image_size, augment_fn=_resolve_augment_fn(augment))
+        full_ds = SegmentationDataset(self.project_dir, split="all", image_size=image_size, augment_fn=_resolve_augment_fn(augment), views=self.views or None)
         num_images = len(full_ds._image_samples)
         if num_images < k:
             if log_callback:
@@ -102,7 +126,7 @@ class Trainer:
 
             drop = len(train_ds) > batch_size
             self._image_size = image_size
-            self.train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=True, prefetch_factor=2, drop_last=drop)
+            self.train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=0, pin_memory=True, drop_last=drop)
             self.val_loader = DataLoader(val_ds, batch_size=min(batch_size, len(val_ds)), shuffle=False, num_workers=0)
 
             # Compute class weights from cached masks (fast, no DataLoader pass)
@@ -161,8 +185,8 @@ class Trainer:
 
     def prepare_data(self, batch_size=4, val_split=0.2, image_size=(512, 512), loss_name="cross_entropy", augment="none"):
         # Use user-assigned train/val splits from train_test_split.json
-        train_ds = SegmentationDataset(self.project_dir, split="train", image_size=image_size, augment_fn=_resolve_augment_fn(augment))
-        val_ds = SegmentationDataset(self.project_dir, split="val", image_size=image_size)
+        train_ds = SegmentationDataset(self.project_dir, split="train", image_size=image_size, augment_fn=_resolve_augment_fn(augment), views=self.views or None)
+        val_ds = SegmentationDataset(self.project_dir, split="val", image_size=image_size, views=self.views or None)
 
         # num_classes already set in __init__ via project.json
         train_size = len(train_ds)
@@ -197,8 +221,8 @@ class Trainer:
             pass
         drop = train_size > batch_size
         self._image_size = image_size
-        self.train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=True, prefetch_factor=2, drop_last=drop)
-        self.val_loader = DataLoader(val_ds, batch_size=min(batch_size, val_size), shuffle=False, num_workers=4, pin_memory=True, prefetch_factor=2, drop_last=False)
+        self.train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=0, pin_memory=True, drop_last=drop)
+        self.val_loader = DataLoader(val_ds, batch_size=min(batch_size, val_size), shuffle=False, num_workers=0, pin_memory=True, drop_last=False)
 
         # Compute class weights from cached masks (no DataLoader pass)
         class_counts = np.zeros(self.num_classes, dtype=np.float64)
@@ -218,7 +242,8 @@ class Trainer:
 
 
     def init_model(self):
-        self.model = create_model(self.num_classes, self.model_name).to(self.device)
+        self.model = create_model(self.num_classes, self.model_name,
+                                 in_channels=self.in_channels).to(self.device)
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=1e-4)
 
     def train_epoch(self, batch_callback=None):
@@ -406,17 +431,79 @@ class Trainer:
         except Exception:
             pass
 
+    def _本次版本目录(self):
+        """每次训练一个独立版本目录（对标友商：SG_Tiny_V1/V2/V3…）。
+
+        为什么：原来只有 best_model.pth / last_model.pth 两个文件，
+        第二次训练就把上一次覆盖了 —— 历史模型全丢，没法回头比。
+        现在每次训练建 `models/V<n>_<模型名>/`，里面存 best/last + training_info.json。
+        版本号按已有目录扫描取 max+1，不依赖时间戳（跨机器也稳定）。
+        """
+        if getattr(self, "_版本目录缓存", None):
+            return self._版本目录缓存
+        import re as _re
+        根 = os.path.join(self.project_dir, "models")
+        os.makedirs(根, exist_ok=True)
+        序号 = []
+        try:
+            for d in os.listdir(根):
+                if os.path.isdir(os.path.join(根, d)):
+                    m = _re.match(r"V(\d+)_", d)
+                    if m:
+                        序号.append(int(m.group(1)))
+        except Exception:
+            pass
+        n = (max(序号) if 序号 else 0) + 1
+        路径 = os.path.join(根, "V%d_%s" % (n, self.model_name))
+        os.makedirs(路径, exist_ok=True)
+        self._版本目录缓存 = 路径
+        return 路径
+
     def save_model(self, filename):
         os.makedirs(os.path.join(self.project_dir, "models"), exist_ok=True)
         path = os.path.join(self.project_dir, "models", filename)
+        _版本留档 = None
+        try:
+            _版本留档 = self._本次版本目录()
+        except Exception as _e:
+            print('[版本留档] 建版本目录失败（只存 best/last）：%s' % _e, flush=True)
         torch.save({
             "model_state_dict": self.model.state_dict(),
             "optimizer_state_dict": self.optimizer.state_dict(),
             "num_classes": self.num_classes,
             "classes": self.classes,
             "model_name": self.model_name,
+            # ★ 推理端 `_build_model` 会读这两个字段来复现同样的输入通道
+            #   （predictor.py: `ck.get("in_channels")` 与工程 views 交叉校验）
+            "in_channels": self.in_channels,
+            "views": list(self.views),
             "history": self.history,
         }, path)
+
+        # ★ 版本留档（对标友商 SG_Tiny_V1/V2/V3…）：往 models/V<n>_<模型名>/ 也放一份，
+        #   并写 training_info.json 记下这次训练用的模型/类别/超参/指标 ——
+        #   以后想回头找"上次那个 mIoU 更好的版本"就不用翻日志了。
+        if _版本留档:
+            try:
+                import json as _json
+                import shutil as _sh
+                import time as _time
+                _sh.copy2(path, os.path.join(_版本留档, filename))
+                _info = {
+                    "版本目录": os.path.basename(_版本留档),
+                    "模型": self.model_name,
+                    "类别": list(self.classes or []),
+                    "输入尺寸": (list(self.image_size) if isinstance(self.image_size, (tuple, list))
+                                 else getattr(self, "image_size", None)),
+                    "保存时间": _time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "最近指标": (self.history[-1] if getattr(self, "history", None) else None),
+                    "历史条数": len(getattr(self, "history", []) or []),
+                }
+                with open(os.path.join(_版本留档, "training_info.json"), "w",
+                          encoding="utf-8") as _f:
+                    _json.dump(_info, _f, ensure_ascii=False, indent=2)
+            except Exception as _e:
+                print('[版本留档] 留档失败（best/last 已存）：%s' % _e, flush=True)
 
     def export_for_inference(self):
         """Export model to TorchScript and ONNX for faster inference."""

@@ -392,11 +392,32 @@ class AnnotationCanvas(QWidget):
     def _cache_qimage(self):
         if self.image is None:
             return
-        arr = np.array(self.image)
+        # ★★ 显示用降采样（2026-10-22 卡顿修复）
+        #   原来这里把 **原图全尺寸** 转 QImage：5472×3648 = 60MB，
+        #   每次点图 + 每次重绘都要缩放它 → 点一张 5K 图要 300-500ms。
+        #   画布最多显示 ~1500px，2048 的预览在 ≤2 倍缩放下**肉眼无差别**；
+        #   放大到更高倍时 paintEvent 会改用原图裁剪（见 _crop_qimage_at）。
+        #   注意：self.image 仍是**原图全尺寸**，所有标注坐标照旧在原图空间计算。
+        w0, h0 = self.image.size
+        MAXD = 2048
+        scale = min(1.0, float(MAXD) / float(max(w0, h0)))
+        if scale < 1.0:
+            # ⚠️ 用 BILINEAR 不用 LANCZOS：38MP 图上 LANCZOS 要 150ms，
+            #    BILINEAR 只要 20ms；预览图看不出差别（放大时另走原图裁剪）。
+            disp = self.image.resize((max(1, int(w0 * scale)), max(1, int(h0 * scale))),
+                                     Image.BILINEAR)
+        else:
+            disp = self.image
+        arr = np.array(disp)
         h, w, ch = arr.shape
         qimg = QImage(arr.data, w, h, 3 * w, QImage.Format_RGB888)
         self._cached_qimage = qimg.copy()
-        self._cached_gray = np.mean(arr.astype(np.float32), axis=2)
+        self._disp_image = disp                    # 降采样 PIL（叠加层按它合成，省 7 倍时间）
+        self._cached_qimage_scale = scale          # 显示图 / 原图 的比例
+        self._cached_qimage_full = None            # 高倍放大时才懒加载
+        # 灰度均值只为"灰度视图"，大图按缩略图算就够准，省几百毫秒
+        arr32 = np.array(disp, dtype=np.float32)
+        self._cached_gray = np.mean(arr32, axis=2)
 
     def _build_overlay(self):
         """Build annotation overlay (原图 + 掩膜 的合成图)。
@@ -413,22 +434,56 @@ class AnnotationCanvas(QWidget):
         if not self._overlay_dirty and self._cached_overlay_qimage is not None:
             return
         h, w = self.mask.shape
-        img_arr = np.array(self.image).astype(np.float32)
-        ih, iw = img_arr.shape[:2]
-        if h != ih or w != iw:
-            self._cached_overlay_qimage = None
+
+        def _旧路径():
+            """原来的做法：按原图尺寸合成（20MP 要 3 秒，但对任何输入都安全）。"""
+            img_arr = np.array(self.image).astype(np.float32)
+            ih, iw = img_arr.shape[:2]
+            if h != ih or w != iw:
+                self._cached_overlay_qimage = None
+                return
+            from core.mask_overlay import build_overlay_rgba, composite_over_image
+            rgba = build_overlay_rgba(self.mask,
+                                      show_classes=bool(getattr(self, "_show_annotation", True)),
+                                      show_ignore=bool(getattr(self, "_show_ignore", True)))
+            if rgba is None:
+                self._cached_overlay_qimage = None
+                return
+            overlay = composite_over_image(img_arr, rgba)
+            qimg = QImage(overlay.data, iw, ih, 3 * iw, QImage.Format_RGB888)
+            self._cached_overlay_qimage = qimg.copy()
+            self._overlay_dirty = False
+
+        # ★★ 快速路径：叠加层只是给人看的，按**显示尺寸**（≤2048）合成就够。
+        #   实测 20MP 合成 3137ms → 2048 约 450ms（快 7 倍）。
+        #   任何一步出问题都退回 _旧路径 —— 宁慢不崩。
+        try:
+            from core.mask_overlay import build_overlay_rgba, composite_over_image
+            _disp = getattr(self, "_disp_image", None)
+            if _disp is None:
+                raise RuntimeError("no _disp_image")
+            iw2, ih2 = _disp.size
+            if (ih2, iw2) != self.mask.shape:
+                _m = np.array(Image.fromarray(np.ascontiguousarray(self.mask)).resize(
+                    (iw2, ih2), Image.NEAREST))
+            else:
+                _m = self.mask
+            img_arr2 = np.array(_disp).astype(np.float32)
+            rgba2 = build_overlay_rgba(_m,
+                                       show_classes=bool(getattr(self, "_show_annotation", True)),
+                                       show_ignore=bool(getattr(self, "_show_ignore", True)))
+            if rgba2 is None:
+                self._cached_overlay_qimage = None
+                return
+            overlay2 = composite_over_image(img_arr2, rgba2)
+            qimg2 = QImage(np.ascontiguousarray(overlay2).data, iw2, ih2, 3 * iw2,
+                           QImage.Format_RGB888)
+            self._cached_overlay_qimage = qimg2.copy()
+            self._overlay_dirty = False
             return
-        from core.mask_overlay import build_overlay_rgba, composite_over_image
-        rgba = build_overlay_rgba(self.mask,
-                                  show_classes=bool(getattr(self, "_show_annotation", True)),
-                                  show_ignore=bool(getattr(self, "_show_ignore", True)))
-        if rgba is None:
-            self._cached_overlay_qimage = None
+        except Exception:
+            _旧路径()
             return
-        overlay = composite_over_image(img_arr, rgba)
-        qimg = QImage(overlay.data, w, h, 3 * w, QImage.Format_RGB888)
-        self._cached_overlay_qimage = qimg.copy()
-        self._overlay_dirty = False
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -687,22 +742,36 @@ class AnnotationCanvas(QWidget):
         if mask is None or self.image is None:
             return None
         h, w = mask.shape
-        iw, ih = self.image.size
-        if h != ih or w != iw:
-            return None
+        # ★★ 按**显示尺寸**（≤2048）合成（2026-10-22 空格卡顿第二步）
+        #   原来按原图 20MP 合成：光 np.array(image).astype(float32) 就 400ms，
+        #   39 个连通域的 findContours 又要 1 秒+ → 按空格切显示卡 2 秒。
+        #   叠加层只是给人看的，用显示图尺寸完全够（和标注叠加层同一套思路）。
+        _disp = getattr(self, "_disp_image", None)
+        if _disp is None:
+            _disp = self.image
+        iw, ih = _disp.size
+        if (h, w) != (ih, iw):
+            mask = np.array(Image.fromarray(np.ascontiguousarray(mask)).resize(
+                (iw, ih), Image.NEAREST))
+            h, w = mask.shape
         cache_key = (id(mask), with_background, self.current_image_path)
         if cache_key in self._pred_overlay_cache:
             return self._pred_overlay_cache[cache_key]
         import cv2
         from core.config import CLASS_COLORS
         if with_background:
-            img = np.array(self.image).astype(np.float32).copy()
+            img = np.array(_disp).astype(np.float32).copy()
             alpha = 0.45
         else:
             # Transparent RGBA: annotation shows through
             img = np.zeros((h, w, 4), dtype=np.float32)
             alpha = 0.55
-        for c in range(1, 255):
+        # ★★ 只遍历**实际出现过的类别**（2026-10-22 空格卡顿修复）
+        #   原来写死 `for c in range(1, 255)`：20MP 上光 `mask == c` 这步就 1424ms，
+        #   再加 findContours/putText 要 3 秒 —— 按空格切换预测显示就卡死。
+        #   实际一张图通常只有 2-3 类，改用 np.unique 只跑这几类，降到几十毫秒。
+        _标签们 = []      # (label, cx, cy) —— 等转成 uint8 之后再画字
+        for c in [int(v) for v in np.unique(mask) if int(v) > 0]:
             region = (mask == c)
             if not region.any():
                 continue
@@ -728,8 +797,19 @@ class AnnotationCanvas(QWidget):
                     if M["m00"] > 0:
                         cx, cy = int(M["m10"] / M["m00"]), int(M["m01"] / M["m00"])
                         label = getattr(self, "_pred_classes", ["bg"] + [f"c{i}" for i in range(1, 256)])[c] if hasattr(self, "_pred_classes") and c < len(self._pred_classes) else f"c{c}"
-                        cv2.putText(img, label, (cx - 20, cy), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
+                        # ⚠️ cv2.putText 只能画在 uint8 图上，而 img 现在是 float32
+                        #   （要用来做 alpha 混合）—— 原来直接画会抛
+                        #   `img.depth() == CV_8U` 断言失败，with_background=True 这条路径一直是坏的。
+                        #   改成先收集，等转成 uint8 后再统一画。
+                        _标签们.append((label, cx, cy))
         result = np.clip(img, 0, 255).astype(np.uint8)
+        # 类别标签在 uint8 结果上画（必须在转换之后）
+        for _lb, _cx, _cy in _标签们:
+            try:
+                cv2.putText(result, _lb, (_cx - 20, _cy), cv2.FONT_HERSHEY_SIMPLEX,
+                            0.5, (255, 255, 255), 1, cv2.LINE_AA)
+            except Exception:
+                pass
         self._pred_overlay_cache[cache_key] = result
         return result
 
@@ -740,30 +820,48 @@ class AnnotationCanvas(QWidget):
             self._pred_stats_cache = {}
             return
         import numpy as _np
+        # ★★ 全部在**显示尺寸**（≤2048）上算（2026-10-22 白屏转圈真凶）
+        #   原来直接在 20MP 上：np.mean(20MP×3)≈500ms，逐类 IoU 又是几次 20MP 与/或，
+        #   一次 hover 要 2-3 秒 —— 空格开预测后鼠标一悬停就白屏。
+        #   统计只用于悬浮提示，按缩放算完全够；面积/半径再按比例还原成原图尺度。
+        _disp = getattr(self, "_disp_image", None)
+        _scale = 1.0
+        if _disp is not None:
+            dw, dh = _disp.size
+            if (dh, dw) != mask.shape:
+                _scale = float(mask.shape[1]) / float(dw)
+                mask = _np.array(Image.fromarray(_np.ascontiguousarray(mask)).resize(
+                    (dw, dh), Image.NEAREST))
+        _ann_small = self.mask
+        if _ann_small is not None and _disp is not None and _ann_small.shape != mask.shape:
+            _ann_small = _np.array(Image.fromarray(_np.ascontiguousarray(_ann_small)).resize(
+                (_disp.size[0], _disp.size[1]), Image.NEAREST))
+        _img_src = _disp if _disp is not None else self.image
+        _gray = None
+        if _img_src is not None:
+            _arr = _np.array(_img_src)
+            _gray = _np.mean(_arr, axis=2) if _arr.ndim == 3 else _arr.astype(_np.float64)
         stats = {}
         for cid in _np.unique(mask):
             if cid == 0:
                 continue
             region = (mask == cid)
-            area = int(region.sum())
+            area = int(round(float(region.sum()) * (_scale ** 2)))   # 还原到原图像素
             avg_gray = 0.0
-            if self.image is not None:
-                img_arr = _np.array(self.image)
-                gray = _np.mean(img_arr, axis=2) if img_arr.ndim == 3 else img_arr.astype(_np.float64)
-                if gray.shape[:2] == region.shape[:2]:
-                    try:
-                        avg_gray = float(gray[region].mean())
-                    except IndexError:
-                        pass
+            if _gray is not None and _gray.shape[:2] == region.shape[:2]:
+                try:
+                    avg_gray = float(_gray[region].mean())
+                except IndexError:
+                    pass
             radius = int(_np.sqrt(area / _np.pi))
             # IoU: find best-matching annotation class (not all classes combined)
             iou_val = "?"
-            if self.mask is not None and self.mask.shape == mask.shape:
+            if _ann_small is not None and _ann_small.shape == mask.shape:
                 best_iou = 0.0
-                for ac in _np.unique(self.mask):
+                for ac in _np.unique(_ann_small):
                     if ac == 0:
                         continue
-                    ann_region = (self.mask == ac)
+                    ann_region = (_ann_small == ac)
                     inter = (region & ann_region).sum()
                     union = (region | ann_region).sum()
                     if union > 0:

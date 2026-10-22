@@ -273,11 +273,24 @@ class Predictor:
             return create_multiview_model(
                 model_name, self.num_classes, self.views, pretrained=False,
                 unet_base=int(ck.get("unet_base", 16)), unet_depth=int(ck.get("unet_depth", 4)))
+        # ★ 2026-10-21：单视图也支持 unet（和 training/models.py 的 create_model 对齐）
+        if model_name == "unet":
+            from training.multiview import MultiViewUNet
+            _in = ck.get("in_channels") or ck.get("in_ch") or 3
+            print(f"[Predictor] 单视图 U-Net：in_channels={_in} "
+                  f"base={ck.get('unet_base', 16)} depth={ck.get('unet_depth', 4)}", flush=True)
+            return MultiViewUNet(int(_in), self.num_classes,
+                                 base=int(ck.get("unet_base", 16)),
+                                 depth=int(ck.get("unet_depth", 4)))
         if model_name not in ("deeplabv3", "lraspp", "fcn"):
             raise RuntimeError(
-                f"Unknown model: {model_name}（单视图工厂只支持 deeplabv3/lraspp/fcn；"
+                f"Unknown model: {model_name}（单视图工厂只支持 deeplabv3/unet/lraspp/fcn；"
                 f"若这是三视图 unet 权重，请确认工程 project.json 里的 views 字段）")
-        return create_model(self.num_classes, model_name)
+        # ★ 单视图分支也要认权重记的通道数（2026-10-15）：三图工程若是用 GUI 的
+        #   单视图 trainer 训的（走的是本分支），权重首层是 9 通道；
+        #   这里若还按 3 通道建模，load_state_dict 会因形状不符而失败或被 strict=False 悄悄跳过。
+        _ck_in = int(ck.get("in_channels") or 3)
+        return create_model(self.num_classes, model_name, in_channels=_ck_in)
 
     @torch.inference_mode()
     def predict_multiview(self, view_images, tile=256, stride=None, return_overlay=False):
@@ -426,7 +439,11 @@ class Predictor:
             else:
                 # Windows: try cudagraphs backend (no Triton needed)
                 try:
-                    self.model = torch.compile(self.model, mode="reduce-overhead", backend="cudagraphs")
+                    # ★ cudagraphs 后端**不接受 mode 参数** —— 原来传了
+                    #   mode="reduce-overhead"，于是 torch 直接报
+                    #   TypeError: CudagraphsBackend.__call__() got an unexpected keyword argument 'mode'
+                    #   → 每次启动都"编译失败、退回 eager"，Compiled 后端等于没用。
+                    self.model = torch.compile(self.model, backend="cudagraphs")
                     print("[Compiled] Using cudagraphs backend (Windows)")
                     print("[Compiled] Warming up...")
                     dummy = torch.randn(1, 3, 512, 512, device=self.device)
@@ -439,13 +456,29 @@ class Predictor:
                     print(f"[Compiled] cudagraphs failed: {e}, using eager mode")
 
     @torch.inference_mode()
-    def predict(self, image, return_overlay=False, tiled=True, scale=1.0):
+    def predict(self, image, return_overlay=False, tiled=True, scale=1.0, mode="fine"):
+        """mode: "fast" = 缩到 1024 整图一次前向（对标友商 100ms 档）；
+                 "fine" = 缩到 1024 后按 200 滑窗拼回（保留细节，慢些）。
+        调用方也可以用对象属性 `_智能模式` 预设（界面上的「推理模式」下拉就写它）。"""
+        if mode == "fine":
+            mode = getattr(self, "_智能模式", "fine") or "fine"
         """预测整图。**顺带把置信度图存到 self.last_prob**（供「推理参数」的分数过滤用）。"""
         self.last_prob = None
         if isinstance(image, np.ndarray):
             image = Image.fromarray(image)
 
         orig_w, orig_h = image.size
+        # ★★ 智能推理（2026-10-22）：大图自动缩到**长边 1024**再推。
+        #   为什么：模型是 200×200 训的，直接喂 5472×3648 会
+        #   ① 显存炸（整图激活值上 GB）② 1050ms 以上 ③ 细节本来也被缩放抹掉。
+        #   缩到 1024 后按 200（= 训练尺寸）滑窗，既快又保留细节。
+        #   长边 ≤ 1500 的图（如 200×200 小图）**原样不动**。
+        _长边 = max(orig_w, orig_h)
+        _智能缩放 = 1.0
+        if _长边 > 1500 and scale >= 1.0:
+            _智能缩放 = 1024.0 / float(_长边)
+        if _智能缩放 < 1.0:
+            scale = _智能缩放
         if scale < 1.0:
             sw, sh = max(1, int(orig_w * scale)), max(1, int(orig_h * scale))
             downsampled = image.resize((sw, sh), Image.BILINEAR)
@@ -454,10 +487,22 @@ class Predictor:
             sw, sh = orig_w, orig_h
 
         w, h = downsampled.size
-        if tiled and (w > 1024 or h > 1024):
-            pred = self._predict_tiled(downsampled)
+        # 滑窗块尺寸 = 训练尺寸 200；50% 重叠（步长 100）——
+        #   原来 25% 重叠时 1024 宽上要切 180 块，光滑窗就 900ms；
+        #   改 50% 后约 50 块，拼接缝对十字/横杠这种大目标看不出来。
+        _块 = int(getattr(self, "_智能块尺寸", 200) or 200)
+        _叠 = max(8, _块 // 2)
+        if mode == "fast":
+            # 快速档：缩到 1024 后**整图一次前向**，对标友商
+            pred = self._predict_full(downsampled, fallback_tiled=False)
+        elif tiled and (w > 1024 or h > 1024):
+            pred = self._predict_tiled(downsampled, tile_size=_块, overlap=_叠)
         elif not tiled:
-            pred = self._predict_full(downsampled, fallback_tiled=True)
+            # 精细档：大图走滑窗（块=200，与训练一致）
+            if w * h > 1500 * 1500:
+                pred = self._predict_tiled(downsampled, tile_size=_块, overlap=_叠)
+            else:
+                pred = self._predict_full(downsampled, fallback_tiled=True)
         elif self.ort_session is not None:
             # ONNX Runtime
             img_tensor = TF.to_tensor(downsampled).unsqueeze(0).numpy()

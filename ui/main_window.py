@@ -723,7 +723,9 @@ class MainWindow(QMainWindow):
                     with open(os.path.join(pd, "images", f"{key}_{v}.json"), "w", encoding="utf-8") as jf:
                         json.dump({"version": "5.3.1", "flags": {}, "imageData": None,
                                    "imagePath": f"{key}_{v}.jpg", "imageWidth": W, "imageHeight": H,
-                                   "imageSet": "Train", "shapes": shapes}, jf, ensure_ascii=False)
+                                   # ★ 空白标注不预设任何数据集：以前写 "Train"，
+                                  #   于是导入 500 张图就有 500 张"未标注的训练集"，全都不该训。
+                                  "imageSet": "", "shapes": shapes}, jf, ensure_ascii=False)
                 _Img.fromarray(mask, mode="L").save(
                     os.path.join(pd, "annotations", f"{key}_te_0_mask.png"))
             self._refresh_projects()
@@ -786,10 +788,13 @@ class MainWindow(QMainWindow):
         #    所以改成非独占、互斥自己管 —— 见 `_on_left_tab_clicked`。
         self._left_tabs = QButtonGroup(self); self._left_tabs.setExclusive(False)
         #: 左栏模块页下标（与右栏 `_right_tab_index` 同一个套路：按名字取，不写死数字）
-        self._left_tab_index = {"proj": 0, "img": 1}
+        self._left_tab_index = {"proj": 0, "img": 1, "task": 2}
         tab_defs = [
             ("工程管理", "工程列表：打开 / 新建 / 删除工程", "proj"),
             ("图像管理", "图片列表与标记统计", "img"),
+            # 任务队列（2026-10-16，对标友商同名模块）：训练/推理统一登记，
+            # 显示进度与剩余时间，每行可取消。串行执行（单卡并发只会 OOM）。
+            ("任务队列", "训练 / 推理任务队列：进度、剩余时间、取消", "task"),
         ]
         self._left_tab_btns = {}
         for icon_text, tooltip, key in tab_defs:
@@ -1029,6 +1034,19 @@ class MainWindow(QMainWindow):
 
         # 收口：图片页进栈 → 栈进主体 → 主体进左栏
         self._left_stack.addWidget(page_img)       # 1
+
+        # ── 页 2：任务队列 ──
+        from ui.task_queue import TaskQueue
+        from ui.task_queue_panel import TaskQueuePanel
+        if getattr(self, "_task_queue", None) is None:
+            self._task_queue = TaskQueue()
+        page_task = QWidget()
+        pt = QVBoxLayout(page_task); pt.setContentsMargins(0, 0, 0, 0); pt.setSpacing(0)
+        self.task_queue_panel = TaskQueuePanel(self._task_queue, page_task)
+        self.task_queue_panel.cancel_requested.connect(self._on_task_cancel)
+        self.task_queue_panel.clear_requested.connect(self._on_task_clear)
+        pt.addWidget(self.task_queue_panel, 1)
+        self._left_stack.addWidget(page_task)      # 2
         body.addWidget(self._left_stack, 1)
         outer_layout.addLayout(body, 1)            # stretch=1：页栈吃掉整栏余高
 
@@ -1038,6 +1056,14 @@ class MainWindow(QMainWindow):
         outer_layout.addWidget(sep2)
         btn_new = QPushButton("+ New Project"); btn_new.clicked.connect(self._new_project)
         outer_layout.addWidget(btn_new)
+
+        # ★ 导入图片 —— 放在 New Project 下面（它的位置按注释要求不动）。
+        # 样式**故意不写 setStyleSheet**：主题扫描器会处理内联 qss，上次加 :disabled
+        # 选择器直接把程序搞崩了（40 秒内必退，无 traceback）。跟隔壁按钮同款最稳。
+        btn_imp = QPushButton("＋ 导入图片")
+        btn_imp.clicked.connect(self._import_images)
+        self._btn_import_images = btn_imp
+        outer_layout.addWidget(btn_imp)
 
         # 供「表格高度自适应内容」用：需要页面高度与"除表格外的其它行高度"来算可用高度
         # （见 _fit_list_height 里为什么不能直接量 table.height()）。
@@ -1928,14 +1954,15 @@ class MainWindow(QMainWindow):
 
         # Panel 2: Inference
         panel_infer = QWidget(); il = QVBoxLayout(panel_infer); il.setContentsMargins(4, 2, 2, 2)
+        # ══ ① 模型 ══
+        # ★ 顺序原来是：Model 标签 → **Scale 滑块** → model 下拉 → backend → Tiled
+        #   （下拉框被自己的标签和 Scale 隔开，看着莫名其妙）→ 现已按"标签+控件配对"重排。
         il.addWidget(QLabel("Model:"))
         self.model_combo = QComboBox(); self.model_combo.addItems(["best_model.pth", "last_model.pth"])
+        il.addWidget(self.model_combo)
         self.backend_combo = QComboBox(); self.backend_combo.addItems(["PyTorch", "Compiled", "TorchScript", "TensorRT (FP16)", "ONNX (CPU fallback)"])
         self.backend_combo.setToolTip("Inference backend")
-        self.tiled_check = QCheckBox("Tiled")
-        saved_tiled2 = self._load_ui_setting("tiled", True)
-        self.tiled_check.setChecked(saved_tiled2)
-        self.tiled_check.toggled.connect(lambda v: self._save_ui_setting("tiled", v))
+        il.addWidget(self.backend_combo)
         sl = QHBoxLayout(); sl.addWidget(QLabel("Scale:"))
         self.scale_slider = QSlider(Qt.Horizontal); self.scale_slider.setRange(25, 100)
         saved_scale = self._load_ui_setting("scale", 100)
@@ -1945,8 +1972,26 @@ class MainWindow(QMainWindow):
         self.scale_slider.valueChanged.connect(lambda v: self.scale_label.setText(f"{v/100:.2f}x"))
         sl.addWidget(self.scale_slider); sl.addWidget(self.scale_label)
         il.addLayout(sl)
-        il.addWidget(self.model_combo); il.addWidget(self.backend_combo); il.addWidget(self.tiled_check)
+        self.tiled_check = QCheckBox("Tiled")
+        # ★ 默认不勾 Tiled：200×200 的小图分块纯属开销（实测 PyTorch 7.1ms → 带 Tiled 8.7ms，慢 22%）
+        saved_tiled2 = self._load_ui_setting("tiled", False)
+        self.tiled_check.setChecked(saved_tiled2)
+        self.tiled_check.toggled.connect(lambda v: self._save_ui_setting("tiled", v))
+        il.addWidget(self.tiled_check)
+
+        # ── 分隔线 ──
+        _sep1 = QFrame(); _sep1.setFrameShape(QFrame.HLine); _sep1.setFrameShadow(QFrame.Sunken)
+        il.addWidget(_sep1)
+
+        # ══ ② 运行 ══
         il.addWidget(QPushButton("Run Inference", clicked=self._start_inference))
+        # 批量推理：走的是模型管理里那个同一个入口（_batch_inference），
+        # 按任务类型自动分发（分割/多视图/检测/分类），结果写到 <工程>/outputs/。
+        # 这里加一个更顺手的入口 —— 用户原来在「模型管理」面板最底部，得滚很远才找得到。
+        _btn_batch_all = QPushButton("批量推理（全部图片）…")
+        _btn_batch_all.setToolTip("对工程内所有图片跑一遍推理，结果写到 <工程>/outputs/")
+        _btn_batch_all.clicked.connect(self._batch_inference)
+        il.addWidget(_btn_batch_all)
         self.infer_progress = QProgressBar(); il.addWidget(self.infer_progress)
         self.infer_status = QLabel(); il.addWidget(self.infer_status)
         hil = QHBoxLayout()
@@ -1954,6 +1999,12 @@ class MainWindow(QMainWindow):
         self.btn_infer_stop.setEnabled(False); hil.addWidget(self.btn_infer_stop)
         self.infer_result_label = QLabel(""); hil.addWidget(self.infer_result_label)
         il.addLayout(hil)
+
+        # ── 分隔线 ──
+        _sep2 = QFrame(); _sep2.setFrameShape(QFrame.HLine); _sep2.setFrameShadow(QFrame.Sunken)
+        il.addWidget(_sep2)
+
+        # ══ ③ 结果过滤 ══
 
         # 推理参数（对标友商 友商平台）：按类别过滤连通域 + 全局后处理。
         # 放在推理控件下面、同一个滚动区里，改完即存到 <工程>/inference_params.json。
@@ -1989,6 +2040,61 @@ class MainWindow(QMainWindow):
         fl.addRow("K-Fold CV:", self.kfold_spin)
         self.resume_check = QCheckBox("Resume from last")
         fl.addRow("", self.resume_check)
+
+        # ══ ★ 训练参数全部开放到面板 ══
+        # 用户要求：点了 Start Training 再弹一个「Training Settings」窗太冗余，
+        # 参数应该直接摆在面板上，点按钮就开训。
+        # 这些和 TrainSettingsDialog 里的**同名同义**，只是搬到面板上常驻；
+        # 对话框类还留着（不再调用），要回退只要把 _start_training 里那两行换回去。
+        self.tr_model_combo = QComboBox()
+        # ⚠️ 只能放 create_model 真正支持的：单图工程 = deeplabv3 / fcn（training/models.py:39,49）
+        #    unet / lraspp 是**多视图工程**专用（training/multiview.py），单图选了会
+        #    ValueError: Unknown model —— 打开多视图工程时下面 _start_training 会自动换成对的列表。
+        # unet 也放进来：单图工程现在也支持（小模型，200×200 小图推理 2-3ms）
+        self.tr_model_combo.addItems(["deeplabv3", "fcn", "unet"])
+        self.tr_model_combo.setCurrentText("deeplabv3")
+        self.tr_model_combo.setToolTip("deeplabv3：默认，小目标分割稳；fcn：更轻更快")
+        fl.addRow("Model:", self.tr_model_combo)
+
+        self.tr_size_combo = QComboBox()
+        self.tr_size_combo.addItems(["256", "512", "768", "1024"])
+        self.tr_size_combo.setCurrentText("256")
+        self.tr_size_combo.setToolTip("训练输入尺寸（未开分块时 = 整图缩放到这个尺寸）。"
+                                   "200×200 的图选 256；不能再小，U-Net 4 层下采样要求能被 16 整除")
+        fl.addRow("Image Size:", self.tr_size_combo)
+
+        self.tr_mode_combo = QComboBox()
+        self.tr_mode_combo.addItems(["精细（缩到1024 + 滑窗200）", "快速（缩到1024 整图）"])
+        self.tr_mode_combo.setToolTip(
+            "精细：大图缩到长边1024后按200滑窗拼回，保留细节，慢\n"
+            "快速：大图缩到长边1024整图一次前向，对标友商，快")
+        fl.addRow("推理模式:", self.tr_mode_combo)
+
+        self.tr_loss_combo = QComboBox()
+        self.tr_loss_combo.addItems(["ce+lovasz", "cross_entropy", "lovasz", "dice"])
+        self.tr_loss_combo.setCurrentText("ce+lovasz")
+        fl.addRow("Loss:", self.tr_loss_combo)
+
+        self.tr_tile_check = QCheckBox("分块（滑窗）")
+        self.tr_tile_check.setToolTip("只对大图有意义；200×200 的图**不要勾**（整图训练就够）")
+        self.tr_tile_check.setChecked(False)
+        fl.addRow("", self.tr_tile_check)
+
+        self.tr_tile_spin = QSpinBox(); self.tr_tile_spin.setRange(64, 1024); self.tr_tile_spin.setSingleStep(64)
+        self.tr_tile_spin.setValue(256)
+        fl.addRow("滑窗大小:", self.tr_tile_spin)
+
+        self.tr_tile_stride_spin = QSpinBox(); self.tr_tile_stride_spin.setRange(10, 100); self.tr_tile_stride_spin.setValue(75)
+        fl.addRow("步长%:", self.tr_tile_stride_spin)
+
+        def _sync_tile_enabled():
+            on = self.tr_tile_check.isChecked()
+            self.tr_tile_spin.setEnabled(on)
+            self.tr_tile_stride_spin.setEnabled(on)
+            self.tr_size_combo.setEnabled(not on)
+        self.tr_tile_check.toggled.connect(_sync_tile_enabled)
+        _sync_tile_enabled()
+
         tl.addLayout(fl)
         tl.addStretch()
 
@@ -3029,6 +3135,13 @@ class MainWindow(QMainWindow):
     def _update_infer_progress(self, cur, total):
         self.infer_progress.setMaximum(total)
         self.infer_progress.setValue(cur)
+        # 同一个数字也推给任务队列行（队列页与进度条必须一致，不能各算一套）
+        ctx = getattr(self, "_active_infer_ctx", None)
+        if ctx is not None:
+            try:
+                ctx.progress(cur, total)
+            except Exception:
+                pass
         self.infer_status.setText(f"Inferring... {cur}/{total}")
 
     # ============ Project Management ============
@@ -3981,8 +4094,9 @@ class MainWindow(QMainWindow):
                             split_status = " [Test]"
                         elif v == "train":
                             split_status = " [Train]"
-                        elif has_ann:
-                            split_status = " [Train]"
+                        # ★ 注意：**没有** elif has_ann -> [Train] 了。
+                        #   用户明确要求：训练集必须自己设置，标了不等于进训练集。
+                        #   没在 train_test_split.json 里划分过的图 = 空集（split_status 保持 ""）。
             except Exception:
                 pass
 
@@ -4439,8 +4553,7 @@ class MainWindow(QMainWindow):
             headers = ["序号", "类别", "置信度", "面积", "宽度", "高度", "x1", "y1"]
             self.stats_table.setColumnCount(len(headers))
             self.stats_table.setHorizontalHeaderLabels(headers)
-            for i in range(len(headers)):
-                self.stats_table.horizontalHeader().setSectionResizeMode(i, QHeaderView.Stretch)
+            self._fit_stat_columns(self.stats_table, headers, stretch_col=1)
             self.stats_table.setRowCount(0)
             self.stats_table.setEditTriggers(QTableWidget.NoEditTriggers)
             preds = bm.pred_boxes if bm.pred_boxes else []
@@ -4465,14 +4578,15 @@ class MainWindow(QMainWindow):
                     item = QTableWidgetItem(val)
                     item.setTextAlignment(Qt.AlignCenter)
                     self.stats_table.setItem(i, j, item)
+                    # 列宽按**内容**重算一次：上面那次只按表头算，而「平均灰度」装的是三段并列值
+                    self._fit_stat_columns(self.stats_table, headers, stretch_col=1)
             return
 
         # --- Segmentation mode (original) ---
         headers = ["序号", "类别", "分数", "面积", "宽度", "高度", "周长", "半径", "平均灰度", "交并比"]
         self.stats_table.setColumnCount(len(headers))
         self.stats_table.setHorizontalHeaderLabels(headers)
-        for i in range(len(headers)):
-            self.stats_table.horizontalHeader().setSectionResizeMode(i, QHeaderView.Stretch)
+        self._fit_stat_columns(self.stats_table, headers, stretch_col=1)
         self.stats_table.setRowCount(0)
         self.stats_table.setEditTriggers(QTableWidget.NoEditTriggers)
 
@@ -4490,6 +4604,34 @@ class MainWindow(QMainWindow):
         #    推理参数里的"排序 / 最大检测个数"是按**块**定义的，一个类别一行的表
         #    根本体现不出来；友商的结果表也是逐块的。宽度/高度两列同时给出，
         #    方便直接对照推理参数里的宽度/高度区间。
+        # ★★ 标注掩膜的 unique / 分类掩膜**提到循环外**只算一次（2026-10-22 卡顿）
+        #   原来在 39 个连通域的循环里，每个都跑一次 np.unique(20MP mask) + 每类 (mask==ac)
+        #   → py-spy 采样：np.unique 独占 54%，_update_stats 占 90%+ 主线程时间
+        # ★★ 统计全部在**显示尺寸**（≤2048）上算（2026-10-22 选图卡顿）
+        #   39 个连通域 × 20MP 的 (lab==i)/findContours/灰度，一次选图要好几秒。
+        #   统计只用于填右侧表给人看，按 1/2.7 缩放算够用；面积/宽高再按 _k 还原。
+        _k = 1.0
+        try:
+            _cq = getattr(self.canvas, "_cached_qimage", None)
+            if _cq is not None and arr is not None:
+                _dw, _dh = _cq.width(), _cq.height()
+                if tuple(arr.shape[:2]) != (_dh, _dw):
+                    _k = float(arr.shape[1]) / float(_dw)
+                    arr = _np.array(Image.fromarray(_np.ascontiguousarray(arr)).resize(
+                        (_dw, _dh), Image.NEAREST))
+                    if mask is not None:
+                        mask = _np.array(Image.fromarray(_np.ascontiguousarray(mask)).resize(
+                            (_dw, _dh), Image.NEAREST))
+        except Exception:
+            _k = 1.0
+
+        _ann_cls = []
+        _ann_bin = {}
+        if mask is not None and getattr(mask, "shape", None) == getattr(arr, "shape", None):
+            _ann_cls = [int(v) for v in (set(_np.unique(mask).tolist()) - {0, 255})]
+            for _ac in _ann_cls:
+                _ann_bin[_ac] = (mask == _ac)
+
         rows = []
         for cid in sorted(set(_np.unique(arr).tolist()) - {0, 255}):
             cls_name = (pred_classes[int(cid)] if pred_classes and int(cid) < len(pred_classes)
@@ -4498,6 +4640,11 @@ class MainWindow(QMainWindow):
             n_lab, lab, stats, _cents = _cv2.connectedComponentsWithStats(binary, 8)
             for i in range(1, n_lab):
                 x, y, bw, bh, area = (int(v) for v in stats[i])
+                # 缩放过的话，把几何量还原成原图尺度（_k≥1）
+                if _k > 1.0:
+                    x, y = int(round(x * _k)), int(round(y * _k))
+                    bw, bh = int(round(bw * _k)), int(round(bh * _k))
+                    area = int(round(area * _k * _k))
                 if area <= 0:
                     continue
                 region = (lab == i)
@@ -4517,12 +4664,14 @@ class MainWindow(QMainWindow):
                     gray_text = "%.1f" % avg_gray
                 # IoU: 与标注里"最匹配的那个类"求交并比
                 iou_val = 0.0
-                if mask is not None and mask.shape == arr.shape:
+                if _ann_bin:
                     best = 0.0
-                    for ac in set(_np.unique(mask).tolist()) - {0, 255}:
-                        ann_region = (mask == ac)
-                        inter = (region & ann_region).sum()
-                        uni = (region | ann_region).sum()
+                    # 只在**当前连通域的包围盒**里算（原来每次都是整幅 20MP 与/或）
+                    _sub = region[y:y + bh, x:x + bw]
+                    for ac, annb in _ann_bin.items():
+                        _ann_sub = annb[y:y + bh, x:x + bw]
+                        inter = (_sub & _ann_sub).sum()
+                        uni = (_sub | _ann_sub).sum()
                         if uni > 0:
                             ciou = inter / uni
                             if ciou > best:
@@ -4564,6 +4713,44 @@ class MainWindow(QMainWindow):
                 item = QTableWidgetItem(val)
                 item.setTextAlignment(Qt.AlignCenter)
                 self.stats_table.setItem(i, j, item)
+        # ★★ 列宽只在**所有行填完之后**算一次（2026-10-22 白屏转圈真凶）
+        #   原来它被写在逐行循环里面 ⇒ 每填一行就把整张表重算一遍：
+        #   39 行 → 39 × (39 行 × 10 列读 item + 10 次 setSectionResizeMode/setColumnWidth)
+        #   ≈ 15000 次 item 访问 + 390 次重排 ⇒ 主线程被占死，界面白屏转圈。
+        #   （py-spy dump 抓到的现场就是 MainThread 停在 _fit_stat_columns 里）
+        self._fit_stat_columns(self.stats_table, headers, stretch_col=1)
+
+    # ────────── 统计表的列宽策略（三张表共用） ──────────
+    def _fit_stat_columns(self, table, headers, stretch_col=None, min_extra=10):
+        """按"**内容 + 表头谁宽用谁**"定列宽，只有名称列吃剩余宽度。
+
+        为什么不能再"全部 Stretch"（原实现）：
+          Result 表 10 列挤在右栏 ~590px ⇒ 每列才59px，而「平均灰度」要装
+          `114.5，188.2，68.3` 这种三视图并列值（约 120px）⇒ **被截成"114.5，…"**，
+          功能等于白做；表头"平均灰度/交并比"四个字本身也放不下。
+        为什么用 ResizeToContents 而不是"按表头文字宽 + 余量"：
+          **只按表头定宽会漏掉内容** —— 「平均灰度」表头 4 字约 58px 就够，
+          但单元格里是三段并列值（120px+）⇒ 照样被截。ResizeToContents 同时看表头与单元格。
+        stretch_col（类别名）用 Stretch 吃余量；列宽总和超过表格宽度时 Qt 自动出横向
+        滚动条 —— **可滚动好过被截断**。
+        """
+        from PyQt5.QtGui import QFontMetrics
+        hdr = table.horizontalHeader()
+        fm = QFontMetrics(hdr.font())
+        hdr.setMinimumSectionSize(max(24, fm.horizontalAdvance("序号") + 8))
+        for i, text in enumerate(headers):
+            if stretch_col is not None and i == stretch_col:
+                hdr.setSectionResizeMode(i, QHeaderView.Stretch)
+            else:
+                # Interactive + 手动给"内容宽"：ResizeToContents 在每次填数据后都要
+                # 重算全部行，89 行 Result 表在切图时会明显卡；这里按当前内容算一次即可。
+                need = fm.horizontalAdvance(str(text)) + min_extra
+                for r in range(table.rowCount()):
+                    it = table.item(r, i)
+                    if it is not None:
+                        need = max(need, fm.horizontalAdvance(it.text()) + min_extra)
+                hdr.setSectionResizeMode(i, QHeaderView.Interactive)
+                table.setColumnWidth(i, int(need))
 
     # ────────── 「平均灰度」：三视图工程按视图并列（2026-10-15）──────────
     def _view_paths_of_current_image(self):
@@ -4662,8 +4849,7 @@ class MainWindow(QMainWindow):
             headers = ["序号", "类别", "面积", "宽度", "高度", "x1", "y1"]
             self.ann_table.setColumnCount(len(headers))
             self.ann_table.setHorizontalHeaderLabels(headers)
-            for i in range(len(headers)):
-                self.ann_table.horizontalHeader().setSectionResizeMode(i, QHeaderView.Stretch)
+            self._fit_stat_columns(self.ann_table, headers, stretch_col=1)
             self.ann_table.setRowCount(0)
             self.ann_table.setEditTriggers(QTableWidget.NoEditTriggers)
             boxes = bm.boxes if bm.boxes else []
@@ -4686,14 +4872,15 @@ class MainWindow(QMainWindow):
                     item = QTableWidgetItem(val)
                     item.setTextAlignment(Qt.AlignCenter)
                     self.ann_table.setItem(i, j, item)
+                    # 列宽按**内容**重算一次：上面那次只按表头算，而「平均灰度」装的是三段并列值
+                    self._fit_stat_columns(self.ann_table, headers, stretch_col=1)
             return
 
         # --- Segmentation mode (original) ---
         headers = ["序号", "类别", "面积", "周长", "半径", "平均灰度"]
         self.ann_table.setColumnCount(len(headers))
         self.ann_table.setHorizontalHeaderLabels(headers)
-        for i in range(len(headers)):
-            self.ann_table.horizontalHeader().setSectionResizeMode(i, QHeaderView.Stretch)
+        self._fit_stat_columns(self.ann_table, headers, stretch_col=1)
         self.ann_table.setRowCount(0)
         self.ann_table.setEditTriggers(QTableWidget.NoEditTriggers)
 
@@ -4737,6 +4924,8 @@ class MainWindow(QMainWindow):
                 item = QTableWidgetItem(val)
                 item.setTextAlignment(Qt.AlignCenter)
                 self.ann_table.setItem(i, j, item)
+                # 列宽按**内容**重算一次：上面那次只按表头算，而「平均灰度」装的是三段并列值
+                self._fit_stat_columns(self.ann_table, headers, stretch_col=1)
 
 
     def _toggle_detection_mode(self):
@@ -7432,11 +7621,43 @@ class MainWindow(QMainWindow):
         images_dir = os.path.join(project_dir, "images")
         if not os.path.exists(images_dir):
             return QMessageBox.warning(self, "Warning", "No images directory found")
-        # Show training settings dialog（传入工程目录，自动识别三视图工程）
-        dlg = TrainSettingsDialog(self, project_dir=project_dir)
-        if dlg.exec_() != dlg.Accepted:
-            return
-        settings = dlg.get_settings()
+        # ★ 不再弹「Training Settings」窗（用户要求）：参数直接读面板上那几个控件。
+        #   要回退成弹窗模式：把下面这段换回
+        #   dlg = TrainSettingsDialog(self, project_dir=project_dir)
+        #   if dlg.exec_() != dlg.Accepted: return
+        #   settings = dlg.get_settings()
+        try:
+            from training.multiview_gui import is_multiview_project
+            _is_mv_here = bool(is_multiview_project(project_dir))
+        except Exception:
+            _is_mv_here = False
+        # ★ 按工程类型校正模型下拉：多视图才有 unet/lraspp，单图只有 deeplabv3/fcn。
+        #   （不校正的话，单图工程选到 unet 会 ValueError: Unknown model: unet）
+        _want = (["unet", "lraspp", "deeplabv3", "fcn"] if _is_mv_here
+                 else ["deeplabv3", "fcn", "unet"])
+        _cur = [self.tr_model_combo.itemText(i) for i in range(self.tr_model_combo.count())]
+        if _cur != _want:
+            _keep = self.tr_model_combo.currentText()
+            self.tr_model_combo.blockSignals(True)
+            self.tr_model_combo.clear()
+            self.tr_model_combo.addItems(_want)
+            self.tr_model_combo.setCurrentText(_keep if _keep in _want else _want[0])
+            self.tr_model_combo.blockSignals(False)
+
+        settings = {
+            "epochs": self.epochs_spin.value(),
+            "batch_size": self.batch_spin.value(),
+            "model": self.tr_model_combo.currentText(),
+            "image_size": int(self.tr_size_combo.currentText()),
+            "loss": self.tr_loss_combo.currentText(),
+            "k_folds": self.kfold_spin.value(),
+            "resume": self.resume_check.isChecked(),
+            "is_multiview": _is_mv_here,
+            "tile": self.tr_tile_check.isChecked(),
+            "tile_size": self.tr_tile_spin.value(),
+            "tile_stride": self.tr_tile_stride_spin.value(),
+            "tile_mode": "slide",
+        }
         epochs = settings.get("epochs", 200)
         batch_size = settings.get("batch_size", 8)
         model_name = settings.get("model", "deeplabv3")
@@ -7491,7 +7712,26 @@ class MainWindow(QMainWindow):
             win.activateWindow()
         except Exception:
             pass
-        def run():
+        def _queue_run_progress(ctx):
+            """队列适配层：跑真正的训练，并把 epoch 进度回灌给队列行。
+
+            为什么要有这层：trainer 的 progress_callback 原来只喂 UI 进度条，
+            队列要的是**同一个**数字（两处各算一套必然对不上）。
+            """
+            _qctx = ctx
+
+            def _cb(c, t):
+                try:
+                    _qctx.progress(c, t)
+                except Exception:
+                    pass
+                self.progress_signal.emit(c, t)
+
+            run(_qctx)
+
+        def run(_qctx=None):
+            _cb = (lambda c, t: (_qctx.progress(c, t), self.progress_signal.emit(c, t))) \
+                if _qctx is not None else (lambda c, t: self.progress_signal.emit(c, t))
             try:
                 self.trainer.train(
                     epochs=epochs, batch_size=batch_size,
@@ -7499,9 +7739,11 @@ class MainWindow(QMainWindow):
                     augment=augment, k_folds=cv_folds, resume=resume,
                     stop_check=lambda: self._stop_flag,
                     log_callback=lambda msg: self.log_signal.emit(msg),
-                    progress_callback=lambda c, t: self.progress_signal.emit(c, t),
+                    progress_callback=_cb,
                     plot_callback=lambda h: self.chart_signal.emit(h),
-                    batch_callback=lambda b, t, l: (self.batch_signal.emit(b, t, l), self._log_batch_progress(b, t, l)))
+                    batch_callback=lambda b, t, l: (self.batch_signal.emit(b, t, l), self._log_batch_progress(b, t, l)),
+                    # 被队列取消时置回标志，trainer 在下个 epoch 边界会停下
+                    )
                 self.log_signal.emit("Training complete!")
                 self.train_status.setText("Complete")
             except Exception as e:
@@ -7510,11 +7752,45 @@ class MainWindow(QMainWindow):
                 self.log_signal.emit(traceback.format_exc())
                 self.train_status.setText("Failed")
             finally:
+                # ★ 复位 _stop_flag：否则"取消一次"之后**后面所有任务都会秒停**
+                #   （标志是全局的，原先只靠停止按钮路径复位，队列路径漏了）
+                self._stop_flag = False
                 self.btn_train_stop.setEnabled(False)
                 self.train_progress.setVisible(False)
                 self._cleanup_trainer()
 
-        threading.Thread(target=run, daemon=True).start()
+        # ★ 进任务队列（2026-10-16）：队列串行执行，因此"再点一次训练"不会并发抢显存，
+        #   而是排队；每行可单独取消。原来是直接起线程 -> 第二个任务把 self.trainer 顶掉。
+        _q = getattr(self, "_task_queue", None)
+        if _q is not None:
+            _stamp = time.strftime("%Y%m%d_%H%M%S")
+            from ui.task_queue import TaskKind as _TK
+            _q.submit(_TK.TRAIN,
+                      "%s [%s]" % (model_name, _stamp),
+                      project=os.path.basename(project_dir),
+                      total=int(epochs or 0),
+                      detail="%d epochs · batch=%d" % (epochs, batch_size),
+                      run=_queue_run_progress)
+        else:
+            threading.Thread(target=run, daemon=True).start()
+
+    def _on_task_cancel(self, task_id):
+        """队列里点×：置取消标志（不强杀线程，见 task_queue 里的说明）。"""
+        q = getattr(self, "_task_queue", None)
+        if q is None:
+            return
+        t = q.get(task_id)
+        if t is not None:
+            # 训练/推理共用_stop_flag，正在跑的那个也要真的停下来
+            self._stop_flag = True
+            q.request_cancel(task_id)
+            self.log("已请求取消任务：%s" % t.title)
+
+    def _on_task_clear(self):
+        q = getattr(self, "_task_queue", None)
+        if q is not None:
+            q.clear_finished()
+            self.log("已清空任务队列的历史记录")
 
     def _start_det_training(self):
         """Start detection model training."""
@@ -7762,6 +8038,12 @@ class MainWindow(QMainWindow):
         try:
             from inference.predictor import Predictor
             predictor = Predictor(project_dir, model_file, backend=self._backend_key())
+            # ★ 智能推理模式（快速/精细）
+            try:
+                predictor._智能模式 = ("fast" if "快速" in self.tr_mode_combo.currentText()
+                                       else "fine")
+            except Exception:
+                predictor._智能模式 = "fine"
             if getattr(predictor, "views", ()):
                 # 多视图工程：三视图按 views 顺序拼 N*3 通道，走和训练/工具菜单**同一条**路
                 pred, overlay = self._mv_infer_one(predictor, project_dir,
@@ -7885,19 +8167,53 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Error", f"Detection inference failed: {e}")
 
     def _batch_inference(self):
+        """批量推理入口：**先在任务队列登记一行**，再由队列串行执行真正的推理。
+
+        为什么要登记而不是直接跑：批量推理动辄几十秒~几分钟，原来只有一个全局进度条，
+        连跑两次就互相覆盖，也**没法单独取消**某一次。
+        登记后：进度/剩余时间在「任务队列」页可见、×可单独取消、串行保证不抢显存。
+
+        ⚠️ 进度回灌**不在这里 monkey-patch 信号的 emit**（PyQt 绑定信号改属性很脆弱），
+           而是在既有的 `_update_infer_progress` 槽里顺手推给队列 —— 一个数字两处用，
+           不各算一套（否则进度条与队列行会对不上）。
+        """
         if not self.current_project:
             return QMessageBox.warning(self, "Warning", "Please open a project first")
+        project_dir = str(self.pm.get_project_dir(self.current_project["name"]))
+        q = getattr(self, "_task_queue", None)
+        if q is None:                       # 没有队列控件时按老路走（保持能用）
+            return self._dispatch_batch_inference(project_dir)
+
+        from ui.task_queue import TaskKind as _TK
+        kindname = ("分类" if self._cls_mode else "OCR" if self._ocr_mode
+                    else "检测" if self._detection_mode else "分割")
+
+        def _run(ctx):
+            self._stop_flag = False
+            self._active_infer_ctx = ctx
+            try:
+                self._dispatch_batch_inference(project_dir)
+                if not ctx.canceled:
+                    ctx.progress(max(1, ctx.task.total or 1), ctx.task.total or 1)
+            finally:
+                self._active_infer_ctx = None
+                self._stop_flag = False
+
+        q.submit(_TK.INFER,
+                 "批量推理·%s [%s]" % (kindname, time.strftime("%H%M%S")),
+                 project=os.path.basename(project_dir), total=0,
+                 detail="排队中…", run=_run)
+
+    def _dispatch_batch_inference(self, project_dir):
+        """按当前工程类型分派到对应的批量推理实现（队列只管"排队/取消/进度"）。"""
         if self._cls_mode:
             return self._start_cls_batch_inference()
         if self._ocr_mode:
             return self._run_ocr_batch()
         if self._detection_mode:
             return self._start_det_batch_inference()
-        project_dir = str(self.pm.get_project_dir(self.current_project["name"]))
-        if self._detection_mode:
-            self._run_det_batch_inference(project_dir)
-        else:
-            self._run_seg_batch_inference(project_dir)
+        return self._run_seg_batch_inference(project_dir)
+
     def _run_seg_batch_inference(self, project_dir):
         model_file = self.model_combo.currentText()
         model_path = os.path.join(project_dir, "models", model_file)
@@ -7934,12 +8250,29 @@ class MainWindow(QMainWindow):
         )
         def run():
             try:
-                if not hasattr(self, "_infer_times"):
+                if not hasattr(self, "_infer_times") or self._infer_times is None:
                     self._infer_times = {}
+                # ★ 批量推理原来**不记耗时**：只初始化了 _infer_times，从没往里写 →
+                #   列表「耗时ms」列整列空白（单图推理那条路 8043 行是有写的）。
+                #   这里用"相邻两次回调的时间差"当每张图的耗时 —— 回调是每张处理完才发一次，
+                #   所以差值就是这张图跑完的时间（含读图/预处理/推理，和单图口径一致）。
+                _t_prev = [time.time()]
                 def on_progress(i, total, path, frame, err):
                     base = os.path.splitext(os.path.basename(path))[0]
+                    _now = time.time()
+                    _ms = (_now - _t_prev[0]) * 1000.0
+                    _t_prev[0] = _now
                     if err is None:
-                        self.log_signal.emit("[%d/%d] %s" % (i, total, base))
+                        # ★ 列表「耗时ms」用**纯推理**（和友商同一口径）；
+                        #   总耗时（含读图/存盘）只写进日志，方便判断瓶颈在哪。
+                        _meta = getattr(frame, "meta", None) or {}
+                        _pure = _meta.get("infer_ms")
+                        _total = _meta.get("total_ms")
+                        self._infer_times[base] = round(float(_pure), 1) if _pure is not None else round(_ms, 1)
+                        self.log_signal.emit("[%d/%d] %s  推理 %sms / 总 %sms" % (
+                            i, total, base,
+                            ("%.1f" % _pure) if _pure is not None else "?",
+                            ("%.1f" % _total) if _total is not None else "?"))
                     else:
                         self.log_signal.emit("[%d/%d] %s: FAILED - %s" % (i, total, base, err))
                     self.infer_progress_signal.emit(i, total)
@@ -7948,6 +8281,8 @@ class MainWindow(QMainWindow):
                 self.log_signal.emit("Batch inference complete! Results: %s" % out_dir)
                 self.infer_status.setText("Complete")
                 self._pred_count_cache_key = None  # force re-scan outputs
+                # ★ 刷新图片列表：让「耗时ms」（和重新扫描出来的「结果/分数」）立刻显示出来
+                self.refresh_list_signal.emit()   # 类里定义的信号（见 428 行）
                 threading.Thread(target=self._load_output_stats_async, args=(project_dir,), daemon=True).start()
             except Exception as e:
                 import traceback
@@ -8070,7 +8405,12 @@ class MainWindow(QMainWindow):
                     count += 1
                     base = os.path.splitext(img_name)[0]
                     # Extract classification label and split from 友商平台Flow format
-                    base_data = data.get("baseData", [])
+                    # ★ 有标注才允许分训练/测试集；没标注的一律不分（= 空集，不参与训练）
+                    _shapes = data.get("shapes") or []
+                    if not _shapes:
+                        base_data = []
+                    else:
+                        base_data = data.get("baseData", [])
                     if base_data and isinstance(base_data, list):
                         cat = base_data[0].get("category", "")
                         ds = base_data[0].get("dataSet", "")

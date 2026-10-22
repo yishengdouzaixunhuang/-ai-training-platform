@@ -64,6 +64,15 @@ def main():
     except Exception:
         pass
 
+    # ★ 任务栏图标：Windows 默认按宿主进程（pythonw.exe）取图标 → 会显示 Python 的蛇。
+    #   给进程一个独立 AppUserModelID，任务栏就会独立成组、改用窗口自己的图标。
+    try:
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+            'Arthur.AITrainingPlatform.v1')
+    except Exception:
+        pass
+
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
     # 滚轮守卫：数字框/下拉框不再被滚轮改值，滚轮改为滚动外层面板

@@ -56,11 +56,17 @@ class SegInfer(Node):
             image = np.array(Image.open(frame.path).convert("RGB"))
         if image is None:
             raise ValueError("SegInfer: 输入无图像")
+        # ★ 纯推理计时：**只包住 predict()**
+        #   读图（上面那行 Image.open）和存盘都在外面 → 这里出来的数
+        #   才是和友商"2ms"同一个口径，能直接比。
+        import time as _time
+        _t0 = _time.time()
         pred, overlay = predictor.predict(
             image, return_overlay=True,
             tiled=bool(self.params["tiled"]),
             scale=float(self.params["scale"]),
         )
+        _infer_ms = (_time.time() - _t0) * 1000.0
         nf = frame.clone_with(result={
             "mask": pred,
             "overlay": overlay,
@@ -68,4 +74,8 @@ class SegInfer(Node):
             # 置信度图：给 SegFilter 的"分数"过滤用（后端没提供时为 None）
             "prob": getattr(predictor, "last_prob", None),
         })
+        try:
+            nf.meta["infer_ms"] = round(_infer_ms, 1)
+        except Exception:
+            pass
         return nf

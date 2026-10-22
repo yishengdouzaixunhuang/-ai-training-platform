@@ -63,11 +63,18 @@ class BatchRunner:
                 break
             frame = Frame(path=path, meta=dict(meta))
             err: Optional[Exception] = None
+            import time as _time
+            _t_all = _time.time()
             try:
                 runner = Runner(self.flow)
                 frame = runner.run(frame)
             except Exception as e:  # noqa: BLE001 - 单张失败不中断批次
                 err = e
+            # ★ 整张图总耗时（读图→推理→后处理→写结果），和上面的纯推理耗时对照用
+            try:
+                frame.meta["total_ms"] = round((_time.time() - _t_all) * 1000.0, 1)
+            except Exception:
+                pass
             outputs.append((path, frame, err))
             if on_progress is not None:
                 try:
