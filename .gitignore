@@ -98,3 +98,4 @@ platform_error.log
 _dlg_shots/
 _ui_render/
 .ui_settings.json
+启动日志.txt
