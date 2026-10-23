@@ -282,6 +282,8 @@ class Trainer:
         batches = 0
         intersections = torch.zeros(self.num_classes).to(self.device)
         unions = torch.zeros(self.num_classes).to(self.device)
+        # 各类在**真值**里出现过的像素数：mIoU 只在这些类上平均
+        gt_pixels = torch.zeros(self.num_classes).to(self.device)
 
         with torch.no_grad():
             for images, masks in tqdm(self.val_loader, desc="验证", ncols=80):
@@ -294,16 +296,34 @@ class Trainer:
                 batches += 1
 
                 preds = outputs.argmax(1)
+                # ★★ 2026-10-22 修：**ignore 像素必须整体剔除**。
+                #   原来 `unions[c] += (pred_c | mask_c)` 里 pred_c 包含了"落在 ignore 区的预测"，
+                #   而 mask_c 在那些位置恒为 0 ⇒ 分子不进、分母照加，
+                #   IoU 被系统性压低（本工程 ignore 占 3%~14% 面积，能把 mIoU 拉下去一大截）。
+                #   用户标 IGNORE 的语义就是"这块我不标，别拿它算账"——
+                #   训练损失里已经剔了（CE ignore_index / Lovasz 剔除），**指标也必须剔**。
+                valid = masks != 255
                 for c in range(self.num_classes):
-                    pred_c = (preds == c)
-                    mask_c = (masks == c)
+                    pred_c = (preds == c) & valid
+                    mask_c = (masks == c) & valid
                     intersections[c] += (pred_c & mask_c).sum().float()
                     unions[c] += (pred_c | mask_c).sum().float()
+                    gt_pixels[c] += (masks == c).sum().float()
 
         avg_loss = total_loss / max(batches, 1)
         ious = intersections / (unions + 1e-8)
-        miou = ious.mean().item()
-        per_class = {c: ious[c].item() for c in range(self.num_classes)}
+        # ★★ 2026-10-22 第二个指标 bug：**图上根本没出现的类别不能按 0 计入平均**。
+        #   这张验证图（上大面_OK_011）真值只有 background + Ps，Zw/Hh 一个像素都没有，
+        #   旧代码仍把它们的 IoU(0) 算进 mean ⇒ mIoU 天花板被人为压到 0.5，
+        #   实测 (0.974 + 0 + 0 + 0.554)/4 = 0.382，而真实表现是 0.764。
+        #   标准做法（mmseg 等）：只对**真值里出现过**的类别求平均（union > 0）。
+        #   ⚠️ 注意这只影响"报告出来的指标"，不影响训练与选模逻辑本身。
+        # ⚠️ 判据必须是"**真值里**出现过"，不能是 `unions > 0`：
+        #   模型在 GT 没有的类上乱预测时 union 也会 > 0，那类就会被算进来（实测踩过）。
+        present = gt_pixels > 0
+        miou = ious[present].mean().item() if bool(present.any()) else 0.0
+        per_class = {c: (ious[c].item() if bool(present[c]) else float("nan"))
+                     for c in range(self.num_classes)}
         return avg_loss, miou, per_class
 
     def train(self, epochs=50, batch_size=4, image_size=(512, 512), loss_name="cross_entropy", augment="none",

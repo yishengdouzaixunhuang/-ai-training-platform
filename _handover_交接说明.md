@@ -277,3 +277,43 @@
     ⇒ 已 `pip uninstall onnxruntime-gpu onnx` 并删除 `models/model.onnx`，环境复原。
     ⚠️ 以后想再试 ORT，直接测**整图端到端**，别只看单块前向——单块数字会骗人。
     ⚠️ 真的要再快，方向是**更小的网络**（友商 "SGTiny" 那种），不是换运行时。
+
+28. **训练时 val mIoU 的两个指标 bug（2026-10-22，用户问 IGNORE 语义时顺手挖出）**
+    ① **ignore 像素没从 IoU 分母剔除**：`unions[c] += (pred_c | mask_c)` 里 pred_c 含
+       "落在 ignore 区的预测"，而 mask_c 在那恒 0 ⇒ 分子不进、分母照加，IoU 被系统性压低。
+       （训练损失侧一直是对的：CE 用 `ignore_index=255`，Lovasz 用 `_flatten_probas` 剔除。）
+       修：先算 `valid = masks != 255`，`pred_c/mask_c` 都 `& valid`。
+    ② **图上没出现的类别被按 0 计入平均**：`ious.mean()` 把 Zw/Hh 的 0 也算进去。
+       本工程 val 图只有 bg+Hh ⇒ mIoU 天花板被人为压到 0.5。
+       修：只在**真值里出现过**的类上平均（`gt_pixels > 0`）。
+       ⚠️ 判据别写成 `unions > 0` —— 模型在 GT 没有的类上乱预测时 union 也会 >0，
+          那类会被算进来（我先写错一次，实测才发现）。
+    修完后同一模型的真实指标：bg 0.645 / Hh **0.006** / mIoU 0.3255
+    —— 数字终于可信，但结论没变：Hh 基本没学会。
+    ⚠️ 还有个坑：`prepare_data()` 是 `rng.shuffle` 后取 20% 当 val ⇒ **随机 1 张图**。
+       抽到哪张，指标就取决于那张图里有哪些类，跨轮次不可比。要可比必须显式划分。
+
+29. **平均灰度精度自校验（合成数据集 + 探针）**
+    `_gen_gray_testset.py` 生成 28 张 512×512：背景固定 255，前景 200×200 的平均灰度
+    从 0 覆盖到 255（含 127.5 / 63.5 这类半像素值）；前景用「固定种子随机置换取前 n 个」
+    抖动（base/base+1），40000 像素 ⇒ 分辨率 1/40000，任意两位小数真值都精确成立。
+    真值表在 `manifest.csv`，工程可直接被平台打开（images + labelme json + annotations/_mask.png）。
+    `_probe_gray_accuracy.py` 走**平台自己的** `_update_ann_stats()` / `_update_stats()`
+    读「平均灰度」单元格，与真值比对：28 张全部误差 0.0000。
+    ⚠️ 造这个集时踩到两个坑，以后改它要注意：
+       ① 多边形右下角写 `X0+BOX` 会 fillPoly 出 201×201（多一圈 255 背景），
+          真值必须按**光栅化后的区域**算，掩膜也要用 `shapes_to_mask` 生成才同源；
+       ② 抖动不能用棋盘（只有一半像素可抬，frac 最大 0.5，183.6 会变成 183.5）。
+
+30. **JSON 已存但 `annotations/<base>_mask.png` 不跟着更新**（2026-10-23 用户实拍）
+    现象：用户给 `上大面_NG_划痕裂纹磕伤_008` 新画了 Hh×2 + Ps×1，JSON 里 3 个缺陷都在
+    （mtime 09:39:40），但 `_mask.png` 里**只有 background + ignore**，缺陷全缺。
+    原因：`_auto_save_json()` 每次编辑后只写 JSON；`_mask.png` 只在
+    「导入标注」或手动 `save_mask()` 时生成 ⇒ 掩膜长期滞后于 JSON。
+    影响面：训练读 `SegmentationDataset._load_mask`（**优先读 JSON**）所以没被污染；
+    但任何读 `_mask.png` 的地方（评估工具、外部脚本）会拿到缺了缺陷的"真值"。
+    修：① `ui/main_window.py` 新增 500ms 防抖定时器 → `_sync_mask_png_for_current()`，
+    标注改动后自动把当前图掩膜写回（630×400 约 3ms，20MP 约 40ms）；
+    ② 已按 JSON 重建该工程所有不一致掩膜（只 008 一个不一致，`[0,255]` → `[0,2,3,255]`）。
+    ⚠️ 历史工程若怀疑掩膜陈旧，用同样的比对方式扫一遍：
+       逐图 `shapes_to_mask(JSON)` 与现有 `_mask.png` 比对，不等才重写。

@@ -1313,6 +1313,19 @@ class MainWindow(QMainWindow):
         self._ann_refresh_timer.timeout.connect(self._refresh_annotation_views)
         self.canvas.mask_changed.connect(lambda: self._ann_refresh_timer.start())
 
+        # ★★ 2026-10-22：**标注改动后同步重生成 annotations/<base>_mask.png**。
+        #   原来只有 `_auto_save_json()` 在每次编辑后写 JSON，`_mask.png` 只在
+        #   「导入标注」或手动 `save_mask()` 时生成 ⇒ 掩膜会长期滞后于 JSON。
+        #   实测：用户给 008 新画了 Hh×2 + Ps×1，JSON 已经是 3 个缺陷，
+        #   而 _mask.png 里只剩 background + ignore（缺陷全缺）——
+        #   训练走 JSON 侥幸没事，但评估工具/任何读 mask.png 的地方都会拿错真值。
+        #   防抖 500ms、每串操作只写一次盘（630×400 约 3ms，20MP 约 40ms）。
+        self._mask_png_timer = QTimer()
+        self._mask_png_timer.setSingleShot(True)
+        self._mask_png_timer.setInterval(500)
+        self._mask_png_timer.timeout.connect(self._sync_mask_png_for_current)
+        self.canvas.mask_changed.connect(lambda: self._mask_png_timer.start())
+
         # 横向标注工具栏（画布上方）
         self.annotation_toolbar = AnnotationToolbar()
         self.annotation_toolbar.mode_selected.connect(self._set_annotation_mode)
@@ -2685,7 +2698,8 @@ class MainWindow(QMainWindow):
         bar = QHBoxLayout(); bar.setSpacing(3)
         self.model_list_table = QTableWidget()
         self.model_list_table.setColumnCount(4)
-        self.model_list_table.setHorizontalHeaderLabels(["模型", "类别", "大小", "时间"])
+        # 「来源」列：工程内 / 版本留档 / 链接（对应友商那句 GPU/CPU/iGPU 的信息位）
+        self.model_list_table.setHorizontalHeaderLabels(["模型", "来源", "大小", "时间"])
         self.model_list_table.verticalHeader().setDefaultSectionSize(20)
         self.model_list_table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.model_list_table.setAlternatingRowColors(True)
@@ -2694,55 +2708,225 @@ class MainWindow(QMainWindow):
         self.model_list_table.itemDoubleClicked.connect(self._on_model_row_activated)
         btn = QPushButton("刷新"); btn.setFixedWidth(46)
         btn.clicked.connect(self._refresh_model_list)
+        # ★ 2026-10-23：对标友商「模型管理」——支持把**工程外**的 .pth 链接进来
+        #   （不复制文件，只登记绝对路径；友商标成 GPU/CPU/iGPU，我们标来源）
+        b_link = QPushButton("链接本地模型…")
+        b_link.setToolTip("把工程目录之外的 .pth 登记到本列表（只记录路径，不复制文件）")
+        b_link.clicked.connect(self._link_local_model)
         b_batch = QPushButton("批量推理（全部图片）…")
         b_batch.setToolTip("对工程内所有图片跑一遍推理，结果写到 outputs/")
         b_batch.clicked.connect(self._batch_inference)
-        bar.addWidget(b_batch); bar.addWidget(QLabel("双击设为推理模型"))
+        bar.addWidget(b_batch); bar.addWidget(b_link)
+        bar.addWidget(QLabel("双击设为推理模型"))
         bar.addStretch(); bar.addWidget(btn)
         v.addWidget(self.model_list_table); v.addLayout(bar)
         return w
 
-    def _refresh_model_list(self, force=True):
-        """重新扫描 <工程>/models 下的模型文件。
+    # ── 链接模型登记（工程外 .pth，只存路径，不复制文件）──
+    def _linked_models_file(self):
+        pd = self._project_dir
+        return os.path.join(pd, "models", ".linked_models.json") if pd else None
 
-        ⚡ 带指纹缓存：目录内容（文件名+大小+时间）没变就直接返回。
-        这个函数会被 `_refresh_image_info`（切图/保存后都会跑）调用，
-        没有缓存的话每次切图都要 stat 一遍模型目录 —— 有模型时还要读几百 MB。
+    def _load_linked_models(self):
+        """{显示名: 绝对路径}。读失败就当空。"""
+        p = self._linked_models_file()
+        if not p or not os.path.exists(p):
+            return {}
+        try:
+            with open(p, "r", encoding="utf-8") as f:
+                d = json.load(f)
+            return {str(k): str(v) for k, v in (d or {}).items()}
+        except Exception:
+            return {}
+
+    def _save_linked_models(self, d):
+        p = self._linked_models_file()
+        if not p:
+            return
+        try:
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            with open(p, "w", encoding="utf-8") as f:
+                json.dump(d, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            self.log(f"[模型] 保存链接失败: {type(e).__name__}: {e}")
+
+    def _model_display_to_path(self):
+        """显示名 -> 真实路径（工程内模型 + 链接模型）。
+
+        推理/combo 只认"名字"，所以统一在这里翻译一次；
+        链接模型的名字是别名，真实路径是工程外的绝对路径。
+        """
+        m = getattr(self, "_model_name_map", None)
+        if m is None:
+            m = {}
+            self._model_name_map = m
+        return m
+
+    def _link_local_model(self):
+        """把工程目录之外的 .pth 链接进模型列表（只登记路径）。"""
+        if not self._project_dir:
+            return QMessageBox.information(self, "链接模型", "先打开一个工程。")
+        paths, _ = QFileDialog.getOpenFileNames(
+            self, "选择要链接的模型（可多选）", "",
+            "模型文件 (*.pth *.pt);;所有文件 (*)")
+        if not paths:
+            return
+        d = self._load_linked_models()
+        added = 0
+        for p in paths:
+            p = os.path.abspath(p)
+            name = "🔗 " + os.path.basename(p)
+            # 同名不同路径：加序号，别互相覆盖
+            base_name, k = name, 2
+            while name in d and os.path.abspath(d[name]) != p:
+                name = f"{base_name} ({k})"
+                k += 1
+            d[name] = p
+            added += 1
+        self._save_linked_models(d)
+        self._model_list_sig = None          # 强制刷新
+        self._refresh_model_list(force=True)
+        self.log(f"[模型] 已链接 {added} 个本地模型")
+        # ⚠️ 跨工程链模型最容易犯的错：别人的模型类别跟本工程不同（比如 2 类 vs 4 类），
+        #   推理能跑但语义完全是错的。这里对一下 checkpoint 里的 classes，不一致就明说。
+        try:
+            proj_cls = list(getattr(self, "_cached_classes", []) or [])
+            for p_ in paths:
+                try:
+                    ck = torch.load(os.path.abspath(p_), map_location="cpu", weights_only=False)
+                    ck_cls = [str(c) for c in (ck.get("classes") or [])]
+                    if proj_cls and ck_cls and ck_cls != proj_cls:
+                        QMessageBox.warning(
+                            self, "类别不一致",
+                            "模型 %s 的类别与本工程不同：\n\n工程：%s\n模型：%s\n\n"
+                            "仍会链接，但推理结果的类别语义会对不上，别拿它出正式结果。"
+                            % (os.path.basename(p_), proj_cls, ck_cls))
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+    def _unlink_selected_models(self):
+        """把选中的链接模型从列表里移除（只删登记，不删磁盘文件）。"""
+        tbl = getattr(self, "model_list_table", None)
+        if tbl is None:
+            return
+        rows = sorted({i.row() for i in tbl.selectedIndexes()}, reverse=True)
+        if not rows:
+            return QMessageBox.information(self, "移除链接", "先在列表里选中链接模型。")
+        d = self._load_linked_models()
+        removed = 0
+        for r in rows:
+            name = tbl.item(r, 0).text() if tbl.item(r, 0) else ""
+            if name in d:
+                d.pop(name, None); removed += 1
+        self._save_linked_models(d)
+        self._model_list_sig = None
+        self._refresh_model_list(force=True)
+        self.log(f"[模型] 已移除 {removed} 个链接（磁盘文件未删除）")
+
+    def _refresh_model_list(self, force=True):
+        """重新扫描 <工程>/models（**含子目录的版本留档**）+ 链接模型。
+
+        ★★ 2026-10-23：原来只 glob `models/*.pth` 这一层，`models/V1_unet/`、
+           `models/V2_unet/` 这些**版本留档里的模型根本不在列表里** ——
+           用户看到的现象就是"只显示最新的两个"（best/last）。
+           现在递归扫 `models/**/*.pth`，版本模型显示成 `V1_unet/best_model.pth`；
+           另外把「链接本地模型」登记进来的工程外模型也一起列出来（来源列标"链接"）。
+
+        ⚡ 带指纹缓存：目录内容（名字+来源+大小+时间）没变就直接返回。
         """
         tbl = getattr(self, "model_list_table", None)
         if tbl is None:
             return
         import glob
-        rows = []
+        rows = []            # (显示名, 来源, 大小, 时间, 真实路径)
         pd = self._project_dir
         if pd:
-            for pat in ("*.pth", "*.pt", os.path.join("multiview", "*.pth"),
-                        os.path.join("detection", "*.pt"), os.path.join("classification", "*.pth")):
-                for p in glob.glob(os.path.join(pd, "models", pat)):
+            mdir = os.path.join(pd, "models")
+            seen = set()
+            for pat in ("*.pth", "*.pt", os.path.join("*", "*.pth"), os.path.join("*", "*.pt"),
+                        os.path.join("multiview", "*.pth"),
+                        os.path.join("detection", "*.pt"),
+                        os.path.join("classification", "*.pth")):
+                for p in glob.glob(os.path.join(mdir, pat)):
+                    ap = os.path.abspath(p)
+                    if ap in seen:
+                        continue
+                    seen.add(ap)
                     try:
-                        st = os.stat(p)
-                        rows.append((os.path.basename(p), "", "%.1f MB" % (st.st_size / 1024 / 1024),
-                                     time.strftime("%m-%d %H:%M", time.localtime(st.st_mtime))))
+                        st = os.stat(ap)
+                        rel = os.path.relpath(ap, mdir).replace("\\", "/")
+                        src = "版本留档" if "/" in rel else "工程"
+                        rows.append((rel, src, "%.1f MB" % (st.st_size / 1024 / 1024),
+                                     time.strftime("%m-%d %H:%M", time.localtime(st.st_mtime)), ap))
                     except Exception:
                         continue
+            # 链接模型
+            name_map = self._model_display_to_path()
+            for name, path in self._load_linked_models().items():
+                try:
+                    st = os.stat(path)
+                    rows.append((name, "链接", "%.1f MB" % (st.st_size / 1024 / 1024),
+                                 time.strftime("%m-%d %H:%M", time.localtime(st.st_mtime)), path))
+                    name_map[name] = path
+                except Exception:
+                    rows.append((name, "链接(失效)", "—", "—", path))
+                    name_map[name] = path
+        # 先按时间新→旧；再用**稳定排序**把失效链接沉底（Python sort 是稳定的）
         rows.sort(key=lambda r: r[3], reverse=True)
-        sig = tuple((r[0], r[2], r[3]) for r in rows)
+        rows.sort(key=lambda r: r[1].startswith("链接(失效)"))
+        sig = tuple((r[0], r[1], r[2], r[3]) for r in rows)
         if not force and sig == getattr(self, "_model_list_sig", None):
             return
         self._model_list_sig = sig
         tbl.setRowCount(len(rows))
         for i, r in enumerate(rows):
-            for j, val in enumerate(r):
-                it = QTableWidgetItem(val)
+            for j in range(4):
+                it = QTableWidgetItem(r[j])
                 it.setTextAlignment(Qt.AlignCenter)
+                if j == 0:
+                    it.setData(Qt.UserRole, r[4])      # 真实路径，双击时直接用
+                    if r[1].startswith("链接"):
+                        it.setToolTip(r[4])
                 tbl.setItem(i, j, it)
+        # ★ 同步「推理模型」下拉框：原来它初始化时写死 best/last 两项，
+        #   版本留档和链接模型根本选不到。这里按列表内容重建，选中项保持不变。
+        try:
+            names = [r[0] for r in rows]
+            cur = self.model_combo.currentText()
+            items = [self.model_combo.itemText(i) for i in range(self.model_combo.count())]
+            if names and names != items:
+                self.model_combo.blockSignals(True)
+                self.model_combo.clear()
+                self.model_combo.addItems(names)
+                idx = self.model_combo.findText(cur)
+                if idx < 0:
+                    idx = next((k for k, n in enumerate(names) if "best" in n.lower()), 0)
+                self.model_combo.setCurrentIndex(max(0, idx))
+                self.model_combo.blockSignals(False)
+        except Exception:
+            pass
+
+    def _resolve_model_for_use(self, name):
+        """把下拉/列表里的显示名翻成**真实路径**。
+
+        链接模型的名字是别名（前缀 🔗），真实文件在工程外；工程内与版本留档
+        直接用相对路径 join 就能找到，原样返回即可。
+        """
+        if not name:
+            return name
+        return self._model_display_to_path().get(name, name)
 
     def _on_model_row_activated(self, item):
         """双击模型列表某行 -> 把它设为推理用的模型文件。"""
         try:
-            name = self.model_list_table.item(item.row(), 0).text()
+            c0 = self.model_list_table.item(item.row(), 0)
+            name = c0.text()
+            real = c0.data(Qt.UserRole) or name
         except Exception:
             return
+        self._model_display_to_path()[name] = real
         idx = self.model_combo.findText(name)
         if idx < 0:
             self.model_combo.addItem(name); idx = self.model_combo.count() - 1
@@ -4915,6 +5099,31 @@ class MainWindow(QMainWindow):
             return arr.astype(_np.float32) / 255.0
         except Exception:
             return None
+
+    def _sync_mask_png_for_current(self):
+        """把当前图的标注掩膜同步写回 `annotations/<base>_mask.png`。
+
+        JSON 是源、mask.png 是派生产物。两者不同步的后果很隐蔽：
+        训练读 JSON 所以看不出问题，但评估/统计读 mask.png 会拿到**缺了缺陷**的真值。
+        """
+        try:
+            import numpy as _np
+            from PIL import Image as _I
+            cur = getattr(self.canvas, "current_image_path", "") or ""
+            pd_ = str(self._project_dir or "")
+            m = getattr(self.canvas, "mask", None)
+            if not (cur and pd_ and m is not None):
+                return
+            img = getattr(self.canvas, "image", None)
+            if img is not None and (m.shape[0], m.shape[1]) != (img.size[1], img.size[0]):
+                return
+            ann_dir = os.path.join(pd_, "annotations")
+            os.makedirs(ann_dir, exist_ok=True)
+            base = os.path.splitext(os.path.basename(cur))[0]
+            _I.fromarray(_np.ascontiguousarray(m).astype(_np.uint8)).save(
+                os.path.join(ann_dir, base + "_mask.png"))
+        except Exception as e:
+            self.log(f"[掩膜同步] 失败（不影响 JSON 已保存）: {type(e).__name__}: {e}")
 
     def _gray_cell_text(self, region, avg_gray):
         """两张统计表共用的「平均灰度」单元格文本。
@@ -8499,7 +8708,7 @@ class MainWindow(QMainWindow):
         threading.Thread(target=run, daemon=True).start()
 
     def _run_seg_inference_single(self, project_dir):
-        model_file = self.model_combo.currentText()
+        model_file = self._resolve_model_for_use(self.model_combo.currentText())
         model_path = os.path.join(project_dir, "models", model_file)
         if not os.path.exists(model_path):
             return QMessageBox.warning(self, "Error",
@@ -8686,7 +8895,7 @@ class MainWindow(QMainWindow):
         return self._run_seg_batch_inference(project_dir)
 
     def _run_seg_batch_inference(self, project_dir):
-        model_file = self.model_combo.currentText()
+        model_file = self._resolve_model_for_use(self.model_combo.currentText())
         model_path = os.path.join(project_dir, "models", model_file)
         if not os.path.exists(model_path):
             return QMessageBox.warning(self, "Error",
