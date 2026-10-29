@@ -9,8 +9,13 @@
 
 1. **串行，不并发**。单卡机器上并发训练只会 OOM；GPU 本来就该排队。
    队列 = 先进先出，**同一时刻只有一个 run() 在跑**（`self._running` 标记）。
-2. **不持久化**。关平台队列即丢；已完成任务的痕迹本来就有
-   （`_train_logs/*.log` 与工程 `outputs/`），不必再造一份状态文件。
+2. **持久化终态任务**（2026-10-29 改）。原设计是"不持久化，关平台即丢，
+   痕迹看 `_train_logs/*.log` 与工程 `outputs/`"。**实测这个判断站不住**：
+   用户重启后打开「任务队列」面板只看到"暂无任务"，筛「已完成」也是空的 ——
+   他不知道刚才跑过什么、跑成功没、耗时多久，还得去翻日志文件。
+   现在把**终态任务**（done/failed/canceled）写进 `.task_history.json`，
+   最多留 200 条；运行中/排队的**不存**（重启后它们已经不存在，存了反而误导）。
+   加载时若有历史 RUNNING 记录，一律降级成 CANCELED —— 那是上次没跑完就退出的残影。
 3. **取消是"请求式"**：`request_cancel()` 只置标志，真正停下来要等任务自己检查到。
    训练在 epoch 边界检查、推理在每张图后检查 ⇒ 最坏等一个 epoch/一张图。
    **绝不在队列线程里强杀线程** —— 那样会留下半个写坏的权重文件。
@@ -21,10 +26,19 @@ ETA 估算：`已完成步数 / 已用时` 线性外推。对训练用 epoch 级
 """
 from __future__ import annotations
 
+import json
+import os
 import time
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
+
+# ── 历史任务持久化 ────────────────────────────────────────────────
+# 存在项目根目录（不是工作区）：任务队列是平台级的面板，跨工程共用一份历史，
+# 每条记录自带 project 字段用于区分。
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DEFAULT_HISTORY_PATH = os.path.join(_ROOT, ".task_history.json")
+MAX_HISTORY = 200          # 只留最近 200 条，再老的自动丢弃
 
 
 class TaskKind(str, Enum):
@@ -136,11 +150,13 @@ class TaskQueue:
     UI 侧通过 `on_change` 回调刷新。
     """
 
-    def __init__(self, on_change=None):
+    def __init__(self, on_change=None, history_path=None):
         self._tasks = []                      # 全部（含已完成），按创建顺序
         self._running = None                 # 当前正在跑的 Task
         self.on_change = on_change           # callable(task_list) -> None
         self._idle_hook = None               # 队列空时调用（UI 可用来关进度条）
+        self._history_path = history_path or DEFAULT_HISTORY_PATH
+        self._load_history()                 # 把上次的终态任务读回来
 
     # ── 只读 ──
     @property
@@ -199,15 +215,87 @@ class TaskQueue:
         """清空已完成/失败/取消的项；**正在跑的不动**。"""
         self._tasks = [t for t in self._tasks
                        if t.state in (TaskState.QUEUED, TaskState.RUNNING)]
+        self._save_history()                 # 用户点了"清空"，历史文件也得清
         self._notify()
 
     def clear_all(self):
         """清空所有（先请求取消在跑的，再删历史）。"""
         self.cancel_all()
         self._tasks = []
+        self._save_history()
         self._notify()
 
     # ── 执行 ──
+    # ── 历史持久化 ──────────────────────────────────────────────
+    def _load_history(self):
+        """把上次的终态任务读回队列。
+
+        ⚠️ 运行中/排队中的记录一律降级成 CANCELED：
+           那是"上次没跑完就退出"的残影，若原样恢复，UI 会以为它还在跑。
+        """
+        try:
+            if not os.path.exists(self._history_path):
+                return
+            with open(self._history_path, "r", encoding="utf-8") as f:
+                rows = json.load(f) or []
+        except Exception:
+            return                      # 文件坏了就当没有，绝不能让队列起不来
+        if not isinstance(rows, list):
+            return
+        for r in rows:
+            try:
+                st = TaskState(str(r.get("state", "done")))
+                if st in (TaskState.RUNNING, TaskState.QUEUED):
+                    st = TaskState.CANCELED
+                t = Task(
+                    kind=TaskKind(str(r.get("kind", "other"))),
+                    title=str(r.get("title", "")),
+                    project=str(r.get("project", "")),
+                    total=int(r.get("total", 0) or 0),
+                    done=int(r.get("done", 0) or 0),
+                    state=st,
+                    detail=str(r.get("detail", "") or ""),
+                    error=str(r.get("error", "") or ""),
+                    created_at=float(r.get("created_at", 0) or 0),
+                    started_at=float(r.get("started_at", 0) or 0),
+                    finished_at=float(r.get("finished_at", 0) or 0),
+                )
+                if r.get("id"):
+                    t.id = str(r["id"])
+                self._tasks.append(t)
+            except Exception:
+                continue                # 单条坏了跳过，不连累其它
+        self._tasks.sort(key=lambda x: x.created_at)
+
+    def _save_history(self):
+        """只写终态任务（运行中的不写）。原子替换，写一半断电也不会坏文件。"""
+        try:
+            rows = []
+            for t in self._tasks:
+                if t.state in (TaskState.RUNNING, TaskState.QUEUED):
+                    continue
+                rows.append({
+                    "id": t.id,
+                    "kind": t.kind.value,
+                    "title": t.title,
+                    "project": t.project,
+                    "total": t.total,
+                    "done": t.done,
+                    "state": t.state.value,
+                    "detail": t.detail,
+                    "error": t.error,
+                    "created_at": t.created_at,
+                    "started_at": t.started_at,
+                    "finished_at": t.finished_at,
+                })
+            rows = rows[-MAX_HISTORY:]
+            tmp = self._history_path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(rows, f, ensure_ascii=False, indent=1)
+            os.replace(tmp, self._history_path)      # 原子替换
+        except Exception:
+            pass                        # 存不上不影响训练，静默即可
+
     def _pump(self):
         """有空闲且有排队项就启动下一个（**只启动一个**）。"""
         if self._running is not None:
@@ -244,6 +332,7 @@ class TaskQueue:
             finally:
                 task.finished_at = time.time()
                 self._running = None
+                self._save_history()             # 终态落盘：重启后还能看到跑过什么
                 self._notify()
                 self._pump()                     # 接力下一个
 

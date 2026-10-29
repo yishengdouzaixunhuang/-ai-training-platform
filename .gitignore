@@ -115,3 +115,7 @@ _attic/legacy/
 /_probe_*.log
 /selftest_*.py
 /*.bak*
+
+# 任务队列历史（运行时数据）
+.task_history.json
+.task_history.json.tmp
