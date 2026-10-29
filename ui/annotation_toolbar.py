@@ -69,6 +69,27 @@ QToolButton#classPick:hover { border: 1px solid #00E5FF; }
 #: ⚠️ 这里只写**度量**（indicator 尺寸/间距）；颜色（青块/灰字/勾选底色）全部写进
 #:    themes.py 的 `#layerSw` 规则 —— 内联白名单色会被 sweep_inline_styles 剥掉，
 #    剥完只剩度量，复选框就成了"一个 12px 的空方块"（同底栏滑块"占位不画"那类坑）。
+# ── 工具按钮的「选中」高亮（2026-10-28 用户反馈："选中了看不出来，背景也是白的"）──
+# 为什么单独写、为什么是这两个颜色：
+#   · 工具栏 `_QSS` 里本来有 `QToolButton:checked { background:#0E3A52 }`，但它是
+#     **控件级**样式表，而 `#0E3A52` 又在 `themes.THEME_COLORS` 白名单里 ⇒
+#     `sweep_inline_styles` 会把这句颜色剥掉，只剩一条空规则；
+#   · 剥完之后，"选中"就只剩图标由青变白 —— 而图标 On 态恒为 #FFFFFF，
+#     压在**浅色主题的白底**上等于直接消失（用户截图里选中的矩形工具就是这样，
+#     只剩一圈几乎看不见的浅灰边）。
+#   · 想靠应用级主题表兜底也不行：Qt 里控件级样式表**整段**优先于应用级，
+#     主题表写 `QToolButton#xxx:checked` 也压不过 `_QSS` 里的 `background:transparent`。
+# ⇒ 结论：颜色必须写在**控件自己**的样式表里，且**不能进白名单**，否则照样被剥。
+#   #2563EB / #1D4ED8 都不在 THEME_COLORS 里（已实测 `_is_theme_sheet() == False`），
+#   所以这段能活下来。深色主题下同样是"蓝底 + 白图标"，一样清晰。
+_TOOL_CHECK_QSS = """
+QToolButton:checked {
+    background: #2563EB;
+    border: 1px solid #1D4ED8;
+    border-radius: 5px;
+}
+"""
+
 _SW_CHECK_QSS = """
 QCheckBox#layerSw { padding: 0px 2px; margin: 0px; font-size: 12px; }
 QCheckBox#layerSw::indicator { width: 12px; height: 12px; }
@@ -86,17 +107,19 @@ _LAYERS = [
 
 
 # (id, tooltip, icon_key)
+# ★ 2026-10-28：「平移」从这个工具行**搬到常驻条最左侧**了（对标友商那对 箭头/手掌）。
+#   理由：平移是"看"的操作，不属于"画"的工具；藏在折叠工具行里，一折叠就没法拖动看图了。
+#   现在它和「指针」组成一对互斥按钮，永远看得见。快捷键 H 仍然有效（走 keyPressEvent）。
 _TOOLS = [
     ("line", "直线 (L)", "line"),
     ("rect", "矩形 (R)", "rect"),
     ("circle", "圆形 (C)", "circle"),
     ("ellipse", "椭圆 (O)", "ellipse"),
-    ("polygon", "多边形 (P)", "polygon"),
+    ("polygon", "多边形 (P)：单击逐点加 / 按住左键拖拽=套索勾勒", "polygon"),
     ("brush", "自由画笔 (B)", "brush"),
     ("eraser", "橡皮 (E)", "eraser"),
     ("ignore", "忽略区域 (I)", "ignore"),
     ("sam", "AI 智能标注 (A)", "ai"),
-    ("pan", "平移视图 (H)", "pan"),
 ]
 
 _ACTIONS = [
@@ -150,9 +173,45 @@ class AnnotationToolbar(QWidget):
         outer.setContentsMargins(6, 3, 6, 3)
         outer.setSpacing(2)
 
+        # 记住"上一次用的标注工具"：点「指针」时恢复它，而不是硬跳回画笔
+        # （否则用户选了多边形、去拖一下图、再回来，工具就丢了）
+        self._last_annot_mode = "brush"
+
         # ────────── 常驻条 ──────────
         chrome = QHBoxLayout(); chrome.setContentsMargins(0, 0, 0, 0); chrome.setSpacing(4)
         outer.addLayout(chrome)
+
+        # ── 模式切换：指针（标注）/ 手掌（拖动看图）──
+        # 2026-10-28 对标友商顶栏最左侧那一对（用户截图原话："手掌是拖动缩放，方便看图，
+        # 箭头是可以对图片进行标注"）。为什么放**常驻条最左**、而不是工具行里：
+        #   · 工具行默认是折叠的（Ctrl+B），折叠后"拖动看图"就没有任何按钮可点；
+        #   · 这两个是**正交于工具**的模式，不属于"画什么形状"。
+        self._nav_group = QButtonGroup(self)
+        self._nav_group.setExclusive(True)
+
+        def _nav_btn(obj_name, icon_key, tip, slot):
+            b = QToolButton()
+            b.setObjectName(obj_name)
+            b.setCheckable(True)
+            # 图标由 _refresh_nav_icons() 按选中态重画（选中态自带底色块，见 icons.make_nav_icon）
+            b.setIcon(icons.make_nav_icon(icon_key, active=False))
+            b.setIconSize(QSize(22, 22))
+            b.setFixedSize(28, 28)
+            b.setCursor(Qt.PointingHandCursor)
+            b.setToolTip(tip)
+            b.clicked.connect(slot)
+            self._nav_group.addButton(b)
+            chrome.addWidget(b)
+            return b
+
+        self._ptr_btn = _nav_btn("navPtr", "arrow",
+                                 "标注模式：用当前工具在图上标注",
+                                 self._on_ptr_clicked)
+        self._ptr_btn.setChecked(True)
+        self._hand_btn = _nav_btn("navHand", "hand",
+                                  "拖动模式：按住左键拖动画布看图（H）",
+                                  self._on_hand_clicked)
+        chrome.addWidget(_separator())
 
         # 展开/收起开关。用 `toggled` 而不是 `clicked`：它**就是**一个状态按钮，
         # 外部不会来 setChecked 回写（不像左栏竖排页签那种"回写会绕回"的情况），
@@ -279,6 +338,8 @@ class AnnotationToolbar(QWidget):
             btn.setIconSize(QSize(24, 24))
             btn.setFixedSize(30, 30)
             btn.setCursor(Qt.PointingHandCursor)
+            # 选中态的高亮底色（颜色刻意不进主题白名单，见 _TOOL_CHECK_QSS 的说明）
+            btn.setStyleSheet(_TOOL_CHECK_QSS)
             self._tool_group.addButton(btn)
             self._tool_buttons[tid] = btn
             btn.clicked.connect(lambda checked, m=tid: self._on_tool_clicked(m))
@@ -385,11 +446,62 @@ class AnnotationToolbar(QWidget):
     def _on_tool_clicked(self, mode):
         self.mode_selected.emit(mode)
 
+    # ---- 指针 / 手掌 模式切换（常驻条最左那对）----
+    def _on_ptr_clicked(self):
+        """指针：回到上一次用的标注工具（不是硬跳画笔）。"""
+        self.mode_selected.emit(self._last_annot_mode or "brush")
+
+    def _on_hand_clicked(self):
+        """手掌：平移看图。"""
+        self.mode_selected.emit("pan")
+
+    def _refresh_nav_icons(self):
+        """按"当前选中谁 + 当前是深/浅主题"重画这两枚图标。
+
+        选中态是**位图自带底色块**，所以换主题后必须重画一次（配色不同），
+        外部切主题时调 `refresh_nav_icons()` 即可。
+        """
+        try:
+            from ui.themes import is_light
+            light = bool(is_light())
+        except Exception:
+            light = False
+        is_pan = self._hand_btn.isChecked()
+        self._ptr_btn.setIcon(icons.make_nav_icon("arrow", active=not is_pan, light=light))
+        self._hand_btn.setIcon(icons.make_nav_icon("hand", active=is_pan, light=light))
+
+    def refresh_nav_icons(self):
+        """公开入口：切主题后调用（详见 _refresh_nav_icons）。"""
+        self._refresh_nav_icons()
+
+    def _sync_nav_mode(self, mode):
+        """把 指针/手掌 的选中态同步到当前模式。
+
+        ⚠️ 必须 blockSignals：这两个按钮是 checkable，`setChecked` 在 QButtonGroup
+        互斥里会**取消另一个**并可能回声出 clicked/toggled；本函数只做"显示同步"，
+        真正的模式切换只由用户点击触发（`mode_selected`），否则会绕回死循环。
+        """
+        is_pan = (mode == "pan")
+        for btn, want in ((self._ptr_btn, not is_pan), (self._hand_btn, is_pan)):
+            if btn.isChecked() != want:
+                btn.blockSignals(True)
+                btn.setChecked(want)
+                btn.blockSignals(False)
+        # checked 变了图标要跟着换（选中态是位图底色，不靠 QSS）
+        self._refresh_nav_icons()
+
+    def nav_mode(self):
+        """当前显示的模式：'pan' 或 'annot'（探针用）。"""
+        return "pan" if self._hand_btn.isChecked() else "annot"
+
     def set_mode(self, mode):
         """外部同步选中态（不触发 mode_selected）。"""
+        if mode != "pan":
+            self._last_annot_mode = mode
         btn = self._tool_buttons.get(mode)
         if btn is not None and not btn.isChecked():
             btn.setChecked(True)
+        self._sync_nav_mode(mode)
 
     def set_width(self, v):
         v = max(1, min(100, int(v)))

@@ -24,7 +24,15 @@ class SegInfer(Node):
         NodeParam("model_name", "模型文件", ptype="str", default="best_model.pth"),
         NodeParam("backend", "推理后端", ptype="choice",
                   choices=["pytorch", "onnx", "trt", "compiled", "torchscript"], default="pytorch"),
-        NodeParam("tiled", "分块推理", ptype="bool", default=True, tooltip="大图自动分块，避免显存不足"),
+        # ★★ 2026-10-29：`tiled_auto` 默认 True ⇒ 忽略下面那个 `tiled`，
+        #   由 Predictor 按**训练模式**自动决定要不要滑窗。界面上的 Tiled 勾选已去掉。
+        #   为什么要多一个开关而不是让 tiled=None：Flow 的 NodeParam 会用 default
+        #   把 None 覆盖成 True（实测 create_node(tiled=None).params["tiled"] == True），
+        #   而 `bool(None)` 会变成 False —— 对分块训练的模型等于强制整图，尺度直接错位。
+        NodeParam("tiled_auto", "自动匹配训练模式", ptype="bool", default=True,
+                  tooltip="开=按训练模式自动选择（推荐）；关=用手动的「分块推理」"),
+        NodeParam("tiled", "分块推理", ptype="bool", default=True,
+                  tooltip="仅在「自动匹配训练模式」关闭时生效"),
         NodeParam("scale", "缩放比例", ptype="float", default=1.0, min=0.1, max=1.0, step=0.05),
         # ★ 2026-10-22：默认**不合成 overlay**。批量推理每张要在 20MP 上合成一次
         #   RGB 叠加图（实测 0.084s/张），而批量场景里基本没人看这张 JPG ——
@@ -67,16 +75,19 @@ class SegInfer(Node):
         import time as _time
         _t0 = _time.time()
         _want_ov = bool(self.params.get("return_overlay", False))
+        # 自动模式传 None 给 Predictor（按训练模式决定）；手动模式才用 tiled 的值
+        _tiled = (None if self.params.get("tiled_auto", True)
+                  else bool(self.params.get("tiled", True)))
         if _want_ov:
             pred, overlay = predictor.predict(
                 image, return_overlay=True,
-                tiled=bool(self.params["tiled"]),
+                tiled=_tiled,
                 scale=float(self.params["scale"]),
             )
         else:
             pred = predictor.predict(
                 image, return_overlay=False,
-                tiled=bool(self.params["tiled"]),
+                tiled=_tiled,
                 scale=float(self.params["scale"]),
             )
             overlay = None

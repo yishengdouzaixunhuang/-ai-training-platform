@@ -8,9 +8,17 @@ import torchvision.transforms.functional as TF
 
 class SegmentationDataset(Dataset):
     def __init__(self, project_dir, split="train", transform=None, image_size=(512, 512), augment_fn=None,
-                 views=None):
+                 views=None, tile_size=0, tile_stride_pct=75):
         self.project_dir = project_dir
         self.transform = transform
+        # ★★ 2026-10-29：接上「滑窗大小 / 步长%」这两个原本被丢弃的参数。
+        #   `tile_size > 0` = 分块模式：块尺寸**就是**网络输入尺寸（原分辨率裁，不缩放），
+        #   与多视图 MultiViewSegDataset 的语义保持一致（那边 `_crop_view` 也是 1:1 裁）。
+        #   `tile_size = 0` = 旧行为（按 image_size 切、无重叠），保证老工程不受影响。
+        self.tile_size = int(tile_size or 0)
+        self.tile_stride_pct = float(tile_stride_pct or 75)
+        if self.tile_size > 0:
+            image_size = (self.tile_size, self.tile_size)
         # Normalize: accept int (square) or tuple (w, h)
         if isinstance(image_size, int):
             image_size = (image_size, image_size)
@@ -73,6 +81,15 @@ class SegmentationDataset(Dataset):
                 "（标注过 ≠ 进训练集 —— 训练集必须由你显式指定）")
 
         self._build_tiles()
+        # ★★ 2026-10-23：**原图缓存**（性能救命）
+        #   分块训练时 __getitem__ 原来每个 tile 都 `Image.open(...).convert("RGB")`，
+        #   一张 2700×1900 的 BMP 解码 ~30-50ms；一块图 99 个 tile ⇒ 同一张图被解码 99 次。
+        #   实测：8 分钟/轮、0.675s/批（840ms 一块），GPU 根本没吃满，全耗在重复解码上。
+        #   这里按**字节上限**做 FIFO 缓存（不是按张数），单张 20MP 的图也不会撑爆内存。
+        self._img_cache = {}
+        self._img_cache_bytes = 0
+        self._img_cache_cap = 1200 * 1024 * 1024      # ~1.2GB
+        # 掩膜本来就缓存了（_mask_cache 按样本索引），不用再管
         # Init lazy cache: None = not loaded yet
         self._mask_cache = [None] * len(self._image_samples)
         self._mask_meta = []  # (json_path, mask_path) for lazy loading
@@ -161,6 +178,34 @@ class SegmentationDataset(Dataset):
         stacked = np.concatenate(norm, axis=2)        # H,W,3N
         return torch.from_numpy(stacked).permute(2, 0, 1).contiguous() / 255.0
 
+    def _get_image_cached(self, img_path):
+        """取原图（带字节上限的 FIFO 缓存）。返回的 Image 只读，调用方不得原地修改。
+
+        ⚠️ 别改成 `@lru_cache`：Image 对象占用大，LRU 按个数计无法控制内存；
+        这里按字节数淘汰，20MP 图也不会把内存吃光。
+        """
+        _c = getattr(self, "_img_cache", None)
+        if _c is None:                      # 兜底：任何漏初始化的构造路径都不至于崩
+            _c = self._img_cache = {}
+            self._img_cache_bytes = 0
+            self._img_cache_cap = 1200 * 1024 * 1024
+        im = _c.get(img_path)
+        if im is not None:
+            return im
+        im = Image.open(img_path).convert("RGB")
+        try:
+            nbytes = im.size[0] * im.size[1] * 3
+        except Exception:
+            nbytes = 0
+        if nbytes and nbytes < self._img_cache_cap:
+            while _c and (self._img_cache_bytes + nbytes) > self._img_cache_cap:
+                _k, _im = next(iter(_c.items()))
+                self._img_cache_bytes -= _im.size[0] * _im.size[1] * 3
+                _c.pop(_k, None)
+            _c[img_path] = im
+            self._img_cache_bytes += nbytes
+        return im
+
     def _get_mask(self, sample_idx):
         """Lazy-load mask for a given sample index."""
         if self._mask_cache[sample_idx] is not None:
@@ -191,7 +236,13 @@ class SegmentationDataset(Dataset):
 
     def _build_tiles(self):
         tw, th = self.image_size
-        stride = max(1, tw)  # no overlap
+        # ★★ 2026-10-29：步长真正生效了。
+        #   tile_size>0（分块模式）⇒ 按「步长%」算重叠：75% ⇒ stride = 0.75*块宽，25% 重叠。
+        #   tile_size=0（旧行为）⇒ 仍然是 stride = 块宽（无重叠），保证老工程训练结果不漂移。
+        if self.tile_size > 0:
+            stride = max(1, int(round(tw * self.tile_stride_pct / 100.0)))
+        else:
+            stride = max(1, tw)  # no overlap（旧行为）
         self._tiles = []
         # 元素可能是 3 元组（单视图）或 4 元组（多视图，末尾多一个视图路径列表）
         for sample_idx, _entry in enumerate(self._image_samples):
@@ -213,6 +264,10 @@ class SegmentationDataset(Dataset):
         new_ds.project_dir = dataset.project_dir
         new_ds.transform = dataset.transform
         new_ds.image_size = dataset.image_size
+        # ★ 2026-10-29：分块参数必须一起继承 —— 自动切分 train/val 走的就是这里，
+        #   漏了会让 val 集退回"无重叠 256"，和 train 的块对不上。
+        new_ds.tile_size = dataset.tile_size
+        new_ds.tile_stride_pct = dataset.tile_stride_pct
         new_ds.augment_fn = dataset.augment_fn
         new_ds.split = dataset.split
         new_ds.classes = dataset.classes
@@ -220,6 +275,13 @@ class SegmentationDataset(Dataset):
         new_ds._image_samples = [dataset._image_samples[i] for i in image_indices]
         new_ds._mask_cache = [None] * len(new_ds._image_samples)
         new_ds._mask_meta = [dataset._mask_meta[i] for i in image_indices]
+        # ★ 2026-10-23：**新增字段必须在这里一起初始化**。
+        #   自动切分 train/val 时走的就是 from_image_subset，这里漏了 _img_cache ⇒
+        #   训练第一个 batch 就 AttributeError（实拍：'SegmentationDataset' object has
+        #   no attribute '_img_cache'）。缓存按子集各自独立，容量沿用父数据集的设置。
+        new_ds._img_cache = {}
+        new_ds._img_cache_bytes = 0
+        new_ds._img_cache_cap = getattr(dataset, "_img_cache_cap", 1200 * 1024 * 1024)
         new_ds._build_tiles()
         return new_ds
 
@@ -274,8 +336,8 @@ class SegmentationDataset(Dataset):
             mask_crop = np.where(mask_crop == 255, 255, np.clip(mask_crop, 0, self.num_classes - 1))
             return image_t, torch.from_numpy(mask_crop).long()
 
-        # Read image from disk, mask lazy-loaded
-        image = Image.open(img_path).convert("RGB")
+        # 原图走缓存（每个 tile 不再重复解码同一张大图），掩膜本来就懒加载
+        image = self._get_image_cached(img_path)
         mask_np_raw = self._get_mask(sample_idx)
 
         tw, th = self.image_size

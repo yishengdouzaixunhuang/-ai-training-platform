@@ -525,6 +525,14 @@ class MainWindow(QMainWindow):
 
         # Log panel in a vertical splitter so it's resizable
         self.log_widget = QTextEdit(); self.log_widget.setReadOnly(True)
+        # ★ 2026-10-23：日志控件原来**没有上限**，批量推理 489 张能堆几千行、只增不减。
+        #   2 万行足够回溯一次完整训练，再多也只是拖慢滚动。
+        try:
+            # ⚠️ QTextEdit 本身没有 setMaximumBlockCount（那是 QPlainTextEdit 的），
+            #   要挂到它的 document 上，否则这行会静默失败、日志依旧无限增长。
+            self.log_widget.document().setMaximumBlockCount(20000)
+        except Exception:
+            pass
         self.log_widget.setFont(QFont("Consolas", 9))
         self.log_widget.setMinimumHeight(0)
         self._log_splitter = QSplitter(Qt.Vertical)
@@ -1994,16 +2002,22 @@ class MainWindow(QMainWindow):
         sl.addWidget(self.scale_slider); sl.addWidget(self.scale_label)
         il.addLayout(sl)
         self.tiled_check = QCheckBox("Tiled")
-        # ★ 默认不勾 Tiled：200×200 的小图分块纯属开销（实测 PyTorch 7.1ms → 带 Tiled 8.7ms，慢 22%）
-        # ★★ 2026-10-22：**大图现在无论如何都会分块**（不勾也一样）——
-        #   "整图前向"对大图意味着先缩成一个方形，456×7041 的细长条会被压扁 7 倍，
-        #   实测焊印检出 40 → **0 块**。所以勾选框现在只决定"小图要不要也分块"。
-        self.tiled_check.setToolTip("大图始终分块（原分辨率滑窗，块=训练裁剪尺寸）；\n"
-                                    "不勾只影响小图：小图整图一次前向更快")
+        # ★★ 2026-10-29（用户要求）：**这个勾选框不再显示给用户**。
+        #   推理该不该分块，取决于**训练时是怎么训的**，不是问用户 ——
+        #   训练在原分辨率上按 tile 切块，推理却把整图缩成方形喂进去，同一块缺陷在
+        #   输入里的尺寸会差 `原图宽/tile` 倍（1500×1500 图、tile 256 ⇒ 5.86 倍），
+        #   现场表现就是"训练 mIoU 0.92、一推理啥也检不到"。
+        #   现在由 `Predictor._resolve_train_mode()` 自己判断（读 checkpoint 的
+        #   train_mode，老模型用"块尺寸 vs 图尺寸"启发式），调用处传 tiled=None。
+        #   控件本身保留（还有代码在引用它，且想强制指定时可临时 setChecked），
+        #   只是不放进界面。
+        self.tiled_check.setToolTip("已改为自动：推理方式跟随训练模式\n"
+                                    "（训练分块→滑窗推理；训练整图→整图推理）")
+        self.tiled_check.setChecked(True)
         saved_tiled2 = self._load_ui_setting("tiled", False)
         self.tiled_check.setChecked(saved_tiled2)
         self.tiled_check.toggled.connect(lambda v: self._save_ui_setting("tiled", v))
-        il.addWidget(self.tiled_check)
+        # ← 不再 il.addWidget(self.tiled_check)：界面上不显示
 
         # ── 分隔线 ──
         _sep1 = QFrame(); _sep1.setFrameShape(QFrame.HLine); _sep1.setFrameShadow(QFrame.Sunken)
@@ -2059,6 +2073,14 @@ class MainWindow(QMainWindow):
         fl = QFormLayout()
         self.epochs_spin = QSpinBox(); self.epochs_spin.setRange(1, 5000); self.epochs_spin.setValue(200)
         fl.addRow("Epochs:", self.epochs_spin)
+        # ★ 2026-10-23：早停。8 张图那种小数据集训到 2000+ 轮时 val loss 会翻几倍（实测 0.20→1.57），
+        #   后面全在把模型训坏。0 = 关闭（默认，保持老行为）。
+        self.early_stop_spin = QSpinBox()
+        self.early_stop_spin.setRange(0, 2000); self.early_stop_spin.setValue(0)
+        self.early_stop_spin.setToolTip(
+            "连续 N 轮「val loss 与 mIoU 都没改善」就自动停止训练。\n"
+            "0 = 不早停。小数据集建议 100~200。")
+        fl.addRow("早停耐心:", self.early_stop_spin)
         self.batch_spin = QSpinBox(); self.batch_spin.setRange(1, 128); self.batch_spin.setValue(8)
         fl.addRow("Batch:", self.batch_spin)
         self.kfold_spin = QSpinBox(); self.kfold_spin.setRange(1, 10); self.kfold_spin.setValue(1)
@@ -2706,6 +2728,9 @@ class MainWindow(QMainWindow):
         self.model_list_table.setMaximumHeight(140)
         self.model_list_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         self.model_list_table.itemDoubleClicked.connect(self._on_model_row_activated)
+        # ★ 2026-10-23：右键菜单（打开所在文件夹 / 复制路径 / 设为推理模型 / 移除链接）
+        self.model_list_table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.model_list_table.customContextMenuRequested.connect(self._on_model_list_context_menu)
         btn = QPushButton("刷新"); btn.setFixedWidth(46)
         btn.clicked.connect(self._refresh_model_list)
         # ★ 2026-10-23：对标友商「模型管理」——支持把**工程外**的 .pth 链接进来
@@ -2907,6 +2932,67 @@ class MainWindow(QMainWindow):
                 self.model_combo.blockSignals(False)
         except Exception:
             pass
+
+    def _model_row_path(self, row):
+        """取模型列表某行的**真实路径**（链接模型在工程外，靠 UserRole 带过来的绝对路径）。"""
+        try:
+            it = self.model_list_table.item(row, 0)
+            return (it.data(Qt.UserRole) or "") if it is not None else ""
+        except Exception:
+            return ""
+
+    def _reveal_in_explorer(self, path):
+        """在资源管理器里打开该文件所在目录并选中它（跨平台给个兜底）。"""
+        if not path or not os.path.exists(path):
+            return QMessageBox.information(
+                self, "打开文件夹",
+                "文件不存在（可能被移动或删除）：\n%s" % (path or "—"))
+        try:
+            import subprocess
+            path = os.path.normpath(path)
+            if os.name == "nt":
+                subprocess.Popen(["explorer", "/select,%s" % path])
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", "-R", path])
+            else:
+                subprocess.Popen(["xdg-open", os.path.dirname(path)])
+        except Exception as e:
+            QMessageBox.warning(self, "打开文件夹失败", "%s: %s" % (type(e).__name__, e))
+
+    def _on_model_list_context_menu(self, pos):
+        """模型列表右键菜单。"""
+        from PyQt5.QtWidgets import QMenu
+        tbl = self.model_list_table
+        row = tbl.rowAt(pos.y())
+        if row < 0:
+            return
+        tbl.selectRow(row)
+        name = tbl.item(row, 0).text() if tbl.item(row, 0) is not None else ""
+        path = self._model_row_path(row)
+        is_link = name.startswith("🔗")
+
+        m = QMenu(self)
+        a_open = m.addAction("打开所在文件夹")
+        a_copy = m.addAction("复制模型完整路径")
+        m.addSeparator()
+        a_use = m.addAction("设为推理模型")
+        a_unlink = m.addAction("移除链接（不删磁盘文件）") if is_link else None
+        act = m.exec_(tbl.viewport().mapToGlobal(pos))
+        if act is None:
+            return
+        if act is a_open:
+            self._reveal_in_explorer(path)
+        elif act is a_copy:
+            try:
+                from PyQt5.QtWidgets import QApplication as _QA
+                _QA.clipboard().setText(path)
+                self.log(f"[模型] 已复制路径：{path}")
+            except Exception:
+                pass
+        elif act is a_use:
+            self._on_model_row_activated(tbl.item(row, 0))
+        elif a_unlink is not None and act is a_unlink:
+            self._unlink_selected_models()
 
     def _resolve_model_for_use(self, name):
         """把下拉/列表里的显示名翻成**真实路径**。
@@ -3310,12 +3396,44 @@ class MainWindow(QMainWindow):
     def log(self, msg):
         self.log_signal.emit(msg)
 
+    def _log_file_path(self):
+        """UI 日志的落盘路径（按天一个文件）。
+
+        位置：源码目录下 `logs/app_YYYY-MM-DD.log`（和 启动日志.txt 同级）。
+        ⚠️ 与 `启动日志.txt` 不是一回事：那个只接 stdout/stderr（print 与崩溃栈），
+           UI 日志栏的内容从来没有任何文件承接 —— 关掉软件就丢了。
+        """
+        try:
+            root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            d = os.path.join(root, "logs")
+            os.makedirs(d, exist_ok=True)
+            return os.path.join(d, "app_%s.log" % datetime.now().strftime("%Y-%m-%d"))
+        except Exception:
+            return None
+
     def _append_log(self, msg):
         if msg == "__DET_TRAINING_DONE__":
             self._on_det_training_done()
             return
         ts = datetime.now().strftime("%H:%M:%S")
-        self.log_widget.append(f"[{ts}] {msg}")
+        line = f"[{ts}] {msg}"
+        self.log_widget.append(line)
+        # ★ 2026-10-23：**日志落盘**。原来只写控件，训练跑一晚、第二天想回看根本找不到。
+        #   每行 flush：训练中断（点停止/关窗/崩溃）也不会丢最后几十行。
+        try:
+            fh = getattr(self, "_log_fh", None)
+            if fh is None:
+                p = self._log_file_path()
+                fh = open(p, "a", encoding="utf-8") if p else False
+                self._log_fh = fh
+                if fh:
+                    fh.write("\n===== 会话开始 %s =====\n"
+                             % datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+            if fh:
+                fh.write(line + "\n")
+                fh.flush()
+        except Exception:
+            pass
 
     def _ensure_loss_window(self):
         """获取/创建独立 Loss/Acc 曲线窗口（分割/分类共用，懒创建）。"""
@@ -3359,6 +3477,12 @@ class MainWindow(QMainWindow):
         from ui.themes import apply_theme
         from PyQt5.QtWidgets import QApplication
         apply_theme(QApplication.instance(), name)
+        # 「指针 / 手掌」的选中态是**画进图标的**底色块（不靠 QSS，见 icons.make_nav_icon），
+        # 深浅主题底色不同 ⇒ 切主题后必须重画一次，否则浅色主题下还是深色块。
+        try:
+            self.annotation_toolbar.refresh_nav_icons()
+        except Exception:
+            pass
         self._save_ui_setting("theme", name)
         self.log(f"[主题] 已切换到 {name}（下次启动保持）")
 
@@ -4097,6 +4221,8 @@ class MainWindow(QMainWindow):
         text_lower = text.lower().strip()
         # 标记是"工程级"数据，按工程缓存读一次即可（列表刷新是热路径）
         self._ensure_marks_loaded()
+        # split 表缓存：每次刷新重建一次（从文件读一次即可），循环内只查表
+        self._split_map_cache = None
         sf_text = self.split_filter.currentText()
         annotated_only = self.annotated_check.isChecked()
         # 标注名字筛选：选项跟随工程类别（懒同步）
@@ -4267,15 +4393,9 @@ class MainWindow(QMainWindow):
                     pass
             if os.path.exists(json_path):
                 try:
-                    import json as _json
-                    with open(json_path, "r", encoding="utf-8") as jf:
-                        jdata = _json.load(jf)
-                    shapes = jdata.get("shapes", [])
-                    for s in shapes:
-                        lbl = s.get("label", "")
-                        if lbl and lbl != "background" and "ignore" not in lbl.lower() and "gnore" not in lbl.lower():
-                            shape_count += 1
-                            shape_labels.append(lbl)
+                    for lbl in self._cached_json_labels(json_path):
+                        shape_count += 1
+                        shape_labels.append(lbl)
                 except Exception:
                     pass
             elif os.path.exists(mask_path):
@@ -4285,6 +4405,23 @@ class MainWindow(QMainWindow):
                     shape_count = len([u for u in unique if u not in (0, 255)])
                 except Exception:
                     pass
+
+            # ★★ 2026-10-23 修「标注筛选失效」：
+            #   上面那句 `has_ann = 文件存在` 只说明"有个 json/mask 文件"，
+            #   而平台保存过空标注（画完又删、或只建了文件）会留下**空 json** ⇒
+            #   「Annotated Only」全通过（实测 46/46）、「Unannotated Only」永远是空。
+            #   而列表「标注」列显示的是**缺陷块数**（0），两边天然矛盾 —— 用户实拍。
+            #   现在收紧：必须真的有内容（缺陷块 / 掩膜非零含 ignore / 检测框 / 分类标签）。
+            if shape_count == 0 and not os.path.exists(det_json_path):
+                _mask_has_content = False
+                if os.path.exists(mask_path):
+                    try:
+                        _mk = np.array(Image.open(mask_path))
+                        _mask_has_content = bool((_mk != 0).any())
+                    except Exception:
+                        _mask_has_content = False
+                if not _mask_has_content:
+                    has_ann = False
 
             # CM cell click filter
             cm_filter = getattr(self, "_cm_filter_bases", None)
@@ -4320,13 +4457,21 @@ class MainWindow(QMainWindow):
             has_split_file = False
             try:
                 if self.current_project:
-                    pd = str(self.pm.get_project_dir(self.current_project["name"]))
-                    sf = os.path.join(pd, "train_test_split.json")
-                    if os.path.exists(sf):
+                    # ★ 2026-10-23：split 表原来在**每张图**的循环里都 json.load 一次
+                    #   （489 张 = 489 次读同一个文件，光这一项就几百 ms）。
+                    #   现在循环外读一次、循环内只查表。
+                    if self._split_map_cache is None:
+                        pd = str(self.pm.get_project_dir(self.current_project["name"]))
+                        sf = os.path.join(pd, "train_test_split.json")
+                        if os.path.exists(sf):
+                            has_split_file = True
+                            with open(sf, "r", encoding="utf-8") as sfh:
+                                self._split_map_cache = json.load(sfh) or {}
+                        else:
+                            self._split_map_cache = {}
+                    if self._split_map_cache:
                         has_split_file = True
-                        with open(sf, "r", encoding="utf-8") as sfh:
-                            sm = json.load(sfh)
-                        v = sm.get(base)
+                        v = self._split_map_cache.get(base)
                         if v == "val":
                             split_status = " [Val]"
                         elif v == "test":
@@ -4903,7 +5048,11 @@ class MainWindow(QMainWindow):
                 cnts, _ = _cv2.findContours((region.astype(_np.uint8) * 255),
                                             _cv2.RETR_EXTERNAL, _cv2.CHAIN_APPROX_SIMPLE)
                 perimeter = sum(int(_cv2.arcLength(c, True)) for c in cnts)
-                radius = int(_np.sqrt(area / _np.pi))
+                # ★ 2026-10-23：**别 int() 截断**。等效圆半径 sqrt(area/π) 保留 1 位小数，
+                #   截断会把 19.9 显示成 19、小块相对误差可达 5%。
+                #   公式保持不变 —— 推理参数里的「半径」过滤用的就是这个口径，
+                #   换成外接圆会悄悄改变用户已调好的阈值语义。
+                radius = float(_np.sqrt(area / _np.pi))
                 avg_gray = 0.0
                 if img_gray is not None and img_gray.shape[:2] == region.shape[:2]:
                     try:
@@ -4958,7 +5107,7 @@ class MainWindow(QMainWindow):
             (cls_name, sc, area, bw, bh, perim, rad, gray, iou, prob_mean) = r
             sc_txt = ("%.1f%%" % (prob_mean * 100)) if prob_mean is not None else ("%.1f%%" % (sc * 100))
             items = [str(i + 1), cls_name, sc_txt, str(area), str(bw), str(bh),
-                     str(perim), str(rad), gray, "%.3f" % iou]
+                     str(perim), ("%.1f" % rad), gray, "%.3f" % iou]
             for j, val in enumerate(items):
                 item = QTableWidgetItem(val)
                 item.setTextAlignment(Qt.AlignCenter)
@@ -5257,7 +5406,7 @@ class MainWindow(QMainWindow):
 
         self.ann_table.setRowCount(len(rows))
         for i, (cls_name, area, perim, rad, gray) in enumerate(rows):
-            items = [str(i + 1), cls_name, str(area), str(perim), str(rad), gray]
+            items = [str(i + 1), cls_name, str(area), str(perim), ("%.1f" % rad), gray]
             for j, val in enumerate(items):
                 item = QTableWidgetItem(val)
                 item.setTextAlignment(Qt.AlignCenter)
@@ -5283,6 +5432,29 @@ class MainWindow(QMainWindow):
             return False
         return True
 
+    def _cached_json_labels(self, json_path):
+        """json 里**非 ignore / 非 background** 的标签列表（每个 shape 一项，含重复）。
+
+        ★★ 2026-10-28：改走 `core.label_scan`（bytes 正则 + **进程级共享缓存**）。
+           这里原来是自建缓存 + `json.load` 整个文件，问题在于那份缓存是**本窗口私有**的：
+           首次打开工程（或换工程后缓存还是空的）时，489 个 JSON 仍要全解析一遍
+           —— 实测 `_filter_images` 里这一段就吃 **4641ms**。
+           而这些 JSON 合计 **1GB**（单个最大 18MB，内容 99.9% 是 shape 的顶点坐标），
+           本函数只需要"有哪些 label"。
+           现在与 `discover_labels()`、`ClassTableView._seg_class_ids()` 共用同一份缓存，
+           **整个工程只真扫一次**，其余全部命中。
+        """
+        from core.label_scan import scan_labels
+        info = scan_labels(json_path)
+        if info is None:
+            return []
+        out = []
+        for lbl in info[0]:
+            low = str(lbl).lower()
+            if lbl and lbl != "background" and "ignore" not in low and "gnore" not in low:
+                out.append(lbl)
+        return out
+
     def _current_json_shapes(self):
         """当前图 labelme JSON 里的真实 shape 列表（没有就返回 []）。"""
         try:
@@ -5293,8 +5465,26 @@ class MainWindow(QMainWindow):
             jp = get_json_path(cur)
             if not jp or not os.path.exists(jp):
                 return []
+            # ★ 2026-10-23：按 (路径, mtime, size) 缓存。撤销/改标注时这张表会重算，
+            #   而 4.7MP 工程的 json 有几十个 shape，光 json.load 就 45ms（实测 profile）。
+            try:
+                st = os.stat(jp)
+                _k = (jp, int(st.st_mtime), int(st.st_size))
+            except Exception:
+                _k = None
+            _cache = getattr(self, "_json_shapes_cache", None)
+            if _cache is None:
+                _cache = {}
+                self._json_shapes_cache = _cache
+            if _k is not None and _k in _cache:
+                return _cache[_k]
             shapes, _info = load_labelme_json(jp)
-            return [s for s in (shapes or []) if self._is_real_shape(s)]
+            out = [s for s in (shapes or []) if self._is_real_shape(s)]
+            if _k is not None:
+                if len(_cache) > 8:
+                    _cache.clear()
+                _cache[_k] = out
+            return out
         except Exception:
             return []
 
@@ -5412,7 +5602,7 @@ class MainWindow(QMainWindow):
             cnts, _ = cv2.findContours((sub.astype(_np.uint8) * 255),
                                        cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             perimeter = sum(int(cv2.arcLength(c, True)) for c in cnts)
-            radius = int(_np.sqrt(area / _np.pi))
+            radius = float(_np.sqrt(area / _np.pi))
             gray = self._gray_text_for_crop(x0, y0, sub)
             if not gray or gray == "—":
                 # 大图被降采样显示时，视图尺寸与这一块对不上 ⇒ 用显示图灰度兜底
@@ -5440,7 +5630,11 @@ class MainWindow(QMainWindow):
                 cnts, _ = cv2.findContours((sub.astype(_np.uint8) * 255),
                                            cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
                 perimeter = sum(int(cv2.arcLength(c, True)) for c in cnts)
-                radius = int(_np.sqrt(area / _np.pi))
+                # ★ 2026-10-23：**别 int() 截断**。等效圆半径 sqrt(area/π) 保留 1 位小数，
+                #   截断会把 19.9 显示成 19、小块相对误差可达 5%。
+                #   公式保持不变 —— 推理参数里的「半径」过滤用的就是这个口径，
+                #   换成外接圆会悄悄改变用户已调好的阈值语义。
+                radius = float(_np.sqrt(area / _np.pi))
                 gray = self._gray_text_for_crop(x, y, sub)
                 if not gray or gray == "—":
                     gd = self._gray_from_display(x, y, sub)
@@ -6562,6 +6756,8 @@ class MainWindow(QMainWindow):
                 s = _json.load(_f) or {}
             if hasattr(self, "epochs_spin"):
                 self.epochs_spin.setValue(int(s.get("epochs", 200)))
+            if hasattr(self, "early_stop_spin"):
+                self.early_stop_spin.setValue(int(s.get("early_stop_patience", 0)))
             if hasattr(self, "batch_spin"):
                 self.batch_spin.setValue(int(s.get("batch_size", 8)))
             if hasattr(self, "kfold_spin"):
@@ -6606,6 +6802,8 @@ class MainWindow(QMainWindow):
                     s = {}
             if hasattr(self, "epochs_spin"):
                 s["epochs"] = int(self.epochs_spin.value())
+            if hasattr(self, "early_stop_spin"):
+                s["early_stop_patience"] = int(self.early_stop_spin.value())
             if hasattr(self, "batch_spin"):
                 s["batch_size"] = int(self.batch_spin.value())
             if hasattr(self, "kfold_spin"):
@@ -8301,6 +8499,7 @@ class MainWindow(QMainWindow):
             pass
         settings = {
             "epochs": self.epochs_spin.value(),
+            "early_stop_patience": self.early_stop_spin.value(),
             "batch_size": self.batch_spin.value(),
             "model": self.tr_model_combo.currentText(),
             "image_size": int(self.tr_size_combo.currentText()),
@@ -8349,7 +8548,19 @@ class MainWindow(QMainWindow):
             else:
                 self.log("⚠️ 未勾选分块：整图会被缩放到训练尺寸，大图上的小缺陷可能被缩小抹掉")
         else:
-            self.trainer = Trainer(project_dir, model_name=model_name)
+            # ★★ 2026-10-29：单视图也把「分块」这三个参数接上（之前是直接丢掉的，
+            #   界面上填了滑窗 768 / 步长 75% 也永远不生效，实际恒按 Image Size 无重叠切）。
+            _tile = int(settings.get("tile_size", 256)) if settings.get("tile", False) else 0
+            _pct = int(settings.get("tile_stride", 75))
+            self.trainer = Trainer(project_dir, model_name=model_name,
+                                   tile_size=_tile, tile_stride_pct=_pct,
+                                   tile_mode=settings.get("tile_mode", "slide"))
+            if _tile:
+                self.log(f"分块训练：滑窗 {_tile}px（= 网络输入尺寸），步长 {_pct}%"
+                         f"（{100 - _pct}% 重叠）—— 原分辨率裁剪，不缩放整图")
+            else:
+                self.log(f"整图模式：按 Image Size {image_size} 切块（无重叠）"
+                         f" —— 想开重叠请勾「分块」并设滑窗大小")
 
         # ★★ 2026-10-22 修「点停止后报 'NoneType' object has no attribute 'train'」：
         #    `self.trainer` 是**共享属性**，而"上一个任务收尾清空它"和"下一个任务开始用它"
@@ -8403,6 +8614,7 @@ class MainWindow(QMainWindow):
                     epochs=epochs, batch_size=batch_size,
                     image_size=image_size, loss_name=loss_name,
                     augment=augment, k_folds=cv_folds, resume=resume,
+                    early_stop_patience=int(settings.get("early_stop_patience", 0) or 0),
                     stop_check=lambda: self._stop_flag,
                     log_callback=lambda msg: self.log_signal.emit(msg),
                     progress_callback=_cb,
@@ -8410,7 +8622,8 @@ class MainWindow(QMainWindow):
                     batch_callback=lambda b, t, l: (self.batch_signal.emit(b, t, l), self._log_batch_progress(b, t, l)),
                     # 被队列取消时置回标志，trainer 在下个 epoch 边界会停下
                     )
-                self.log_signal.emit("Training complete!")
+                # 注意：trainer 自己已经打过一条 "Training complete!"（含早停摘要之后），
+                # 这里再打一条会出现两行一模一样的日志（实拍）。只更新状态栏即可。
                 self.train_status.setText("Complete")
             except Exception as e:
                 import traceback
@@ -8729,8 +8942,9 @@ class MainWindow(QMainWindow):
                 pred, overlay = self._mv_infer_one(predictor, project_dir,
                                                    getattr(self.canvas, "current_image_path", ""))
             else:
+                # tiled=None ⇒ 由 Predictor 按**训练模式**自动决定（见 _resolve_train_mode）
                 pred, overlay = predictor.predict(self.canvas.image, return_overlay=True,
-                    tiled=self.tiled_check.isChecked(), scale=self.scale_slider.value() / 100.0)
+                    tiled=None, scale=self.scale_slider.value() / 100.0)
 
             # ── 推理参数过滤（面积/宽度/高度/角度/灰度/分数 + 孔洞填充/最大个数）──
             #    以前这一步**完全没有**：模型 argmax 出来是什么就显示什么，
@@ -9289,7 +9503,9 @@ class MainWindow(QMainWindow):
         ov = getattr(self.canvas, "_det_overlay", None)
         if ov is not None:
             ov.set_draw_enabled(checked)
-        self.canvas.setCursor(QCursor(Qt.CrossCursor if checked else Qt.OpenHandCursor))
+        # 2026-10-28：画框时也用箭头（用户明确要求"不要十字架，要箭头"）。
+        # 箭头热点就在尖端，起点仍然准；检测框本来也不是靠十字线对齐的。
+        self.canvas.setCursor(QCursor(Qt.ArrowCursor if checked else Qt.OpenHandCursor))
 
     def _det_cancel(self):
         """取消当前画到一半的框（不撤销已完成的操作）。"""

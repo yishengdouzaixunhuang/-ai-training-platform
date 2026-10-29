@@ -31,10 +31,24 @@ def _resolve_augment_fn(augment):
 
 
 class Trainer:
-    def __init__(self, project_dir, model_name="deeplabv3", device=None):
+    def __init__(self, project_dir, model_name="deeplabv3", device=None,
+                 tile_size=0, tile_stride_pct=75, tile_mode="slide"):
         self.project_dir = project_dir
         self.model_name = model_name
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        # ★★ 2026-10-29：单视图也接上「分块」这组参数。
+        #   原来界面上的「分块（滑窗）/ 滑窗大小 / 步长%」只传给了 MultiViewTrainer，
+        #   单视图走 `Trainer(project_dir, model_name=...)`，三个参数**直接被丢掉** ——
+        #   用户填了 768/75% 也不会生效，实际永远按 Image Size 无重叠切块。
+        #   tile_size>0 ⇒ 块尺寸 = 网络输入尺寸（原分辨率裁，1:1），步长按百分比算重叠。
+        self.tile_size = int(tile_size or 0)
+        self.tile_stride_pct = float(tile_stride_pct or 75)
+        self.tile_mode = str(tile_mode or "slide")
+        # 写进 checkpoint，推理端据此自动选滑窗/整图（见 predictor._resolve_train_mode）。
+        # ⚠️ 恒为 "tiled"：`SegmentationDataset._build_tiles` 目前**总是**切块
+        #   （图比 image_size 大就滑窗），连"不勾分块"也是切块、只是无重叠。
+        #   等将来真做了"整图 + 采样密度"训练，这里再按实际模式写 "full"。
+        self.train_mode = "tiled"
         
         # 读取工程信息
         with open(os.path.join(project_dir, "project.json"), "r", encoding="utf-8") as f:
@@ -160,8 +174,17 @@ class Trainer:
                 self.history["val_miou"].append(miou)
                 if miou > best_miou:
                     best_miou = miou
-                sorted_cls = sorted(per_class.items(), key=lambda x: x[1])
-                worst = ", ".join("%s:%.3f" % (self.classes[c] if c < len(self.classes) else str(c), v) for c, v in sorted_cls[:3])
+                # ⚠️ nan 表示"该组验证图里根本没有这个类"，不是"这类得了 0 分"。
+                #   直接排序会把 nan 排到最前面 ⇒ 日志看起来像"Zw 是最差的类"（实拍踩到）。
+                #   这里把 nan 剔出排名，另附一句"未出现"，避免误读。
+                _valid = [(c, v) for c, v in per_class.items() if v == v]
+                _absent = [self.classes[c] if c < len(self.classes) else str(c)
+                           for c, v in per_class.items() if v != v]
+                sorted_cls = sorted(_valid, key=lambda x: x[1])
+                worst = ", ".join("%s:%.3f" % (self.classes[c] if c < len(self.classes) else str(c), v)
+                                  for c, v in sorted_cls[:3])
+                if _absent:
+                    worst += "  (本验证图未出现: %s)" % "/".join(_absent)
                 msg = f"Fold {fold+1}/{k} Epoch {epoch+1}/{epochs} | Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f} | mIoU: {miou:.4f} | Worst: {worst}"
                 if log_callback:
                     log_callback(msg)
@@ -185,14 +208,19 @@ class Trainer:
 
     def prepare_data(self, batch_size=4, val_split=0.2, image_size=(512, 512), loss_name="cross_entropy", augment="none"):
         # Use user-assigned train/val splits from train_test_split.json
-        train_ds = SegmentationDataset(self.project_dir, split="train", image_size=image_size, augment_fn=_resolve_augment_fn(augment), views=self.views or None)
-        val_ds = SegmentationDataset(self.project_dir, split="val", image_size=image_size, views=self.views or None)
+        train_ds = SegmentationDataset(self.project_dir, split="train", image_size=image_size,
+                                       augment_fn=_resolve_augment_fn(augment), views=self.views or None,
+                                       tile_size=self.tile_size, tile_stride_pct=self.tile_stride_pct)
+        val_ds = SegmentationDataset(self.project_dir, split="val", image_size=image_size,
+                                     views=self.views or None,
+                                     tile_size=self.tile_size, tile_stride_pct=self.tile_stride_pct)
 
         # num_classes already set in __init__ via project.json
         train_size = len(train_ds)
         val_size = len(val_ds)
 
         # Fallback: if no val split assigned, split at IMAGE level (not tile level)
+        _auto_split = False
         if val_size == 0 and train_size >= 2:
             num_images = len(train_ds._image_samples)
             if num_images >= 2:
@@ -206,6 +234,7 @@ class Trainer:
                 val_ds = SegmentationDataset.from_image_subset(orig_ds, img_indices[train_img_count:])
                 train_size = len(train_ds)
                 val_size = len(val_ds)
+                _auto_split = True
                 self.num_classes = train_ds.num_classes
 
         if train_size == 0:
@@ -221,6 +250,19 @@ class Trainer:
             pass
         drop = train_size > batch_size
         self._image_size = image_size
+        # ★ 2026-10-23：把划分实情记下来（训练开始时打日志）。
+        #   用户界面上「验证集」列是 0，而这里偷偷切了 1 张 —— 不说清楚，
+        #   日志里的"(未出现: Zw/Ps)"会被读成"训练集没有这两类"（用户实拍就是这个误会）。
+        try:
+            _vn = [os.path.splitext(os.path.basename(x[0]))[0]
+                   for x in getattr(val_ds, "_image_samples", [])]
+            _tn = [os.path.splitext(os.path.basename(x[0]))[0]
+                   for x in getattr(train_ds, "_image_samples", [])]
+            self._split_info = {"auto_split": _auto_split,
+                                "train_images": len(_tn), "val_images": len(_vn),
+                                "train_names": _tn[:10], "val_names": _vn[:10]}
+        except Exception:
+            self._split_info = None
         self.train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=0, pin_memory=True, drop_last=drop)
         self.val_loader = DataLoader(val_ds, batch_size=min(batch_size, val_size), shuffle=False, num_workers=0, pin_memory=True, drop_last=False)
 
@@ -329,7 +371,11 @@ class Trainer:
     def train(self, epochs=50, batch_size=4, image_size=(512, 512), loss_name="cross_entropy", augment="none",
               progress_callback=None, log_callback=None, resume=False,
               stop_check=None, plot_callback=None, batch_callback=None,
-              k_folds=1):
+              k_folds=1, early_stop_patience=0):
+        """early_stop_patience: 连续多少轮 val_loss 与 mIoU **都没改善**就停（0 = 关闭）。
+
+        为什么要有：8 张图那种小数据集，训到 2000+ 轮时 train loss 一路降、val loss 反而
+        翻 7 倍（实测 0.20 → 1.57），后面全是在把模型训坏 —— 纯烧时间。"""
         # K-fold cross-validation mode
         if k_folds > 1 and not resume:
             self._train_kfold(k_folds, epochs, batch_size, image_size,
@@ -338,12 +384,19 @@ class Trainer:
             return
 
         if resume:
-            ckpt_path = os.path.join(self.project_dir, "models", "last_model.pth")
-            if not os.path.exists(ckpt_path):
+            # ★★ 2026-10-23：resume **自动挑更好的起点**。
+            #   原来固定读 last_model.pth —— 但 last 是"最后一轮"的权重，早停/过拟合之后
+            #   它往往比 best 差（实测：best mIoU 0.8393@46，last 0.8324@74）。
+            #   从 last 继承等于从退化的权重继续，白跑。
+            #   现在比较两个文件**最后记录的 val_miou**，取高的那个；不复制/不修改任何文件。
+            ckpt_path, _pick_info = self._pick_resume_ckpt()
+            if not ckpt_path:
                 if log_callback:
                     log_callback("No checkpoint found, training from scratch")
                 resume = False
             else:
+                if log_callback:
+                    log_callback(_pick_info)
                 ckpt = torch.load(ckpt_path, map_location=self.device, weights_only=False)
                 ckpt_num_classes = ckpt["num_classes"]
                 ckpt_classes = ckpt["classes"]
@@ -406,13 +459,68 @@ class Trainer:
 
         self._stop_requested = False
         self._stop_check_fn = stop_check
+        self._early_stop_patience = int(early_stop_patience or 0)
         epochs = start_epoch + epochs
         self._run_epochs(epochs, batch_callback, stop_check, log_callback,
                          progress_callback, plot_callback, start_epoch)
 
+    def _pick_resume_ckpt(self):
+        """挑 resume 的起点：best_model.pth 与 last_model.pth 里"最后记录 val_miou"更高的那个。
+
+        返回 (路径 or None, 给人看的说明)。
+        不复制文件 —— 只决定从哪份权重继续，避免像以前那样手动 cp 覆盖。
+        """
+        mdir = os.path.join(self.project_dir, "models")
+        cands = []
+        for fn in ("best_model.pth", "last_model.pth"):
+            p = os.path.join(mdir, fn)
+            if not os.path.exists(p):
+                continue
+            try:
+                ck = torch.load(p, map_location="cpu", weights_only=False)
+                mi = (ck.get("history") or {}).get("val_miou") or []
+                last_val = float(mi[-1]) if mi else -1.0
+                cands.append((last_val, len(mi), fn, p))
+            except Exception:
+                continue
+        if not cands:
+            return None, ""
+        # 按"最后记录的 mIoU"降序；并列时取轮数多的（多训过总归信息更多）
+        cands.sort(key=lambda t: (t[0], t[1]), reverse=True)
+        best = cands[0]
+        skip = cands[1] if len(cands) > 1 else None
+        msg = "Resume 起点：%s（记录 %d 轮，最后一轮 val mIoU %.4f）" % (best[2], best[1], best[0])
+        if skip:
+            msg += "；已跳过 %s（%d 轮，%.4f）" % (skip[2], skip[1], skip[0])
+        return best[3], msg
+
     def _run_epochs(self, epochs, batch_callback, stop_check, log_callback,
                     progress_callback, plot_callback, start_epoch=0):
         best_miou = self.history.get("val_miou", [0])[-1] if self.history.get("val_miou") else 0
+        # ── 早停 + 最佳轮次记录 ──────────────────────────────────────────
+        # 判据用"val_loss 或 mIoU 任一创新高"：只看 val_loss 会在 mIoU 还在涨的时候
+        # 提前停掉（实测本工程 val_loss 最低在第 1983 轮，而 mIoU 峰在第 2269 轮）。
+        patience = int(getattr(self, "_early_stop_patience", 0) or 0)
+        best_vloss = float("inf")
+        best_vloss_ep = 0
+        best_miou_ep = int(len(self.history.get("val_miou", [])) and
+                           __import__("numpy").argmax(self.history["val_miou"]) + 1 or 0)
+        no_improve = 0
+        _si = getattr(self, "_split_info", None)
+        if _si and log_callback:
+            _vn = "、".join(_si.get("val_names") or []) or "-"
+            if _si.get("auto_split"):
+                log_callback(
+                    "⚠️ 数据集没有显式验证集：已从训练集按 seed=42 随机切 %d 张做验证 — %s"
+                    "（实际参与训练 %d 张）。日志里「未出现: X」指的是**这张验证图**没有 X，"
+                    "不是训练集没有 X。" % (_si.get("val_images", 0), _vn, _si.get("train_images", 0)))
+            else:
+                log_callback("验证集 %d 张（来自数据集划分）：%s｜训练 %d 张"
+                             % (_si.get("val_images", 0), _vn, _si.get("train_images", 0)))
+        self.best_summary = {"best_miou": best_miou, "best_miou_epoch": best_miou_ep,
+                             "best_val_loss": None, "best_val_loss_epoch": None,
+                             "early_stopped": False, "stopped_epoch": None,
+                             "patience": patience}
         for epoch in range(start_epoch, epochs):
             train_loss = self.train_epoch(batch_callback=batch_callback)
             val_loss, miou, per_class = self.validate()
@@ -424,23 +532,67 @@ class Trainer:
                 if log_callback:
                     log_callback("Training stopped by user")
                 break
-            sorted_cls = sorted(per_class.items(), key=lambda x: x[1])
-            worst = ", ".join("%s:%.3f" % (self.classes[c] if c < len(self.classes) else str(c), v) for c, v in sorted_cls[:3])
+            # 同上：nan = 该验证图没有这个类，不参与"最差类"排名
+            _valid = [(c, v) for c, v in per_class.items() if v == v]
+            _absent = [self.classes[c] if c < len(self.classes) else str(c)
+                       for c, v in per_class.items() if v != v]
+            sorted_cls = sorted(_valid, key=lambda x: x[1])
+            worst = ", ".join("%s:%.3f" % (self.classes[c] if c < len(self.classes) else str(c), v)
+                              for c, v in sorted_cls[:3])
+            if _absent:
+                worst += "  (本验证图未出现: %s)" % "/".join(_absent)
             msg = "Epoch %d/%d | Train Loss: %.4f | Val Loss: %.4f | mIoU: %.4f | Worst: %s" % (
                 epoch + 1, epochs, train_loss, val_loss, miou, worst)
             if log_callback:
                 log_callback(msg)
-            if miou > best_miou:
-                best_miou = miou
+            # 早停计数：val_loss 创新低 或 mIoU 创新高，都算"还在改善"
+            _improved = False
+            if val_loss < best_vloss - 1e-4:
+                best_vloss, best_vloss_ep, _improved = val_loss, epoch + 1, True
+            _miou_better = miou > best_miou
+            if _miou_better:
+                best_miou, best_miou_ep, _improved = miou, epoch + 1, True
+            no_improve = 0 if _improved else no_improve + 1
+            # ⚠️ 必须**每轮**更新：best_model.pth 是在最佳那一轮就落盘的，
+            #   如果只在早停时更新，存的会是初始值（实测踩到：best_summary 全是 0/None）。
+            try:
+                self.best_summary.update({
+                    "best_miou": best_miou, "best_miou_epoch": best_miou_ep,
+                    "best_val_loss": (best_vloss if best_vloss != float("inf") else None),
+                    "best_val_loss_epoch": best_vloss_ep,
+                    "no_improve": no_improve,
+                })
+            except Exception:
+                pass
+            if _miou_better:
                 self.save_model("best_model.pth")
                 if log_callback:
                     pclog = ", ".join("%s:%.3f" % (self.classes[c] if c < len(self.classes) else str(c), per_class[c]) for c in range(self.num_classes))
-                    log_callback("  -> Best saved (mIoU: %.4f) [%s]" % (miou, pclog))
+                    log_callback("  -> Best saved (mIoU: %.4f) [%s]  epoch %d" % (miou, pclog, epoch + 1))
             self.save_model("last_model.pth")
             if progress_callback:
                 progress_callback(epoch + 1 - start_epoch, epochs - start_epoch)
             if plot_callback:
                 plot_callback(self.history)
+            # ── 早停 ──
+            if patience and no_improve >= patience:
+                self.best_summary.update({"best_miou": best_miou, "best_miou_epoch": best_miou_ep,
+                                          "best_val_loss": best_vloss,
+                                          "best_val_loss_epoch": best_vloss_ep,
+                                          "early_stopped": True, "stopped_epoch": epoch + 1})
+                # ⚠️ last_model 是在早停判定**之前**存的，所以这里要再存一次，
+                #   否则 checkpoint 里 early_stopped 永远是 False（实测踩到）。
+                try:
+                    self.save_model("last_model.pth")
+                except Exception:
+                    pass
+                if log_callback:
+                    log_callback(
+                        "早停：连续 %d 轮 val_loss 与 mIoU 都没改善（停在第 %d 轮）｜"
+                        "最佳 mIoU %.4f @第%d轮，最佳 val loss %.4f @第%d轮"
+                        % (patience, epoch + 1, best_miou, best_miou_ep,
+                           best_vloss if best_vloss != float("inf") else -1.0, best_vloss_ep))
+                break
         if log_callback:
             log_callback("Training complete!")
         # Export optimized models
@@ -504,6 +656,19 @@ class Trainer:
             #   （老模型没这个字段，推理端会退回 200 或用 .train_settings.json 兜底）。
             "image_size": (list(self.image_size) if isinstance(self.image_size, (tuple, list))
                            else self.image_size),
+            # ★★ 2026-10-29：把**训练模式**也写进去，推理端据此自动选滑窗还是整图。
+            #   用户要求"界面上不要 Tiled 勾选、软件自己判断"，那就必须让模型自己
+            #   说清楚当初是怎么训的 —— 否则推理端只能猜，猜错就是
+            #   "训练 mIoU 0.92、一推理啥也检不到"（尺度错位，差 原图宽/tile 倍）。
+            #   目前训练一律走滑窗切块（dataset._build_tiles），所以写 "tiled"；
+            #   将来支持"整图 + 采样密度"训练时，这里改成按实际模式写。
+            "train_mode": getattr(self, "train_mode", "tiled"),
+            "tile_stride": getattr(self, "tile_stride", None),
+            # ★ 2026-10-23：早停/最佳轮次摘要（best_model 里能看到"它是最佳的第几轮"）
+            #   saved_as 标明这份文件是"按 mIoU 存的最佳快照"还是"最后一轮"，
+            #   否则同一轮 run 里 best/last 两个文件会给出不同的 best_val_loss，看着像矛盾。
+            "best_summary": (dict(getattr(self, "best_summary", None) or {},
+                                  saved_as=filename)),
         }, path)
 
         # ★ 版本留档（对标友商 SG_Tiny_V1/V2/V3…）：往 models/V<n>_<模型名>/ 也放一份，

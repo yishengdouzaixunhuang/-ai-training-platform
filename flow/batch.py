@@ -100,12 +100,15 @@ def build_cls_flow(project_dir: str = "", model_name: str = "best_model.pth",
 
 def build_seg_flow(project_dir: str = "", model_name: str = "best_model.pth",
                    out_dir: str = "outputs", backend: str = "pytorch",
-                   tiled: bool = True, scale: float = 1.0,
+                   tiled=None, scale: float = 1.0,
                    filter_params: bool = True) -> Flow:
     """语义分割：SegInfer -> [SegFilter] -> SegResultWriter。
 
     SegFilter 按 <工程>/inference_params.json（GUI「推理参数」面板）过滤连通域，
     与单张推理用的是同一份参数 —— 否则会出现"单张看着对、批量结果不一样"。
+
+    ★ 2026-10-29：`tiled` 默认改为 **None = 跟随训练模式自动判断**（用户已把界面上的
+      勾选去掉）。传 True/False 仍可强制指定（命令行 `flow/run.py --no_tiled` 还在用）。
     """
     seg = create_node("seg_infer", node_id="seg",
                       project_dir=project_dir, model_name=model_name,

@@ -95,6 +95,10 @@ class AnnotationCanvas(QWidget):
         self.brush_size = 15
 
         self._drawing = False
+        # 当前这一笔的轨迹 [(x, y, r, class_id)] 与所用工具（brush / eraser）。
+        # 拖动期间 overlay 不重建，靠 paintEvent 的预览层跟手 —— 见 _draw_stroke_preview。
+        self._stroke_pts = []
+        self._drawing_tool = ""
         self._drag_start_pos = None
 
         self._panning = False
@@ -121,7 +125,8 @@ class AnnotationCanvas(QWidget):
         self.current_image_path = None
         self.project_dir = None
 
-        self.setCursor(QCursor(Qt.CrossCursor))
+        # 2026-10-28：默认光标改箭头（用户要求，理由见 _update_mode_cursor）
+        self.setCursor(QCursor(Qt.ArrowCursor))
         self._overlay_visible = True
         self._undo_stack = []  # (mask_copy, action_desc)
         self._max_undo = 50
@@ -457,13 +462,42 @@ class AnnotationCanvas(QWidget):
         sc = float(getattr(self, "_cached_qimage_scale", 1.0) or 1.0)
         return z > sc * 1.02
 
+    def _scaled_pix(self, tag, qimg, w, h):
+        """按 (图像对象, 目标尺寸) 缓存**缩放后**的 QPixmap。
+
+        ★★ 2026-10-23：标注卡顿的真凶。每帧都把 4.7MP 的 QImage 双线性缩到屏幕尺寸，
+           实测 zoom=0.68 时**单帧 26.6ms（38fps 上限）**，拖套索每移动一次就重绘一次，
+           自然一顿一顿。缓存后拖动期间只是 blit。
+        ⚠️ key 里带 `id(qimg)` 有复用风险（对象释放后 id 可能被新对象占用），
+           所以缓存值里**同时持有 qimg 引用**把对象钉住；超过 6 条就整体清空。
+        """
+        if qimg is None or w <= 0 or h <= 0:
+            return None
+        cache = getattr(self, "_scaled_pix_cache", None)
+        if cache is None:
+            cache = self._scaled_pix_cache = {}
+        key = (tag, id(qimg), int(w), int(h))
+        hit = cache.get(key)
+        if hit is not None:
+            return hit[0]
+        pix = QPixmap.fromImage(qimg.scaled(int(w), int(h), Qt.IgnoreAspectRatio,
+                                            Qt.SmoothTransformation))
+        if len(cache) > 6:
+            cache.clear()
+        cache[key] = (pix, qimg)
+        return pix
+
     def _draw_base_image(self, painter, rect):
         """画底层图：缓存图够清晰就用缓存，否则用原图裁切。"""
         if self.image is None:
             return
         z = float(getattr(self, "zoom_level", 1.0) or 1.0)
         if not self._use_crop_path():
-            painter.drawImage(rect, self._cached_qimage)
+            pix = self._scaled_pix("base", self._cached_qimage, rect.width(), rect.height())
+            if pix is not None:
+                painter.drawPixmap(int(rect.x()), int(rect.y()), pix)
+            else:
+                painter.drawImage(rect, self._cached_qimage)
             return
         got = self._crop_for_view(rect, z)
         if got is None:
@@ -513,6 +547,52 @@ class AnnotationCanvas(QWidget):
         except Exception:
             return None
 
+    def _draw_stroke_preview(self, painter, rect):
+        """把**当前这一笔**画成实时预览（屏幕坐标，圆头粗折线）。
+
+        为什么需要它：拖动期间不重建 overlay（见 `_build_overlay` 顶部），
+        但用户必须看到笔跟着鼠标走。这里只画本笔轨迹，成本 ≈ 一条折线，
+        与图像尺寸无关 —— 20MP 图也是零点几毫秒。
+
+        画笔按类别色画半透明实心线（与最终斜纹填充观感接近）；
+        橡皮画青白色细虚线做"擦除指示"（真擦除要等抬笔重建 overlay 才生效）。
+        """
+        pts = getattr(self, "_stroke_pts", None)
+        if not pts:
+            return
+        z = float(getattr(self, "zoom_level", 1.0) or 1.0)
+        ox, oy = rect.x(), rect.y()
+        painter.save()
+        painter.setClipRect(rect)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+
+        def _seg(a, b):
+            x0, y0, r0, c0 = a
+            x1, y1, r1, c1 = b
+            if c1 < 0:
+                pen = QPen(QColor(235, 250, 255, 210), max(1.0, 2.0 * r1 * z * 0.35))
+                pen.setStyle(Qt.DashLine)
+            else:
+                col = CLASS_COLORS[int(c1) % len(CLASS_COLORS)]
+                pen = QPen(QColor(int(col[0]), int(col[1]), int(col[2]), 165),
+                           max(1.0, 2.0 * float(r1) * z))
+            pen.setCapStyle(Qt.RoundCap)
+            pen.setJoinStyle(Qt.RoundJoin)
+            painter.setPen(pen)
+            painter.drawLine(QPointF(ox + x0 * z, oy + y0 * z),
+                             QPointF(ox + x1 * z, oy + y1 * z))
+
+        if len(pts) == 1:
+            # 按下还没移动：画一个圆点，让"按下了"有反馈
+            x0, y0, r0, c0 = pts[0]
+            _seg((x0, y0, r0, c0), (x0 + 0.01, y0 + 0.01, r0, c0))
+        else:
+            # 只画最近 64 个点：轨迹太长时没必要全画（早期段早已被覆盖）
+            seg = pts[-64:] if len(pts) > 64 else pts
+            for i in range(1, len(seg)):
+                _seg(seg[i - 1], seg[i])
+        painter.restore()
+
     def _build_overlay(self):
         """Build annotation overlay (原图 + 掩膜 的合成图)。
 
@@ -527,11 +607,28 @@ class AnnotationCanvas(QWidget):
             return
         if not self._overlay_dirty and self._cached_overlay_qimage is not None:
             return
+        # ★★ 2026-10-28：拖动期间的 overlay 策略（"画一笔卡一笔"的根因修复）
+        #   问题链：画笔每次 mouseMove 都改掩膜 ⇒ _overlay_dirty=True ⇒ paintEvent 里
+        #   _build_overlay 全量重建。2048×1245 显示图实测 **81~136ms/次**，
+        #   而原来按 80ms 时间窗节流 —— **窗口比单次重建还短**，于是每次进来都超窗、
+        #   次次重建，形成正反馈，实测 128ms/帧（7.8fps）。标注占比大时 bbox 优化也救不了。
+        if self._overlay_dirty and getattr(self, "_drawing", False):
+            import time as _t
+            if getattr(self, "_drawing_tool", "") in ("brush", "ignore"):
+                # 画笔/忽略区：拖动期间**一次都不重建**。笔迹由 paintEvent 的预览层
+                # 直接跟鼠标画（成本 ≈ 画一条折线），抬笔后下一帧再全量重建一次。
+                return
+            # 橡皮：擦除效果没法用"叠加预览"表达（要把已画的东西挖掉），只能真重建。
+            # 窗口取 150ms —— 必须**大于**单次重建耗时，否则又回到"每帧都重建"。
+            _now = _t.monotonic()
+            if (_now - float(getattr(self, "_overlay_build_ts", 0.0))) < 0.15:
+                return
+            self._overlay_build_ts = _now
         h, w = self.mask.shape
 
         def _旧路径():
             """原来的做法：按原图尺寸合成（20MP 要 3 秒，但对任何输入都安全）。"""
-            img_arr = np.array(self.image).astype(np.float32)
+            img_arr = np.array(self.image)
             ih, iw = img_arr.shape[:2]
             if h != ih or w != iw:
                 self._cached_overlay_qimage = None
@@ -562,7 +659,7 @@ class AnnotationCanvas(QWidget):
                     (iw2, ih2), Image.NEAREST))
             else:
                 _m = self.mask
-            img_arr2 = np.array(_disp).astype(np.float32)
+            img_arr2 = np.array(_disp)
             rgba2 = build_overlay_rgba(_m,
                                        show_classes=bool(getattr(self, "_show_annotation", True)),
                                        show_ignore=bool(getattr(self, "_show_ignore", True)))
@@ -703,7 +800,17 @@ class AnnotationCanvas(QWidget):
                 # 高倍：底层是清晰的原图裁切，这里只叠半透明掩膜颜色
                 painter.drawImage(rect, self._cached_overlay_rgba_qimage)
             elif self._cached_overlay_qimage is not None:
-                painter.drawImage(rect, self._cached_overlay_qimage)
+                _opix = self._scaled_pix("ovl", self._cached_overlay_qimage,
+                                         rect.width(), rect.height())
+                if _opix is not None:
+                    painter.drawPixmap(int(rect.x()), int(rect.y()), _opix)
+                else:
+                    painter.drawImage(rect, self._cached_overlay_qimage)
+        # ★★ 2026-10-28：拖动中的笔迹预览层。
+        #   拖动期间 overlay 不重建（一次 80~136ms），笔迹靠这一层跟手；
+        #   抬笔后 overlay 重建、预览层清空，两者衔接处观感一致。
+        if getattr(self, "_drawing", False) and getattr(self, "_stroke_pts", None):
+            self._draw_stroke_preview(painter, rect)
         # Draw prediction overlay on top
         if self._show_prediction:
             # 标注层（类别或忽略区）任一看得见时，预测层就不再铺底，免得盖住标注
@@ -1049,7 +1156,6 @@ class AnnotationCanvas(QWidget):
         else:
             color = CLASS_COLORS[self.current_class_id % len(CLASS_COLORS)]
         qcolor = QColor(*color)
-        qcolor = QColor(*color)
 
         # Draw solid polyline (no fill, to keep image visible)
         painter.setBrush(Qt.NoBrush)
@@ -1064,14 +1170,18 @@ class AnnotationCanvas(QWidget):
             painter.setPen(pen_line)
             painter.drawPolyline(QPolygonF(wpts))
 
-        # Draw vertices as filled circles with border
-        for i, p in enumerate(pts):
-            wp = self._image_to_widget(p[0], p[1])
-            r = 5 if i == 0 else 4
-            # White border
-            painter.setPen(QPen(QColor(255, 255, 255), 2))
-            painter.setBrush(QBrush(qcolor if i > 0 else QColor(0, 255, 0)))
-            painter.drawEllipse(wp, r, r)
+        # ★★ 2026-10-28（用户原话："点动要成线，不要呈现一个个小点，就像人用铅笔在纸上画画"）：
+        #   原来**每一个顶点都画一枚 5px 圆点**（白边+填色）。逐点点击时那是"拐点标记"，
+        #   很合理；但长按拖拽会攒几十上百个采样点，画出来就是一串圆珠，完全不像一条线。
+        #   这里改成：只有**点数少**（≤24，基本只可能是手工一个个点出来的）才画拐点标记；
+        #   拖拽产生的密集点只连线、不点圆 —— 线自然就是连续的。
+        if len(pts) <= 24:
+            for i, p in enumerate(pts):
+                wp = self._image_to_widget(p[0], p[1])
+                r = 5 if i == 0 else 4
+                painter.setPen(QPen(QColor(255, 255, 255), 2))
+                painter.setBrush(QBrush(qcolor if i > 0 else QColor(0, 255, 0)))
+                painter.drawEllipse(wp, r, r)
 
         # Draw line from last vertex to cursor
         pos = self.mapFromGlobal(QCursor.pos())
@@ -1156,17 +1266,29 @@ class AnnotationCanvas(QWidget):
         elif self._mode == self.MODE_BRUSH:
             self._push_undo("brush")
             self._drawing = True
+            self._drawing_tool = "brush"
+            self._stroke_pts = []
             self._drag_start_pos = pt
+            self._last_brush_pt = None      # 每笔从头开始，别连到上一笔的终点
             self._draw_brush_at(event.pos())
         elif self._mode == self.MODE_ERASER:
             self._push_undo("eraser")
             self._drawing = True
+            self._drawing_tool = "eraser"
+            self._stroke_pts = []
             self._drag_start_pos = pt
+            self._last_brush_pt = None
             self._draw_eraser_at(event.pos())
         elif self._mode in (self.MODE_POLYGON, self.MODE_IGNORE):
+            # ★★ 2026-10-23：多边形支持**拖拽勾勒**（套索），不再是只能逐点点击。
+            #   按下先记一个点（点击加点的老行为不变），拖动时把轨迹点追加进来，
+            #   松开时若确实拖动过就自动闭合成一个多边形。
             if not self._polygon_points:
                 self._push_undo("polygon")
+            self._lasso_lmb = True
+            self._lasso_moved = False
             self._add_polygon_point(self._window_to_image_unclamped(event.pos()))
+            self._lasso_last = self._polygon_points[-1] if self._polygon_points else None
         elif self._mode == self.MODE_LINE:
             self._push_undo("line")
             self._line_start = self._window_to_image_unclamped(event.pos())
@@ -1227,6 +1349,34 @@ class AnnotationCanvas(QWidget):
             return
         if not self._mask_edit_enabled() and self._mode != self.MODE_PAN:
             return
+        # 套索：多边形/忽略区模式下按住左键拖动 → 累积轨迹点
+        if getattr(self, "_lasso_lmb", False) and self._mode in (self.MODE_POLYGON, self.MODE_IGNORE):
+            pt2 = self._window_to_image_unclamped(event.pos())
+            if pt2 is not None and self._lasso_last is not None:
+                # ★★ 2026-10-28：采样步长按**屏幕像素**算（3px），不再写死"图像 2px"。
+                #   原来 fit 缩放（0.12）时等于每 0.24 屏幕像素就攒一个点 —— 一张图能攒
+                #   上千个点：① 画出来是一串圆珠不是线；② 每个点的圆头要画两次描边，很卡。
+                #   按屏幕 3px 采一处，任何缩放下密度都一致，线天然是连续的。
+                #   ⚠️ 直接比较**屏幕坐标**而不是"图像距离 / zoom"：后者在 zoom=4 时
+                #      步长算出 0.75 图像像素，浮点误差会卡在 `>=` 边界上导致隔一步才采一个。
+                _prev_s = self._image_to_widget(self._lasso_last[0], self._lasso_last[1])
+                _cur_s = self._image_to_widget(pt2[0], pt2[1])
+                _sdx = _cur_s.x() - _prev_s.x()
+                _sdy = _cur_s.y() - _prev_s.y()
+                if _sdx * _sdx + _sdy * _sdy >= 9.0 - 1e-6:      # 屏幕 3px
+                    _prev_pt = self._lasso_last
+                    self._polygon_points.append(pt2)
+                    self._lasso_last = pt2
+                    self._lasso_moved = True
+                    # ★ 像铅笔一样：绕回起点就当场成圈，**不等松手**。
+                    #   判"这一段扫过起点"而不是"当前点离起点近" —— 快速画圈时
+                    #   一次移动就能跨过起点窗口，只看端点会永远闭不上。
+                    if len(self._polygon_points) >= 8 and (
+                            self._seg_hits_start(_prev_pt, pt2) or self._near_start(pt2)):
+                        self._finish_lasso(closed=True)
+                        return
+                    self.update()
+            return
         if self._drawing and self._mode == self.MODE_BRUSH:
             self._draw_brush_at(event.pos())
         elif self._drawing and self._mode == self.MODE_ERASER:
@@ -1256,11 +1406,41 @@ class AnnotationCanvas(QWidget):
         self.setToolTip("")
 
     def mouseReleaseEvent(self, event):
+        # 抬笔：清掉笔画尾点（否则下次落笔会从上一笔终点连一条线过来）
+        if event.button() == Qt.LeftButton:
+            self._last_brush_pt = None
+        # 套索收笔
+        # ★★ 2026-10-28（用户要求"线到起点处，多边形才闭合，像铅笔在纸上画画"）：
+        #   **松手不再等于闭合**。闭合只有一个条件 —— 轨迹绕回起点。
+        #   · 绕回起点时，mouseMoveEvent 里已经当场闭合了（不等抬笔）；
+        #   · 抬笔时如果恰好停在起点附近，这里兜底再闭合一次；
+        #   · 抬笔但没回到起点 ⇒ 轨迹**留着**（不丢），用户可以再按住接着画，
+        #     或者按 Enter / 双击强制闭合。这样"画一半松手"不会莫名其妙变成一团。
+        if event.button() == Qt.LeftButton and getattr(self, "_lasso_lmb", False):
+            moved = bool(getattr(self, "_lasso_moved", False))
+            if moved and len(self._polygon_points) >= 3 and self._near_start(screen_pos=event.pos()):
+                self._finish_lasso(closed=True)
+            else:
+                self._finish_lasso(closed=False)
+            return
         if event.button() == Qt.MiddleButton or (self._panning and event.button() == Qt.LeftButton):
             self._panning = False
             self._update_mode_cursor()
             self.update()
             return
+        # ★★ 2026-10-28：画笔/橡皮抬笔。**必须无条件走到这里** ——
+        #   原来这段代码被错缩进在下面的 `if self._det_overlay is not None:` 块里，
+        #   而分割标注模式下 _det_overlay 恒为 None ⇒ `_drawing` 抬笔后永不复位。
+        #   后果：之后每次 overlay 重建都还当"正在拖动"而走节流分支（曾等于每帧重建）。
+        #   配合"拖动期间画笔不重建"的改动，不复位就会变成"永远不重建"。
+        if self._drawing and self._mode in (self.MODE_BRUSH, self.MODE_ERASER):
+            self._drawing = False
+            self._drawing_tool = ""
+            self._stroke_pts = []
+            self._overlay_dirty = True
+            self._overlay_build_ts = 0.0
+            self.update()
+            self.mask_changed.emit()
         if self._det_overlay is not None:
             pt = self._window_to_image(event.pos())
             if pt is not None:
@@ -1581,20 +1761,57 @@ class AnnotationCanvas(QWidget):
 
     # ======================== Annotation Operations ========================
 
+    def _brush_radius(self):
+        """笔刷在**图像坐标**里的半径。
+
+        ⚠️ 关键约束：**光标预览圈**画的是 `brush_size × zoom`（屏幕半径），
+           也就是"笔刷在图像坐标里恒为 brush_size"。所以这里直接返回 brush_size，
+           不要再按 zoom 折算 —— 折算了屏幕厚度就跟光标圈对不上（实测 zoom=2 时差一倍）。
+           屏幕半径 = brush_size × zoom，与光标圈一致，任何缩放级别都成立。
+        """
+        return max(1, int(self.brush_size))
+
+    def _stamp_stroke(self, p_from, p_to, r, color):
+        """在两点之间画一段**连续**、**圆形**的笔画。
+
+        ★★ 2026-10-23：原来每次 mouseMove 只把 `mask[y1:y2, x1:x2]` 刷成一个**方块**，
+           而且两点之间不连 —— 快速拖动会得到一串不相连的方点，完全不像"笔在纸上写字"
+           （用户对比友商时提出）。现在：
+             · 用 cv2.line 把上一采样点到当前点连成一条粗线（thickness = 直径）
+             · 两端各补一个实心圆做**圆头**，拐弯处不会出直角缺口
+        """
+        try:
+            import cv2
+            h, w = self.mask.shape
+            thickness = max(1, 2 * r)
+            if p_from is not None and (p_from[0] != p_to[0] or p_from[1] != p_to[1]):
+                cv2.line(self.mask, (int(p_from[0]), int(p_from[1])),
+                         (int(p_to[0]), int(p_to[1])), int(color),
+                         thickness=thickness, lineType=cv2.LINE_8)
+            cv2.circle(self.mask, (int(p_to[0]), int(p_to[1])), r, int(color), -1, lineType=cv2.LINE_8)
+            if p_from is not None:
+                cv2.circle(self.mask, (int(p_from[0]), int(p_from[1])), r, int(color), -1,
+                           lineType=cv2.LINE_8)
+        except Exception:
+            # 极端兜底：cv2 不可用时退回方块（至少还能画）
+            h, w = self.mask.shape
+            x1, y1 = max(0, int(p_to[0]) - r), max(0, int(p_to[1]) - r)
+            x2, y2 = min(w, int(p_to[0]) + r), min(h, int(p_to[1]) + r)
+            self.mask[y1:y2, x1:x2] = color
+
     def _draw_brush_at(self, pos):
         pt = self._window_to_image(pos)
         if pt is None:
             return
-        px, py = pt
-        if self.zoom_level > 1.0:
-            r = int(self.brush_size / self.zoom_level)
-        else:
-            r = max(1, self.brush_size)
-        r = max(1, r)
-        h, w = self.mask.shape
-        x1, y1 = max(0, px - r), max(0, py - r)
-        x2, y2 = min(w, px + r), min(h, py + r)
-        self.mask[y1:y2, x1:x2] = self.current_class_id
+        r = self._brush_radius()
+        self._stamp_stroke(getattr(self, "_last_brush_pt", None), pt, r, self.current_class_id)
+        self._last_brush_pt = pt
+        # ★★ 2026-10-28：记下本笔轨迹，paintEvent 用它画**实时预览**。
+        #   拖动期间不再重建 overlay（一次 80~130ms），所以笔迹必须靠预览层跟着鼠标走。
+        try:
+            self._stroke_pts.append((pt[0], pt[1], r, self.current_class_id))
+        except AttributeError:
+            self._stroke_pts = [(pt[0], pt[1], r, self.current_class_id)]
         self._overlay_dirty = True
         self.update()
 
@@ -1602,17 +1819,84 @@ class AnnotationCanvas(QWidget):
         pt = self._window_to_image(pos)
         if pt is None:
             return
-        px, py = pt
-        if self.zoom_level > 1.0:
-            r = int(self.brush_size / self.zoom_level)
-        else:
-            r = max(1, self.brush_size)
-        r = max(1, r)
-        h, w = self.mask.shape
-        x1, y1 = max(0, px - r), max(0, py - r)
-        x2, y2 = min(w, px + r), min(h, py + r)
-        self.mask[y1:y2, x1:x2] = 0
+        r = self._brush_radius()
+        self._stamp_stroke(getattr(self, "_last_brush_pt", None), pt, r, 0)
+        self._last_brush_pt = pt
+        try:
+            self._stroke_pts.append((pt[0], pt[1], r, -1))   # -1 = 橡皮
+        except AttributeError:
+            self._stroke_pts = [(pt[0], pt[1], r, -1)]
         self._overlay_dirty = True
+        self.update()
+
+    def _seg_hits_start(self, img_from, img_to):
+        """这一小段轨迹有没有"扫过"起点 —— 用**点到线段**的距离判，不是判端点。
+
+        为什么不能只判"当前点离起点近"：快速画圈时一次 mouseMove 能跨几十像素，
+        整段直接跨过起点周围那 12px 的窗口 ⇒ 永远等不到"当前点落进窗口"，圈闭不上。
+        用户只会觉得"我明明画回来了，它就是不闭合"。这是 2026-10-28 实测发现的。
+        """
+        pts = self._polygon_points
+        if len(pts) < 3 or img_from is None or img_to is None:
+            return False
+        s = self._image_to_widget(pts[0][0], pts[0][1])
+        a = self._image_to_widget(img_from[0], img_from[1])
+        b = self._image_to_widget(img_to[0], img_to[1])
+        ax, ay = a.x(), a.y()
+        bx, by = b.x(), b.y()
+        sx, sy = s.x(), s.y()
+        vx, vy = bx - ax, by - ay
+        L2 = vx * vx + vy * vy
+        if L2 <= 1e-9:
+            t = 0.0
+        else:
+            t = ((sx - ax) * vx + (sy - ay) * vy) / L2
+            t = 0.0 if t < 0.0 else (1.0 if t > 1.0 else t)
+        cx, cy = ax + t * vx, ay + t * vy
+        d = ((sx - cx) ** 2 + (sy - cy) ** 2) ** 0.5
+        return d <= float(self._polygon_close_threshold)
+
+    def _near_start(self, img_pt=None, screen_pos=None):
+        """光标是否已经绕回**起点**（用屏幕像素判定，和眼睛看到的一致）。
+
+        闭合半径沿用 `_polygon_close_threshold`（12px），与"逐点点击"模式的老手感统一。
+        """
+        pts = self._polygon_points
+        if len(pts) < 3:
+            return False
+        sw = self._image_to_widget(pts[0][0], pts[0][1])
+        if screen_pos is not None:
+            cw = QPointF(float(screen_pos.x()), float(screen_pos.y()))
+        elif img_pt is not None:
+            cw = self._image_to_widget(img_pt[0], img_pt[1])
+        else:
+            return False
+        dx = cw.x() - sw.x()
+        dy = cw.y() - sw.y()
+        return (dx * dx + dy * dy) ** 0.5 <= float(self._polygon_close_threshold)
+
+    def _finish_lasso(self, closed=True):
+        """结束当前这一笔套索。
+
+        closed=True  → 抽稀 + 闭合成掩膜（绕回起点 / Enter / 双击）
+        closed=False → **轨迹保留**，用户可以再按住接着画
+                       （"画一半松手"不再当成闭合，这是 2026-10-28 用户要求的铅笔手感）
+        """
+        self._lasso_lmb = False
+        self._lasso_moved = False
+        self._lasso_last = None
+        n = len(self._polygon_points)
+        if closed:
+            if n >= 3:
+                self._simplify_polygon()
+                n = len(self._polygon_points)
+                self._close_polygon()
+                self.status_message.emit("Lasso closed: %d points" % n)
+            else:
+                self.status_message.emit("Lasso: 点数不足（%d）" % n)
+        elif n >= 3:
+            self.status_message.emit(
+                "Lasso: %d 点 — 继续按住拖动接着画；绕回起点自动闭合，或按 Enter" % n)
         self.update()
 
     def _add_polygon_point(self, pt):
@@ -1626,6 +1910,23 @@ class AnnotationCanvas(QWidget):
         self._polygon_points.append(pt)
         self.status_message.emit("Polygon: %d points" % len(self._polygon_points))
         self.update()
+
+    def _simplify_polygon(self, eps=1.2):
+        """套索轨迹点抽稀：几百个点会让 JSON 膨胀、也不便于后续编辑顶点。
+
+        用 approxPolyDP 按 1.2px 容差简化，形状几乎不变但点数降到几十个。
+        """
+        try:
+            import cv2
+            if len(self._polygon_points) < 4:
+                return
+            pts = np.array([[float(x), float(y)] for x, y in self._polygon_points],
+                           dtype=np.float32).reshape((-1, 1, 2))
+            ap = cv2.approxPolyDP(pts, eps, True)
+            if len(ap) >= 3:
+                self._polygon_points = [(float(p[0][0]), float(p[0][1])) for p in ap]
+        except Exception:
+            pass
 
     def _close_polygon(self):
         if len(self._polygon_points) < 3:
@@ -1822,19 +2123,18 @@ class AnnotationCanvas(QWidget):
         self.mode_changed.emit(mode)
 
     def _update_mode_cursor(self):
-        cursors = {
-            self.MODE_BRUSH: Qt.CrossCursor,
-            self.MODE_ERASER: Qt.CrossCursor,
-            self.MODE_IGNORE: Qt.CrossCursor,
-            self.MODE_POLYGON: Qt.CrossCursor,
-            self.MODE_LINE: Qt.CrossCursor,
-            self.MODE_RECT: Qt.CrossCursor,
-            self.MODE_CIRCLE: Qt.CrossCursor,
-            self.MODE_ELLIPSE: Qt.CrossCursor,
-            self.MODE_PAN: Qt.OpenHandCursor,
-            self.MODE_SAM: Qt.CrossCursor,
-        }
-        self.setCursor(QCursor(cursors.get(self._mode, Qt.CrossCursor)))
+        """标注工具一律用**箭头**，只有平移态是"张手 / 抓手"。
+
+        ★★ 2026-10-28（用户明确要求）：不要十字架，要箭头。
+          两个理由：① 十字的两条线正好压在正在描的缺陷边界上，细小的凹点/划痕会被自己的
+          光标挡住；② 友商在同一位置用的就是标准箭头，我们没必要时髦成十字。
+          平移态保留 OpenHand/ClosedHand —— "能拖"和"能画"必须一眼分得清，
+          否则在手掌模式下按下去画不出东西，用户会以为软件坏了。
+        """
+        if self._mode == self.MODE_PAN:
+            self.setCursor(QCursor(Qt.OpenHandCursor))
+        else:
+            self.setCursor(QCursor(Qt.ArrowCursor))
 
     def set_class(self, cid):
         self.current_class_id = cid

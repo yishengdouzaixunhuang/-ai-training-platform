@@ -31,6 +31,37 @@ class Predictor:
         except Exception:
             self._智能块尺寸 = None
 
+    def _resolve_train_mode(self, img_w=None, img_h=None, model_filename="best_model.pth"):
+        """训练时到底是「整图」还是「分块」—— 推理必须用同一种，否则尺度错位。
+
+        ★★ 2026-10-29（用户需求：去掉界面上的 Tiled 勾选，让软件自己判断）：
+          必须自动化的原因 —— 训练在**原分辨率**上按 tile 切块，推理若把整图缩成
+          一个方形喂进去，同一块缺陷在输入里的尺寸会缩小 `原图宽 / tile` 倍
+          （1500×1500 的图、tile=256 ⇒ 缩小 5.86 倍）。现场表现就是
+          "训练 mIoU 0.92、一推理啥也检不到"。
+
+        判定顺序：
+          ① checkpoint 里显式的 `train_mode`（"tiled" / "full"）—— 新训练的模型才有；
+          ② 老模型没有这个字段 ⇒ **启发式**：拿训练块尺寸和图比。
+             tile 明显小于图（< 图的 0.9 倍）⇒ 当时是分块训的；否则整图。
+             这条对"200×200 图 + 200 块"会判成 full，正好符合小图整图训练的习惯。
+          ③ 连块尺寸都读不到 ⇒ 退回 "tiled"（与改造前"大图必分块"的行为一致）。
+        """
+        try:
+            p = os.path.join(self.project_dir, "models", model_filename)
+            if os.path.exists(p):
+                ck = torch.load(p, map_location="cpu", weights_only=False)
+                if isinstance(ck, dict):
+                    m = ck.get("train_mode")
+                    if m in ("tiled", "full"):
+                        return m
+        except Exception:
+            pass
+        _块 = int(getattr(self, "_智能块尺寸", 0) or 0)
+        if img_w and img_h and _块 > 0:
+            return "tiled" if _块 < min(img_w, img_h) * 0.9 else "full"
+        return "tiled"
+
     def _resolve_train_tile(self, model_filename="best_model.pth"):
         """训练时的裁剪尺寸（块大小）；读不到就返回 None（沿用老默认 200）。"""
         def _pick(v):
@@ -507,10 +538,15 @@ class Predictor:
                     print(f"[Compiled] cudagraphs failed: {e}, using eager mode")
 
     @torch.inference_mode()
-    def predict(self, image, return_overlay=False, tiled=True, scale=1.0, mode="fine"):
+    def predict(self, image, return_overlay=False, tiled=None, scale=1.0, mode="fine"):
         """mode: "fast" = 缩到 1024 整图一次前向（对标友商 100ms 档）；
                  "fine" = 缩到 1024 后按 200 滑窗拼回（保留细节，慢些）。
-        调用方也可以用对象属性 `_智能模式` 预设（界面上的「推理模式」下拉就写它）。"""
+        调用方也可以用对象属性 `_智能模式` 预设（界面上的「推理模式」下拉就写它）。
+
+        `tiled=None`（默认）= **按训练模式自动决定**，不再由用户勾选：
+        训练是分块的就必须滑窗，训练是整图的就整图 —— 混用会尺度错位（见
+        `_resolve_train_mode` 的说明）。传 True/False 仍可强制指定（调试用）。
+        """
         if mode == "fine":
             mode = getattr(self, "_智能模式", "fine") or "fine"
         """预测整图。**顺带把置信度图存到 self.last_prob**（供「推理参数」的分数过滤用）。"""
@@ -519,6 +555,9 @@ class Predictor:
             image = Image.fromarray(image)
 
         orig_w, orig_h = image.size
+        # ★★ 2026-10-29：tiled 默认 None = 按训练模式自动判断（用户已把界面上的勾选去掉）
+        if tiled is None:
+            tiled = (self._resolve_train_mode(orig_w, orig_h) == "tiled")
         # 滑窗块尺寸 = **训练时的裁剪尺寸**（`_智能块尺寸`，读 checkpoint 得来；读不到退回 200）
         _块 = int(getattr(self, "_智能块尺寸", 0) or 0) or 200
         _叠 = max(8, _块 // 2)

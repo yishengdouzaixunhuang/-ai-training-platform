@@ -99,3 +99,6 @@ _dlg_shots/
 _ui_render/
 .ui_settings.json
 启动日志.txt
+
+# 运行日志（2026-10-23 起 UI 日志按天落盘）
+logs/

@@ -35,6 +35,18 @@ _SVGS = {
                '<line x1="7.5" y1="7.5" x2="16.5" y2="16.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>'),
     "pan": ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">'
             '<path d="M12 2.5 L15 6.5 L9 6.5 Z M12 21.5 L15 17.5 L9 17.5 Z M2.5 12 L6.5 9 L6.5 15 Z M21.5 12 L17.5 9 L17.5 15 Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>'),
+    # 指针 / 手掌：常驻条最左侧那对「标注 ↔ 看图」模式切换（2026-10-28，对标友商）
+    # 指针是**填充**的（像真的鼠标箭头），手掌是描边的（和张开的真手一致）。
+    "arrow": ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">'
+              '<path d="M6.5 3 L6.5 19.6 L10.4 15.6 L12.7 21.2 L15.4 20 L13.1 14.5 L18.8 14.5 Z" '
+              'fill="currentColor" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>'),
+    "hand": ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">'
+             '<path d="M9.6 13.2 V8.4 a1.5 1.5 0 0 1 3 0 V12.4 '
+             'M12.6 12.4 V6.2 a1.5 1.5 0 0 1 3 0 V12.4 '
+             'M15.6 12.4 V8.6 a1.5 1.5 0 0 1 3 0 V14.6 '
+             'C18.6 18.1 16.3 20.6 13.3 20.6 C10.7 20.6 8.9 19.2 7.9 17.3 L4.7 12.2 '
+             'A1.55 1.55 0 0 1 7.2 10.5 L9.1 13.5" '
+             'fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>'),
     "undo": ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">'
              '<path d="M9 6 L4 11 L9 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>'
              '<path d="M4 11 H13 A6 6 0 0 1 13 23 H9" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>'),
@@ -103,6 +115,49 @@ def make_icon(name, size=24):
     icon.addPixmap(_render(svg, COLOR_ON, size), QIcon.Normal, QIcon.On)
     icon.addPixmap(_render(svg, "#3A4560", size), QIcon.Disabled, QIcon.Off)
     return icon
+
+
+#: 「指针 / 手掌」选中态的底色（图标自带，见 make_nav_icon）
+NAV_BG_LIGHT = "#0077B6"   # 浅色主题：深蓝块托白图标
+NAV_BG_DARK = "#0E3A52"    # 深色主题：深青块托白图标
+
+
+def make_nav_icon(name, active=False, light=False, size=24):
+    """「指针 / 手掌」两枚模式按钮的图标；**选中态把底色画进图标本身**。
+
+    为什么不用 QSS 做选中背景（2026-10-28 实测踩死）：
+      ① 工具栏 `_QSS` 是**控件级**样式表，Qt 里它整段优先于应用级主题表 ——
+         主题表写 `QToolButton#navPtr:checked{background:...}` 也压不过它里面的
+         `QToolButton{background:transparent}`（实测点了没反应，颜色一直是 250,246,244）。
+      ② 而 `_QSS` 里的颜色又全部落在 THEME_COLORS 白名单 ⇒ `sweep_inline_styles`
+         会把它们剥掉，写死也没用。
+      两头都堵死 ⇒ 干脆画进位图：与主题表、与 QSS、与 sweep 全部无关，
+      任何主题下"选中的那个"一定是个实心色块，不会变白消失。
+
+    ⚠️ 选中态的图形用白色，所以底色必须是深色（浅色主题也不能用浅底）。
+    """
+    if not active:
+        return make_icon(name, size)
+    px = size * 2
+    pm = QPixmap(px, px)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing)
+    p.setPen(Qt.NoPen)
+    p.setBrush(QColor(NAV_BG_LIGHT if light else NAV_BG_DARK))
+    p.drawRoundedRect(0, 0, px, px, px * 0.22, px * 0.22)
+    m = px * 0.19
+    svg = _SVGS[name].replace("currentColor", "#FFFFFF")
+    QSvgRenderer(QByteArray(svg.encode("utf-8"))).render(
+        p, QRectF(m, m, px - 2 * m, px - 2 * m))
+    p.end()
+    pm.setDevicePixelRatio(2.0)
+    ic = QIcon()
+    # 两个状态都给同一张图：选中/未选中的区别已由位图表达到位，
+    # 不再依赖 Qt 的 On/Off 换图（否则 checked 一变又要换回白图标）。
+    ic.addPixmap(pm, QIcon.Normal, QIcon.Off)
+    ic.addPixmap(pm, QIcon.Normal, QIcon.On)
+    return ic
 
 
 def make_ai_icon(size=24):

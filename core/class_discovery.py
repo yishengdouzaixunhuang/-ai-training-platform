@@ -19,6 +19,8 @@ import json
 import os
 import re
 
+from core.label_scan import scan_labels
+
 # 与 tools/import_farasis_labelme.py 的 DEFAULT_CLASSES 保持一致：
 # 掩膜值 = 该列表下标，255 = __ignore__。顺序一变，已有掩膜的语义就会整体错位。
 BASE_CLASSES = ["background", "Zw", "Ys", "Zz", "Hh", "Atd"]
@@ -70,13 +72,15 @@ def discover_labels(project_dir, extra_dirs=(), limit=None, on_progress=None):
                     return seen
                 n_read += 1
                 path = os.path.join(root, fn)
-                try:
-                    with open(path, "r", encoding="utf-8") as f:
-                        data = json.load(f)
-                except Exception:
+                # ★★ 2026-10-28：这里原来 `json.load` 整个文件。某些工程的 labelme JSON
+                #   单个就有 14~18MB（掩膜轮廓上万个顶点），489 张合计 1GB —— 而本函数
+                #   只想知道"有哪些类别"。改用 label_scan（bytes 正则 + 共享缓存）：
+                #   全工程 4024ms → 820ms（冷）/ 19ms（热），且与 class_table 共用同一份缓存，
+                #   不再"打开工程时同一批 JSON 被扫两遍"。
+                info = scan_labels(path)
+                if info is None:
                     continue
-                for s in data.get("shapes", []) or []:
-                    lab = s.get("label")
+                for lab in info[0]:
                     if is_real_class(lab):
                         lab = lab.strip()
                         if lab not in seen:

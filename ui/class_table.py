@@ -26,6 +26,7 @@ from PyQt5.QtGui import QColor
 from PyQt5.QtCore import Qt, pyqtSignal
 
 from core.config import CLASS_COLORS
+from core.label_scan import scan_labels
 
 
 def _hex(rgb):
@@ -107,6 +108,9 @@ class ClassTableView(QWidget):
         self._current_idx = -1
         self._updating = False
         self._split_bases = {}  # (class_idx, split_key) -> set(image base names)
+        # 「JSON 读不到时的兜底结果」缓存：(path) -> ((签名...), frozenset(cids))
+        # 正常情况（有 labelme JSON）走的 core.label_scan 的共享缓存，不用这个。
+        self._fb_cache = {}
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -212,9 +216,22 @@ class ClassTableView(QWidget):
     # ---------- data ----------
 
     def set_project_dir(self, path):
-        """Remember the project directory so counts can be computed."""
+        """Remember the project directory so counts can be computed.
+
+        ★ 2026-10-28：**只有路径真的变了才清缓存/重算**。
+          `_refresh_class_ui()` 里是 `set_project_dir(...)` 紧跟 `set_classes(...)`
+          连着调的；如果这里每次进来都清 `_seg_cache`，那次 set_classes 就会退化成
+          "全量重扫" —— 而 `_refresh_class_ui` 在打开工程时会被调用多次，
+          实测 `_seg_class_ids` 因此被调 1467 次（489×3）、累计 5.2 秒。
+          （这是上一轮加缓存时留下的副作用：清了缓存却还指望后续命中。）
+        """
+        _new = str(path) if path else None
+        _old = str(self._project_dir) if self._project_dir else None
+        changed = (_new != _old)
+        if changed:
+            self._fb_cache = {}
         self._project_dir = path
-        if self._classes:
+        if changed and self._classes:
             self.set_classes(self._classes)
 
     def _fit_numeric_columns(self):
@@ -457,50 +474,77 @@ class ClassTableView(QWidget):
                 self._split_bases[k].add(os.path.basename(base))
 
     def _seg_class_ids(self, img_path, ann_dir, labels):
-        """Class ids present in one segmentation image.
+        """一张分割图里出现过的类别 id 集合。
 
-        Preferred source is the labelme JSON (fast); mask PNG pixel values are
-        used as a fallback when no JSON exists.
+        ★★ 2026-10-28 两处改动（都是"打开工程/闭合标注卡顿"的直接原因）：
+          ① **JSON 交给 `core.label_scan`**（bytes 正则 + 与 `discover_labels`
+             共用的进程级缓存）。原来这里 `json.load` 整个文件，而某些工程的单个
+             labelme JSON 就有 14~18MB（掩膜轮廓上万个顶点），本函数只要 label。
+          ② **不再每次 stat 三个文件**。原实现在缓存外壳里对 json / mask png /
+             det json 各 `stat()` 一次 —— 这个函数在打开 489 张图的工程时会被调用
+             **1467 次**（`_compute_counts` 被重复触发），光 stat 就是秒级。
+             现在 JSON 路径只交给 `scan_labels`（内部一次 stat），
+             mask png / det json 只在**JSON 没有内容时**才去看，且单独缓存。
         """
-        json_path = img_path.with_suffix(".json")
-        if json_path.exists():
+        # ① 首选 labelme JSON（scan_labels 自带签名缓存；文件不存在返回 None）
+        info = scan_labels(img_path.with_suffix(".json"))
+        if info is not None:
+            cids = set()
+            for lab in info[0]:
+                if lab in labels:
+                    cids.add(labels.index(lab))
+            if cids:
+                return cids
+        # ② 兜底：mask PNG / 检测 COCO json（少见路径，单独缓存，且只有走到这里才 stat）
+        cache = getattr(self, "_fb_cache", None)
+        if cache is None:
+            cache = self._fb_cache = {}
+        mpath = ann_dir / (img_path.stem + "_mask.png")
+        dpath = img_path.with_name(img_path.stem + "_det.json")
+        sig = []
+        for p in (mpath, dpath):
             try:
-                with open(json_path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                cids = set()
-                for s in data.get("shapes", []):
-                    lab = s.get("label")
-                    if lab in labels:
-                        cids.add(labels.index(lab))
-                if cids:
-                    return cids
+                st = p.stat()
+                sig.append((st.st_mtime_ns, st.st_size))
             except Exception:
-                pass
+                sig.append(None)
+        sig.append(tuple(labels))
+        sig = tuple(sig)
+        key = str(img_path)
+        hit = cache.get(key)
+        if hit is not None and hit[0] == sig:
+            return set(hit[1])
+        cids = self._seg_class_ids_fallback(mpath, dpath, labels)
+        if len(cache) > 4000:
+            cache.clear()
+        cache[key] = (sig, frozenset(cids))
+        return set(cids)
+
+    def _seg_class_ids_fallback(self, mask_path, det_json, labels):
+        """JSON 里没读到类别时的兜底：mask PNG 像素值 → 检测 COCO json。"""
         cids = set()
-        mask_path = ann_dir / (img_path.stem + "_mask.png")
-        if mask_path.exists():
-            try:
+        try:
+            if mask_path.exists():
                 import numpy as _np
                 from PIL import Image as _Image
                 arr = _np.array(_Image.open(str(mask_path)))
                 cids = set(int(v) for v in _np.unique(arr)
                            if 0 < int(v) < len(labels) and int(v) != 255)
-            except Exception:
-                pass
+        except Exception:
+            pass
         # Detection projects: count boxes from COCO _det.json (fallback when
         # there are no labelme shapes / mask pixels).
         if not cids:
-            det_json = img_path.with_name(img_path.stem + "_det.json")
-            if det_json.exists():
-                try:
+            try:
+                if det_json.exists():
                     from detection.coco_io import load_coco_json
                     boxes, _ = load_coco_json(str(det_json))
                     for b in boxes:
                         lab = b.get("category", "")
                         if lab in labels:
                             cids.add(labels.index(lab))
-                except Exception:
-                    pass
+            except Exception:
+                pass
         return cids
 
     # ---------- slots ----------
