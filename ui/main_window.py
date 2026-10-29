@@ -3750,10 +3750,34 @@ class MainWindow(OcrOcvMixin, QMainWindow):
             img_dir = os.path.join(
                 self.pm.get_project_dir(self.current_project["name"]), "images")
             def copy_files():
+                """拷贝图片 + 建空白 JSON。
+
+                ★★ 2026-10-29 修「导入到一半没反应」：
+                  原来这个循环里**没有任何异常处理**，也没检查磁盘空间。
+                  磁盘写满时 shutil.copy2 抛 OSError → 后台线程直接死掉 →
+                  界面停留在 "600/2222" 再无输出，用户以为卡死或网络卡了
+                  （用户实拍：104GB 的图往只剩 50GB 的盘里导，卡在 600 张）。
+                  现在：每张先探剩余空间，空间不够就**明确报错并停下**；
+                  单张失败记录下来继续跑，最后汇总。
+                """
+                import shutil as _sh
+                total = len(files)
+                failed = []
+                stopped_at = None
                 for i, f in enumerate(files):
                     dst = os.path.join(img_dir, os.path.basename(f))
                     if not os.path.exists(dst):
-                        shutil.copy2(f, dst)
+                        try:
+                            # 留 2GB 余量：单张最大也就几十 MB，够缓冲
+                            _free = _sh.disk_usage(img_dir).free
+                            if _free < 2 * 1024 ** 3:
+                                stopped_at = (i, _free)
+                                break
+                            shutil.copy2(f, dst)
+                        except Exception as e:      # noqa: BLE001
+                            failed.append((os.path.basename(f),
+                                           f"{type(e).__name__}: {e}"))
+                            continue
                     # Skip JSON creation for height map files (.tif/.tiff)
                     if os.path.splitext(dst)[1].lower() in (".tif", ".tiff"):
                         pass
@@ -3761,11 +3785,33 @@ class MainWindow(OcrOcvMixin, QMainWindow):
                         json_path = os.path.splitext(dst)[0] + ".json"
                         if not os.path.exists(json_path):
                             blank = {"version":"5.3.1","flags":{},"shapes":[],"imagePath":os.path.basename(dst),"imageData":None,"imageHeight":0,"imageWidth":0}
-                            with open(json_path, "w", encoding="utf-8") as jf:
-                                json.dump(blank, jf, indent=2, ensure_ascii=False)
+                            try:
+                                with open(json_path, "w", encoding="utf-8") as jf:
+                                    json.dump(blank, jf, indent=2, ensure_ascii=False)
+                            except Exception:
+                                pass
                     if (i + 1) % 100 == 0:
-                        self.log(f"Import progress: {i+1}/{len(files)}")
-                self.log(f"Import complete: {len(files)} images")
+                        self.log(f"Import progress: {i+1}/{total}")
+
+                # ── 收尾：把结果说清楚，别让用户对着空气等 ──
+                if stopped_at is not None:
+                    _i, _free = stopped_at
+                    self.log("=" * 52)
+                    self.log(f"❌ 导入中断：磁盘空间不足，停在第 {_i}/{total} 张")
+                    self.log(f"   目标盘剩余 {_free / 1024**3:.1f} GB，导入中断")
+                    self.log("   处理建议：")
+                    self.log("     1) 清理磁盘后重新导入（已导入的会自动跳过）")
+                    self.log("     2) 或先把 BMP 转成 PNG 再导入（4096² 约能省 85% 空间）")
+                    self.log("     3) 或只导入需要标注的子集")
+                    self.log("=" * 52)
+                elif failed:
+                    self.log(f"⚠️ 导入完成，但 {len(failed)}/{total} 张失败：")
+                    for _n, _e in failed[:10]:
+                        self.log(f"     {_n}: {_e}")
+                    if len(failed) > 10:
+                        self.log(f"     ...（共 {len(failed)} 张）")
+                else:
+                    self.log(f"Import complete: {total} images")
                 self._load_image_list_async()
             threading.Thread(target=copy_files, daemon=True).start()
 
