@@ -1734,15 +1734,22 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         self.backend_combo = QComboBox(); self.backend_combo.addItems(["PyTorch", "Compiled", "TorchScript", "TensorRT (FP16)", "ONNX (CPU fallback)"])
         self.backend_combo.setToolTip("Inference backend")
         il.addWidget(self.backend_combo)
-        sl = QHBoxLayout(); sl.addWidget(QLabel("Scale:"))
-        self.scale_slider = QSlider(Qt.Horizontal); self.scale_slider.setRange(25, 100)
-        saved_scale = self._load_ui_setting("scale", 100)
-        self.scale_slider.setValue(saved_scale)
-        self.scale_slider.valueChanged.connect(lambda v: self._save_ui_setting("scale", v))
-        self.scale_label = QLabel("1.00x")
-        self.scale_slider.valueChanged.connect(lambda v: self.scale_label.setText(f"{v/100:.2f}x"))
-        sl.addWidget(self.scale_slider); sl.addWidget(self.scale_label)
-        il.addLayout(sl)
+        # ★★ 2026-10-29（用户要求）：**去掉 Scale 滑块，改为自动**。
+        #   那个滑块是让用户手动把整图缩小再推理，本质是「用检出率换速度」。
+        #   而这个工程要检的凹点只有几十像素，缩一半等于让它从输入里消失
+        #   （predictor.py:569 记着这个坑：训练 mIoU 0.95，一推理啥也检不到）。
+        #   而且它有一半时间是失效的：原生滑窗时被强制 1.0，超大图时被强制缩到 1024。
+        #   留着只会让人以为「调它能解决慢」，然后踩坑。现在固定原分辨率，
+        #   超大图仍由 Predictor 内部按长边 1024 自动兜底（见 predict()）。
+        _scale_row = QHBoxLayout()
+        _scale_row.addWidget(QLabel("Scale:"))
+        _scale_note = QLabel("自动（原分辨率）")
+        _scale_note.setStyleSheet("color: #8A93A6; font-size: 11px;")
+        _scale_note.setToolTip(
+            "不再可调。手动缩小整图会让小缺陷在输入里变得过小、直接检不出。\n"
+            "图特别大时 Predictor 内部会自动把长边缩到 1024，无需干预。")
+        _scale_row.addWidget(_scale_note, 1)
+        il.addLayout(_scale_row)
         self.tiled_check = QCheckBox("Tiled")
         # ★★ 2026-10-29（用户要求）：**这个勾选框不再显示给用户**。
         #   推理该不该分块，取决于**训练时是怎么训的**，不是问用户 ——
@@ -8677,8 +8684,9 @@ class MainWindow(OcrOcvMixin, QMainWindow):
                                                    getattr(self.canvas, "current_image_path", ""))
             else:
                 # tiled=None ⇒ 由 Predictor 按**训练模式**自动决定（见 _resolve_train_mode）
+                # scale 固定 1.0：滑块已移除，缩放交给 Predictor 内部按图尺寸兜底
                 pred, overlay = predictor.predict(self.canvas.image, return_overlay=True,
-                    tiled=None, scale=self.scale_slider.value() / 100.0)
+                    tiled=None, scale=1.0)
 
             # ── 推理参数过滤（面积/宽度/高度/角度/灰度/分数 + 孔洞填充/最大个数）──
             #    以前这一步**完全没有**：模型 argmax 出来是什么就显示什么，
@@ -8874,7 +8882,8 @@ class MainWindow(OcrOcvMixin, QMainWindow):
             project_dir, model_file, out_dir=out_dir,
             backend=self._backend_key(),
             tiled=self.tiled_check.isChecked(),
-            scale=self.scale_slider.value() / 100.0,
+            # 固定 1.0：Scale 滑块已移除（缩放会让小缺陷消失），自动兜底在 Predictor 内
+            scale=1.0,
         )
         def run():
             try:
