@@ -102,3 +102,16 @@ _ui_render/
 
 # 运行日志（2026-10-23 起 UI 日志按天落盘）
 logs/
+
+# ===== 归档区（2026-10-29 整理）=====
+# 只保留小体积的调试脚本在版本库；大体积产物/截图/日志不入库
+_attic/build/
+_attic/shots/
+_attic/logs/
+_attic/legacy/
+
+# 项目根目录不再放临时探针（统一归档到 _attic/probes/）
+/_probe_*.py
+/_probe_*.log
+/selftest_*.py
+/*.bak*
