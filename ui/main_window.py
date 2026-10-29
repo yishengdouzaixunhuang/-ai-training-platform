@@ -23,6 +23,7 @@ from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from core.config import APP_NAME, APP_VERSION, load_config, save_config, CLASS_COLORS
 from core.imgio import resize_mask_u, pil_from_array, ensure_uint8
+from ui.qt_thread import ui_call, run_bg, ui_call_sync
 from core.project_manager import ProjectManager
 from core import marks as marks_mod
 from core.filter_expr import FilterExpr
@@ -7068,6 +7069,12 @@ class MainWindow(QMainWindow):
         lr_scheduler = self.cls_scheduler_combo.currentText()
         warmup_epochs = self.cls_warmup_spin.value()
         early_stop_patience = self.cls_early_stop_spin.value()
+        # ★ 这三项原本写在 run() 里 train(...) 的调用参数中现读控件，
+        #   而 run() 跑在子线程 —— 子线程读控件和写控件一样是未定义行为。
+        #   统一在**主线程**先读成局部快照，线程里只认这些值。
+        cls_balanced_flag = self.cls_balanced_check.isChecked()
+        cls_ema_flag = self.cls_ema_check.isChecked()
+        cls_select_metric = self.cls_select_metric_combo.currentText()
 
         mode_label = "Mixed Classification" if mixed_mode else "Classification"
         self.log(f"{mode_label}: {model_name}, {epochs} epochs, batch={batch_size}, lr={lr}")
@@ -7096,7 +7103,7 @@ class MainWindow(QMainWindow):
                     if self._stop_flag:
                         self._cls_trainer._stop_flag = True
                     self.progress_signal.emit(epoch, total)
-                    self.cls_train_status.setText(f"Epoch {epoch}/{total}")
+                    ui_call(self.cls_train_status.setText, f"Epoch {epoch}/{total}")
                 def stop_check():
                     return self._stop_flag
                 self._cls_trainer.train(
@@ -7109,27 +7116,28 @@ class MainWindow(QMainWindow):
                     dropout=dropout,
                     lr_scheduler=lr_scheduler, warmup_epochs=warmup_epochs,
                     early_stop_patience=early_stop_patience,
-                    class_balanced=self.cls_balanced_check.isChecked(),
-                    ema=self.cls_ema_check.isChecked(),
+                    class_balanced=cls_balanced_flag,
+                    ema=cls_ema_flag,
                     keep_aspect=keep_aspect,
-                    select_metric=self.cls_select_metric_combo.currentText(),
+                    select_metric=cls_select_metric,
                     progress_callback=epoch_cb, stop_check=stop_check,
                     log_callback=lambda msg: self.log_signal.emit(msg),
                     plot_callback=lambda h: self.chart_signal.emit(h),
                 )
-                self._refresh_cls_model_list()
-                self._refresh_cls_versions()
-                self._update_cls_loss_curve()
+                ui_call(self._refresh_cls_model_list)
+                ui_call(self._refresh_cls_versions)
+                ui_call(self._update_cls_loss_curve)
                 self.log_signal.emit(f"{mode_label} training complete!")
             except Exception as e:
                 import traceback
                 self.log_signal.emit(f"{mode_label} training error: {e}")
                 self.log_signal.emit(traceback.format_exc())
             finally:
-                self.cls_train_progress.setVisible(False)
-                self.cls_train_status.setText("Ready")
-                self._cls_stop_btn.setEnabled(False)
-                self._cls_start_btn.setEnabled(True)
+                # 子线程不碰控件：统一排队回主线程执行
+                ui_call(self.cls_train_progress.setVisible, False)
+                ui_call(self.cls_train_status.setText, "Ready")
+                ui_call(self._cls_stop_btn.setEnabled, False)
+                ui_call(self._cls_start_btn.setEnabled, True)
         import threading
         threading.Thread(target=run, daemon=True).start()
 
@@ -7211,6 +7219,10 @@ class MainWindow(QMainWindow):
             return QMessageBox.warning(self, "Warning", "No image selected")
         top_k = self.cls_topk_spin.value()
         mixed_mode = self.cls_mixed_check.isChecked()
+        # ★ run() 跑在子线程，里面对控件的读取/写入都要先在主线程取快照
+        tta_on = self.cls_tta_check.isChecked()
+        auto_heatmap_on = (hasattr(self, "cls_auto_heatmap")
+                           and self.cls_auto_heatmap.isChecked())
         self.cls_infer_status.setText("Running...")
         def run():
             import time
@@ -7227,7 +7239,7 @@ class MainWindow(QMainWindow):
                             break
                     if not height_path:
                         self.log_signal.emit("Mixed inference: no paired height map found")
-                        self.cls_result_label.setText("No paired height map")
+                        ui_call(self.cls_result_label.setText, "No paired height map")
                         return
                     t0 = time.time()
                     result = ct.predict(current_path, height_path)
@@ -7238,16 +7250,17 @@ class MainWindow(QMainWindow):
                         self._cls_predictions[current_path] = result
                         self.log_signal.emit(
                             f"Mixed: {result['class']} ({result['confidence']:.2%}) in {elapsed:.2f}s")
-                        self.cls_result_label.setText(f"{result['class']}: {result['confidence']:.4f}")
+                        ui_call(self.cls_result_label.setText,
+                                f"{result['class']}: {result['confidence']:.4f}")
                     else:
-                        self.cls_result_label.setText("No result")
+                        ui_call(self.cls_result_label.setText, "No result")
                         self.log_signal.emit("Mixed: no result")
                 else:
                     from classification.trainer import ClassificationTrainer
                     ct = ClassificationTrainer(project_dir)
                     t0 = time.time()
                     result = ct.predict_single(current_path, model_file, top_k=top_k,
-                                              tta=self.cls_tta_check.isChecked())
+                                              tta=tta_on)
                     elapsed = time.time() - t0
                     if result and result.get("predictions"):
                         if not hasattr(self, "_cls_predictions"):
@@ -7257,19 +7270,18 @@ class MainWindow(QMainWindow):
                         self.log_signal.emit(
                             f"Classification: {result['predictions'][0]['class']} "
                             f"({result['predictions'][0]['confidence']:.2%}) in {elapsed:.2f}s")
-                        self.cls_result_label.setText("\n".join(lines))
-                        if (hasattr(self, "cls_auto_heatmap") and self.cls_auto_heatmap.isChecked()
-                                and result and result.get("predictions")):
+                        ui_call(self.cls_result_label.setText, "\n".join(lines))
+                        if auto_heatmap_on and result and result.get("predictions"):
                             self._generate_cls_heatmap()
                     else:
-                        self.cls_result_label.setText("No result")
+                        ui_call(self.cls_result_label.setText, "No result")
                         self.log_signal.emit("Classification: no result")
             except Exception as e:
                 import traceback
                 self.log_signal.emit(f"Classification inference error: {e}")
-                self.cls_result_label.setText(f"Error: {e}")
+                ui_call(self.cls_result_label.setText, f"Error: {e}")
             finally:
-                self.cls_infer_status.setText("Ready")
+                ui_call(self.cls_infer_status.setText, "Ready")
         import threading
         threading.Thread(target=run, daemon=True).start()
 
@@ -7300,6 +7312,10 @@ class MainWindow(QMainWindow):
                 return QMessageBox.warning(self, "Warning", "No images found")
         total = len(images)
         top_k = self.cls_topk_spin.value()
+        # ★ run() 跑在子线程，里面不能再读控件：这里先取快照。
+        tta_on = self.cls_tta_check.isChecked()
+        auto_heatmap_on = (hasattr(self, "cls_auto_heatmap")
+                           and self.cls_auto_heatmap.isChecked())
         self._stop_flag = False
         self.cls_infer_progress.setVisible(True)
         self.cls_infer_progress.setMaximum(total)
@@ -7340,7 +7356,7 @@ class MainWindow(QMainWindow):
                     ct = ClassificationTrainer(project_dir)
                     ct.load_model(model_file)
                     self.log_signal.emit(
-                        f"Batch inference: device={ct.device}, TTA={self.cls_tta_check.isChecked()}, "
+                        f"Batch inference: device={ct.device}, TTA={tta_on}, "
                         f"keep_aspect={getattr(ct, '_keep_aspect', False)}, model={model_file}")
                     for i, img_path in enumerate(images):
                         if self._stop_flag:
@@ -7349,7 +7365,7 @@ class MainWindow(QMainWindow):
                         base = os.path.splitext(os.path.basename(img_path))[0]
                         t0 = time.time()
                         try:
-                            result = ct.predict_single(img_path, model_file, top_k=top_k, tta=self.cls_tta_check.isChecked())
+                            result = ct.predict_single(img_path, model_file, top_k=top_k, tta=tta_on)
                             elapsed = time.time() - t0
                             infer_times.append(elapsed)
                             if result and result.get("predictions"):
@@ -7377,7 +7393,7 @@ class MainWindow(QMainWindow):
                         self._cls_predictions[base] = info
                 self.refresh_list_signal.emit()
                 # Auto-generate heatmaps for ALL images after batch inference
-                if not mixed_mode and hasattr(self, "cls_auto_heatmap") and self.cls_auto_heatmap.isChecked():
+                if not mixed_mode and auto_heatmap_on:
                     self.log_signal.emit("Generating heatmaps for all images...")
                     hm_dir = os.path.join(out_dir, "heatmaps")
                     os.makedirs(hm_dir, exist_ok=True)
@@ -7431,7 +7447,7 @@ class MainWindow(QMainWindow):
                         import traceback
                         self.log_signal.emit(f"Heatmap batch error: {e}")
                         traceback.print_exc()
-                self.cls_infer_status.setText("Complete")
+                ui_call(self.cls_infer_status.setText, "Complete")
                 # Compute confusion matrix from batch results
                 try:
                     from classification.label_manager import LabelManager as ClsLabelManager
@@ -7469,9 +7485,7 @@ class MainWindow(QMainWindow):
                     total_matched = sum(sum(row) for row in cm)
                     acc = matched / total_matched if total_matched > 0 else 0
                     # Update table
-                    self.cls_cm_table.setRowCount(n + 1)
-                    self.cls_cm_table.setColumnCount(n + 1)
-                    # Reorder: OK first, NG second for display
+                    # 先做纯计算（display_order / cm_display / row_sums 都不碰控件，留在子线程即可）
                     display_order = list(range(n))
                     if "OK" in class_names and "NG" in class_names:
                         ok_idx = class_names.index("OK")
@@ -7482,30 +7496,39 @@ class MainWindow(QMainWindow):
                     # Reorder cm matrix
                     cm_display = [[cm[display_order[i]][display_order[j]] for j in range(n)] for i in range(n)]
                     headers = display_names + ["Total"]
-                    self.cls_cm_table.setHorizontalHeaderLabels(headers)
-                    self.cls_cm_table.setVerticalHeaderLabels(display_names + ["Total"])
                     row_sums = [sum(row) for row in cm_display]
                     col_sums = [sum(cm_display[r][c] for r in range(n)) for c in range(n)]
                     cm_total = sum(row_sums)
-                    for i in range(n):
-                        for j in range(n):
-                            item = QTableWidgetItem(str(cm_display[i][j]))
+
+                    # 填表必须在主线程：setRowCount / setItem 全是 GUI 操作。
+                    # 这里用 ui_call_sync 而不是 ui_call —— 下面 _cls_cm_data 紧接着就要用到，
+                    # 异步的话主线程还没填完，子线程已经往下跑了。
+                    def _render_cm():
+                        self.cls_cm_table.setRowCount(n + 1)
+                        self.cls_cm_table.setColumnCount(n + 1)
+                        self.cls_cm_table.setHorizontalHeaderLabels(headers)
+                        self.cls_cm_table.setVerticalHeaderLabels(display_names + ["Total"])
+                        for i in range(n):
+                            for j in range(n):
+                                item = QTableWidgetItem(str(cm_display[i][j]))
+                                item.setTextAlignment(Qt.AlignCenter)
+                                if i == j:
+                                    item.setBackground(QColor(180, 255, 180)); item.setForeground(QColor("#0A0E17"))
+                                self.cls_cm_table.setItem(i, j, item)
+                            item = QTableWidgetItem(str(row_sums[i]))
                             item.setTextAlignment(Qt.AlignCenter)
-                            if i == j:
-                                item.setBackground(QColor(180, 255, 180)); item.setForeground(QColor("#0A0E17"))
-                            self.cls_cm_table.setItem(i, j, item)
-                        item = QTableWidgetItem(str(row_sums[i]))
+                            self.cls_cm_table.setItem(i, n, item)
+                        for j in range(n):
+                            item = QTableWidgetItem(str(col_sums[j]))
+                            item.setTextAlignment(Qt.AlignCenter)
+                            self.cls_cm_table.setItem(n, j, item)
+                        item = QTableWidgetItem(str(cm_total))
                         item.setTextAlignment(Qt.AlignCenter)
-                        self.cls_cm_table.setItem(i, n, item)
-                    for j in range(n):
-                        item = QTableWidgetItem(str(col_sums[j]))
-                        item.setTextAlignment(Qt.AlignCenter)
-                        self.cls_cm_table.setItem(n, j, item)
-                    item = QTableWidgetItem(str(cm_total))
-                    item.setTextAlignment(Qt.AlignCenter)
-                    self.cls_cm_table.setItem(n, n, item)
-                    self._size_cm_table()
-                    self.cls_eval_status.setText("Acc: {:.2%}  ({}/{} matched)".format(acc, matched, total_matched))
+                        self.cls_cm_table.setItem(n, n, item)
+                        self._size_cm_table()
+                        self.cls_eval_status.setText("Acc: {:.2%}  ({}/{} matched)".format(acc, matched, total_matched))
+
+                    ui_call_sync(_render_cm)
                     # Store per-image mapping for click-to-filter
                     self._cls_cm_data = {"cm": cm_display, "names": display_names, "gt_map": gt_map, "pred_map": pred_map}
                     # Persist to disk
@@ -7522,18 +7545,26 @@ class MainWindow(QMainWindow):
                             acc, matched, total_matched, infer_times)
                     except Exception:
                         pass
-                    self._refresh_cls_versions()
-                    self.cls_cm_table.cellClicked.disconnect() if self.cls_cm_table.receivers(self.cls_cm_table.cellClicked) > 0 else None
-                    self.cls_cm_table.cellClicked.connect(self._on_cm_cell_clicked)
+                    ui_call(self._refresh_cls_versions)
+
+                    # 重新绑定单元格点击：disconnect/connect 都是 GUI 操作，得回主线程
+                    def _rebind_cm_click():
+                        try:
+                            self.cls_cm_table.cellClicked.disconnect()
+                        except TypeError:
+                            pass      # 本来就没连，忽略
+                        self.cls_cm_table.cellClicked.connect(self._on_cm_cell_clicked)
+
+                    ui_call(_rebind_cm_click)
                 except Exception as ex:
                     self.log_signal.emit("CM error: " + str(ex))
             except Exception as e:
                 import traceback
                 self.log_signal.emit(f"Batch classification error: {e}")
                 self.log_signal.emit(traceback.format_exc())
-                self.cls_infer_status.setText("Failed")
+                ui_call(self.cls_infer_status.setText, "Failed")
             finally:
-                self.cls_infer_progress.setVisible(False)
+                ui_call(self.cls_infer_progress.setVisible, False)
         import threading
         threading.Thread(target=run, daemon=True).start()
 
@@ -7640,12 +7671,13 @@ class MainWindow(QMainWindow):
                     self._ocr_predictions[fname] = {"text": results[0].get("text", ""), "confidence": results[0].get("score", 0)}
                 self.log_signal.emit(f"OCR: {len(results)} text regions found")
                 self.refresh_list_signal.emit()
-                self._update_ocr_table(results)
-                self._update_ocr_overlay()
+                # 表格填充和画布叠加都是 GUI 操作，回主线程做
+                ui_call(self._update_ocr_table, results)
+                ui_call(self._update_ocr_overlay)
             except Exception as e:
                 self.log_signal.emit(f"OCR error: {e}")
             finally:
-                self.ocr_status.setText("Ready")
+                ui_call(self.ocr_status.setText, "Ready")
         import threading
         threading.Thread(target=run, daemon=True).start()
 
@@ -7676,8 +7708,8 @@ class MainWindow(QMainWindow):
                     else:
                         results[fname] = {"error": str(err)}
                         self.log_signal.emit("[%d/%d] %s: FAILED - %s" % (i, total, fname, err))
-                    self.ocr_progress.setMaximum(total)
-                    self.ocr_progress.setValue(i)
+                    ui_call(self.ocr_progress.setMaximum, total)
+                    ui_call(self.ocr_progress.setValue, i)
                 br = BatchRunner(flow, project_dir=pd, stop_check=lambda: self._stop_flag)
                 br.run(images, on_progress=on_progress)
                 # 保存批量推理结果到 ocr_results.json 文件
@@ -7710,14 +7742,14 @@ class MainWindow(QMainWindow):
                     fname = os.path.basename(current_path)
                     if fname in results and isinstance(results[fname], list):
                         self._current_ocr_results = results[fname]
-                        self._update_ocr_table(results[fname])
-                        self._update_ocr_overlay()
+                        ui_call(self._update_ocr_table, results[fname])
+                        ui_call(self._update_ocr_overlay)
             except Exception as e:
                 import traceback
                 self.log_signal.emit(f"Batch OCR error: {e}")
             finally:
-                self.ocr_status.setText("Ready")
-                self.ocr_progress.setVisible(False)
+                ui_call(self.ocr_status.setText, "Ready")
+                ui_call(self.ocr_progress.setVisible, False)
         import threading
         threading.Thread(target=run, daemon=True).start()
     def _update_ocr_table(self, results):
@@ -7810,12 +7842,12 @@ class MainWindow(QMainWindow):
                 inspector, n = train_ocv_model(ok_dir, out_path)
                 self._ocv_inspector = inspector
                 self.log_signal.emit(f"OCV model built: {n} OK samples, threshold={inspector.threshold:.2f}")
-                self.ocv_threshold.setValue(inspector.threshold)
+                ui_call(self.ocv_threshold.setValue, inspector.threshold)
             except Exception as e:
                 import traceback
                 self.log_signal.emit(f"OCV build error: {e}")
             finally:
-                self.ocv_status.setText("Ready")
+                ui_call(self.ocv_status.setText, "Ready")
         import threading
         threading.Thread(target=run, daemon=True).start()
 
@@ -7873,15 +7905,17 @@ class MainWindow(QMainWindow):
             self.log_signal.emit("No OCV model loaded. Build one first.")
             return
         self.ocv_status.setText("Batch inspecting...")
+        # run() 是子线程：阈值先在主线程读好，别在线程里碰控件
+        _ocv_thr = self.ocv_threshold.value()
         def run():
             from flow.batch import BatchRunner, build_ocv_flow, list_images
             images = list_images(pd)
             if not images:
                 self.log_signal.emit("No images found")
-                self.ocv_status.setText("Ready")
+                ui_call(self.ocv_status.setText, "Ready")
                 return
             out_path = os.path.join(pd, "outputs", "ocv_results.jsonl")
-            flow = build_ocv_flow(model_path=model_path, threshold=self.ocv_threshold.value(), out_path=out_path)
+            flow = build_ocv_flow(model_path=model_path, threshold=_ocv_thr, out_path=out_path)
             ok_cnt = ng_cnt = 0
             def on_progress(i, total, path, frame, err):
                 nonlocal ok_cnt, ng_cnt
@@ -7894,7 +7928,7 @@ class MainWindow(QMainWindow):
             br = BatchRunner(flow, project_dir=pd, stop_check=lambda: self._stop_flag)
             br.run(images, on_progress=on_progress)
             self.log_signal.emit(f"OCV batch: {ok_cnt} OK, {ng_cnt} NG out of {len(images)}")
-            self.ocv_status.setText("Ready")
+            ui_call(self.ocv_status.setText, "Ready")
         import threading
         threading.Thread(target=run, daemon=True).start()
     def _size_cm_table(self):
@@ -8147,8 +8181,6 @@ class MainWindow(QMainWindow):
                 self.log_signal.emit("Evaluation: Top-1={:.4f}, Top-5={:.4f}".format(top1, top5))
                 if cm and len(class_names) > 0:
                     n = len(class_names)
-                    self.cls_cm_table.setRowCount(n + 1)
-                    self.cls_cm_table.setColumnCount(n + 1)
                     # Reorder: OK first, NG second for display
                     display_order = list(range(n))
                     if "OK" in class_names and "NG" in class_names:
@@ -8160,40 +8192,48 @@ class MainWindow(QMainWindow):
                     # Reorder cm matrix
                     cm_display = [[cm[display_order[i]][display_order[j]] for j in range(n)] for i in range(n)]
                     headers = display_names + ["Total"]
-                    self.cls_cm_table.setHorizontalHeaderLabels(headers)
-                    self.cls_cm_table.setVerticalHeaderLabels(display_names + ["Total"])
                     row_sums = [sum(row) for row in cm_display]
                     col_sums = [sum(cm_display[r][c] for r in range(n)) for c in range(n)]
                     cm_total = sum(row_sums)
-                    for i in range(n):
-                        for j in range(n):
-                            item = QTableWidgetItem(str(cm_display[i][j]))
+
+                    # 填表必须回主线程（setRowCount/setItem 都是 GUI 操作）
+                    def _render_cm_eval():
+                        self.cls_cm_table.setRowCount(n + 1)
+                        self.cls_cm_table.setColumnCount(n + 1)
+                        self.cls_cm_table.setHorizontalHeaderLabels(headers)
+                        self.cls_cm_table.setVerticalHeaderLabels(display_names + ["Total"])
+                        for i in range(n):
+                            for j in range(n):
+                                item = QTableWidgetItem(str(cm_display[i][j]))
+                                item.setTextAlignment(Qt.AlignCenter)
+                                if i == j:
+                                    item.setBackground(QColor(180, 255, 180)); item.setForeground(QColor("#0A0E17"))
+                                self.cls_cm_table.setItem(i, j, item)
+                            item = QTableWidgetItem(str(row_sums[i]))
                             item.setTextAlignment(Qt.AlignCenter)
-                            if i == j:
-                                item.setBackground(QColor(180, 255, 180)); item.setForeground(QColor("#0A0E17"))
-                            self.cls_cm_table.setItem(i, j, item)
-                        item = QTableWidgetItem(str(row_sums[i]))
+                            self.cls_cm_table.setItem(i, n, item)
+                        for j in range(n):
+                            item = QTableWidgetItem(str(col_sums[j]))
+                            item.setTextAlignment(Qt.AlignCenter)
+                            self.cls_cm_table.setItem(n, j, item)
+                        item = QTableWidgetItem(str(cm_total))
                         item.setTextAlignment(Qt.AlignCenter)
-                        self.cls_cm_table.setItem(i, n, item)
-                    for j in range(n):
-                        item = QTableWidgetItem(str(col_sums[j]))
-                        item.setTextAlignment(Qt.AlignCenter)
-                        self.cls_cm_table.setItem(n, j, item)
-                    item = QTableWidgetItem(str(cm_total))
-                    item.setTextAlignment(Qt.AlignCenter)
-                    self.cls_cm_table.setItem(n, n, item)
-                    self._size_cm_table()
+                        self.cls_cm_table.setItem(n, n, item)
+                        self._size_cm_table()
+
+                    ui_call_sync(_render_cm_eval)
                     try:
                         self._write_cls_version_result(
                             model_file, cm_display, display_names, {}, {}, top1, 0, 0, None)
                     except Exception:
                         pass
                     self._refresh_cls_versions()
-                self.cls_eval_status.setText("Top-1: {:.2%}  Top-5: {:.2%}".format(top1, top5))
+                ui_call(self.cls_eval_status.setText,
+                        "Top-1: {:.2%}  Top-5: {:.2%}".format(top1, top5))
             except Exception as e:
                 import traceback
                 self.log_signal.emit("Evaluation error: " + str(e))
-                self.cls_eval_status.setText("Error: " + str(e))
+                ui_call(self.cls_eval_status.setText, "Error: " + str(e))
         import threading
         threading.Thread(target=run, daemon=True).start()
 
@@ -8623,18 +8663,19 @@ class MainWindow(QMainWindow):
                     )
                 # 注意：trainer 自己已经打过一条 "Training complete!"（含早停摘要之后），
                 # 这里再打一条会出现两行一模一样的日志（实拍）。只更新状态栏即可。
-                self.train_status.setText("Complete")
+                ui_call(self.train_status.setText, "Complete")
             except Exception as e:
                 import traceback
                 self.log_signal.emit(f"Training error: {e}")
                 self.log_signal.emit(traceback.format_exc())
-                self.train_status.setText("Failed")
+                ui_call(self.train_status.setText, "Failed")
             finally:
                 # ★ 复位 _stop_flag：否则"取消一次"之后**后面所有任务都会秒停**
                 #   （标志是全局的，原先只靠停止按钮路径复位，队列路径漏了）
                 self._stop_flag = False
-                self.btn_train_stop.setEnabled(False)
-                self.train_progress.setVisible(False)
+                # ⚠️ 这里是子线程：直接碰控件会随机崩，统一排队回主线程
+                ui_call(self.btn_train_stop.setEnabled, False)
+                ui_call(self.train_progress.setVisible, False)
                 # ★ 带上本次任务的实例：别把"下一个任务刚建好的 trainer"清掉
                 self._cleanup_trainer(_trainer_ref)
 
@@ -8899,23 +8940,24 @@ class MainWindow(QMainWindow):
                         #    134 组 × 8s ≈ 18 分钟，中间没有任何输出等于让人干等。
                         _dt = time.time() - _t0
                         self.log_signal.emit("[%d/%d] %s 完成 (%.1fs)" % (i, total, key, _dt))
-                        self.infer_status.setText("Running... %d/%d" % (i, total))
+                        ui_call(self.infer_status.setText, "Running... %d/%d" % (i, total))
                     except Exception as e:
                         fail += 1
                         self.log_signal.emit("[%d/%d] %s: FAILED - %s: %s" % (i, total, key, type(e).__name__, e))
                     self.infer_progress_signal.emit(i, total)
                 self.log_signal.emit("多视图批处理完成：成功 %d / 失败 %d，输出 %s" % (done, fail, out_dir))
-                self.infer_status.setText("Complete")
+                ui_call(self.infer_status.setText, "Complete")
                 self._pred_count_cache_key = None
                 threading.Thread(target=self._load_output_stats_async, args=(project_dir,), daemon=True).start()
             except Exception as e:
                 import traceback
                 self.log_signal.emit(f"多视图批处理错误: {e}")
                 self.log_signal.emit(traceback.format_exc())
-                self.infer_status.setText("Failed")
+                ui_call(self.infer_status.setText, "Failed")
             finally:
-                self.btn_infer_stop.setEnabled(False)
-                self.infer_progress.setVisible(False)
+                # 子线程不碰控件：统一排队回主线程执行
+                ui_call(self.btn_infer_stop.setEnabled, False)
+                ui_call(self.infer_progress.setVisible, False)
 
         threading.Thread(target=run, daemon=True).start()
 
@@ -9172,7 +9214,7 @@ class MainWindow(QMainWindow):
                 br = BatchRunner(flow, project_dir=project_dir, stop_check=lambda: self._stop_flag)
                 br.run(images, on_progress=on_progress)
                 self.log_signal.emit("Batch inference complete! Results: %s" % out_dir)
-                self.infer_status.setText("Complete")
+                ui_call(self.infer_status.setText, "Complete")
                 self._pred_count_cache_key = None  # force re-scan outputs
                 # ★ 刷新图片列表：让「耗时ms」（和重新扫描出来的「结果/分数」）立刻显示出来
                 self.refresh_list_signal.emit()   # 类里定义的信号（见 428 行）
@@ -9181,10 +9223,11 @@ class MainWindow(QMainWindow):
                 import traceback
                 self.log_signal.emit(f"Batch inference error: {e}")
                 self.log_signal.emit(traceback.format_exc())
-                self.infer_status.setText("Failed")
+                ui_call(self.infer_status.setText, "Failed")
             finally:
-                self.btn_infer_stop.setEnabled(False)
-                self.infer_progress.setVisible(False)
+                # 子线程不碰控件：统一排队回主线程执行
+                ui_call(self.btn_infer_stop.setEnabled, False)
+                ui_call(self.infer_progress.setVisible, False)
         threading.Thread(target=run, daemon=True).start()
     def _run_det_batch_inference(self, project_dir):
         """Batch detection inference on all images."""
@@ -9223,7 +9266,7 @@ class MainWindow(QMainWindow):
                 br = BatchRunner(flow, project_dir=project_dir, stop_check=lambda: self._stop_flag)
                 br.run(images, on_progress=on_progress)
                 self.log_signal.emit("Batch detection complete! %d images, results: %s" % (ok_cnt, out_dir))
-                self.infer_status.setText("Complete")
+                ui_call(self.infer_status.setText, "Complete")
                 self._pred_count_cache_key = None  # force re-scan outputs
                 threading.Thread(target=self._load_output_stats_async, args=(project_dir,), daemon=True).start()
                 # Reload predictions for current image
@@ -9235,10 +9278,11 @@ class MainWindow(QMainWindow):
                 import traceback
                 self.log_signal.emit(f"Batch detection error: {e}")
                 self.log_signal.emit(traceback.format_exc())
-                self.infer_status.setText("Failed")
+                ui_call(self.infer_status.setText, "Failed")
             finally:
-                self.btn_infer_stop.setEnabled(False)
-                self.infer_progress.setVisible(False)
+                # 子线程不碰控件：统一排队回主线程执行
+                ui_call(self.btn_infer_stop.setEnabled, False)
+                ui_call(self.infer_progress.setVisible, False)
         threading.Thread(target=run, daemon=True).start()
     # ============ Import / Export ============
 

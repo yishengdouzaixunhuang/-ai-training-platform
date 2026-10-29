@@ -75,6 +75,10 @@ def main():
 
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
+    # 必须在主线程、QApplication 之后立刻初始化：把「后台线程回主线程更新 UI」
+    # 的转发器建在主线程上，否则子线程里 ui_call() 无处投递。
+    from ui.qt_thread import init_ui_invoker as _init_ui_invoker
+    _init_ui_invoker()
     # 滚轮守卫：数字框/下拉框不再被滚轮改值，滚轮改为滚动外层面板
     from ui.wheel_guard import install as _install_wheel_guard
     _install_wheel_guard(app)
