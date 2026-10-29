@@ -5959,12 +5959,28 @@ class MainWindow(OcrOcvMixin, QMainWindow):
     def _mark_stats_records(self):
         """给统计面板喂数据：用**全量**图片（不是筛选后的），否则筛选一开统计就自己变了。"""
         self._ensure_marks_loaded()
+        # ★★ 2026-10-29 性能（打开工程卡顿的真正大头）：
+        #   这里原来对**每张图**调用 _defect_of_base()，而它内部是
+        #       for r in self._filtered_data:      # 线性查找
+        #           if r.get("base") == base: ...
+        #   于是 1690 张 × 1690 项 ≈ **285 万次比较**。
+        #   cProfile 实测这一段 963ms，占整个 _filter_images 的 94%
+        #   （profile 里那 289 万次 dict.get 就是它）。
+        #   改成先建一次 base→标签 索引，循环里 O(1) 查 —— 从 O(n²) 降到 O(n)。
+        _lbl_by_base = {}
+        for r in (getattr(self, "_filtered_data", []) or []):
+            _b = r.get("base")
+            if _b and r.get("shape_labels") and _b not in _lbl_by_base:
+                _lbl_by_base[_b] = str(r["shape_labels"][0])
+
         recs = []
         for p in (self._all_images or []):
             base = os.path.splitext(os.path.basename(p))[0]
             m = marks_mod.get_mark(self._marks, base)
+            _lbl = _lbl_by_base.get(base)
             recs.append({"base": base, "mark": m["mark"], "note": m["note"],
-                         "defect": self._defect_of_base(base)})
+                         "defect": _lbl if _lbl is not None
+                         else marks_mod.defect_of(base)})
         return recs
 
     def _defect_of_base(self, base):
