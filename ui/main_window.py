@@ -22,6 +22,7 @@ matplotlib.use("Qt5Agg")
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from core.config import APP_NAME, APP_VERSION, load_config, save_config, CLASS_COLORS
+from core.imgio import resize_mask_u, pil_from_array, ensure_uint8
 from core.project_manager import ProjectManager
 from core import marks as marks_mod
 from core.filter_expr import FilterExpr
@@ -5003,11 +5004,9 @@ class MainWindow(QMainWindow):
                 _dw, _dh = _cq.width(), _cq.height()
                 if tuple(arr.shape[:2]) != (_dh, _dw):
                     _k = float(arr.shape[1]) / float(_dw)
-                    arr = _np.array(Image.fromarray(_np.ascontiguousarray(arr)).resize(
-                        (_dw, _dh), Image.NEAREST))
+                    arr = resize_mask_u(arr, (_dw, _dh))
                     if mask is not None:
-                        mask = _np.array(Image.fromarray(_np.ascontiguousarray(mask)).resize(
-                            (_dw, _dh), Image.NEAREST))
+                        mask = resize_mask_u(mask, (_dw, _dh))
         except Exception:
             _k = 1.0
 

@@ -6,6 +6,7 @@ from PyQt5.QtGui import QPainter, QPixmap, QImage, QCursor, QPen, QColor, QBrush
 from PyQt5.QtCore import Qt, pyqtSignal, QPointF, QRectF, QPoint
 
 from core.config import CLASS_COLORS, IGNORE_CLASS_ID, IGNORE_CLASS_COLOR
+from core.imgio import resize_mask_u, pil_from_array, ensure_uint8
 from annotation.label_manager import LabelManager
 from annotation.labelme_io import load_mask_from_json, save_mask_to_json, load_labelme_json, shapes_to_mask, get_json_path
 
@@ -655,8 +656,11 @@ class AnnotationCanvas(QWidget):
                 raise RuntimeError("no _disp_image")
             iw2, ih2 = _disp.size
             if (ih2, iw2) != self.mask.shape:
-                _m = np.array(Image.fromarray(np.ascontiguousarray(self.mask)).resize(
-                    (iw2, ih2), Image.NEAREST))
+                # 统一走 resize_mask_u：内部先规范成 uint8。
+                # 原来直接 Image.fromarray(self.mask)，mask 为 int64 时抛
+                # TypeError: Cannot handle this data type: (1,1), <i8>，
+                # 而这里属于 paintEvent 调用链 → 直接弹崩溃框。
+                _m = resize_mask_u(self.mask, (iw2, ih2))
             else:
                 _m = self.mask
             img_arr2 = np.array(_disp)
@@ -974,11 +978,8 @@ class AnnotationCanvas(QWidget):
             # ⚠️ 必须显式转 uint8：`Image.fromarray` 认不了 int64，会抛
             #   `TypeError: Cannot handle this data type: (1, 1), <i8>`
             #   （滑窗推理返回的就是 int64；在 paintEvent 里抛异常 = 整个程序弹崩溃框）
-            _m = np.ascontiguousarray(mask)
-            if _m.dtype != np.uint8:
-                _m = _m.astype(np.uint8)
-            mask = np.array(Image.fromarray(_m).resize(
-                (iw, ih), Image.NEAREST))
+            #   统一收口到 core.imgio.resize_mask_u，别再各处手写 astype。
+            mask = resize_mask_u(mask, (iw, ih))
             h, w = mask.shape
         cache_key = (id(mask), with_background, self.current_image_path)
         if cache_key in self._pred_overlay_cache:
@@ -1056,12 +1057,10 @@ class AnnotationCanvas(QWidget):
             dw, dh = _disp.size
             if (dh, dw) != mask.shape:
                 _scale = float(mask.shape[1]) / float(dw)
-                mask = _np.array(Image.fromarray(_np.ascontiguousarray(mask)).resize(
-                    (dw, dh), Image.NEAREST))
+                mask = resize_mask_u(mask, (dw, dh))
         _ann_small = self.mask
         if _ann_small is not None and _disp is not None and _ann_small.shape != mask.shape:
-            _ann_small = _np.array(Image.fromarray(_np.ascontiguousarray(_ann_small)).resize(
-                (_disp.size[0], _disp.size[1]), Image.NEAREST))
+            _ann_small = resize_mask_u(_ann_small, _disp.size)
         _img_src = _disp if _disp is not None else self.image
         _gray = None
         if _img_src is not None:
