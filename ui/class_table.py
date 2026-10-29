@@ -255,14 +255,21 @@ class ClassTableView(QWidget):
         for c in (3, 4, 5, 6):
             self.table.setColumnWidth(c, w)
 
-    def set_classes(self, classes, colors=None):
-        """Rebuild the table from a list of class names."""
+    def set_classes(self, classes, colors=None, with_counts=True):
+        """Rebuild the table from a list of class names.
+
+        ``with_counts=False``：先只把表和名字建出来，数字列留 0，
+        由调用方稍后调 :meth:`refresh_counts` 补上。
+        为什么需要它：``_compute_counts()`` 要遍历工程里的标注文件，
+        在 1690 张图的工程上实测 559ms —— 打开工程时这段卡在主线程上，
+        用户看到的就是"双击之后干等"。数字晚一拍出现，比界面假死好得多。
+        """
         prev = self._current_idx
         self.clear()
         self._classes = list(classes)
         # 此时字体已定型（主题清洗在窗口构造之后才跑）⇒ 这里重量一次数字列宽
         self._fit_numeric_columns()
-        counts = self._compute_counts()
+        counts = self._compute_counts() if with_counts else {}
         self.table.setRowCount(len(classes))
         for i, name in enumerate(classes):
             color = colors[i] if colors and i < len(colors) else CLASS_COLORS[i % len(CLASS_COLORS)]
@@ -291,6 +298,25 @@ class ClassTableView(QWidget):
                 self.table.setItem(i, col, item)
         if 0 <= prev < len(classes):
             self.setCurrentRow(prev, emit=False)
+
+    def refresh_counts(self):
+        """只重算并更新数字列（train/test/val/empty），不重建整张表。
+
+        配合 ``set_classes(..., with_counts=False)`` 使用：表先出来，
+        这一步把统计补上。只动 item 文本，不触发整表重建。
+        """
+        if not self._classes or not self._project_dir:
+            return
+        counts = self._compute_counts()
+        for i in range(len(self._classes)):
+            train, test, val, empty = counts.get(i, (0, 0, 0, 0))
+            for col, value in ((3, train), (4, test), (5, val), (6, empty)):
+                item = self.table.item(i, col)
+                if item is None:
+                    item = QTableWidgetItem()
+                    item.setTextAlignment(Qt.AlignCenter)
+                    self.table.setItem(i, col, item)
+                item.setText(str(value))
 
     def clear(self):
         """Remove all rows and reset selection."""

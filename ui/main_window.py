@@ -3827,7 +3827,11 @@ class MainWindow(OcrOcvMixin, QMainWindow):
                 for f in sorted(os.listdir(img_dir)):
                     if f.lower().endswith((".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff")):
                         images.append(os.path.join(img_dir, f))
-            self.image_list_signal.emit((gen, images))
+            try:
+                self.image_list_signal.emit((gen, images))
+            except RuntimeError:
+                # 窗口已销毁（用户关了软件）—— 后台线程还在跑，直接收摊，别刷异常
+                return
             # ★ 列表先显示出来，再在**同一个后台线程**里预热掩膜统计缓存。
             #   不预热的话，主线程 _filter_images 要为每张图解码 1500² PNG，
             #   1690 张 ≈ 7~17 秒界面冻结 —— 这就是"双击打开工程很卡"。
@@ -3844,6 +3848,22 @@ class MainWindow(OcrOcvMixin, QMainWindow):
 
         用户看到的效果：工程秒开，列表立刻可用，「标注」列数字稍后自动补齐。
         """
+        # ★ 先等首屏画完再开工（600ms）。
+        #   原来 emit 完列表就立刻开始解码/扫 JSON，正好和主线程的 _filter_images
+        #   撞在一起抢 GIL —— 实测首屏 400ms 被拖到 870ms。
+        #   降 OS 线程优先级没用（GIL 是 Python 层的锁，不看调度优先级），
+        #   只能靠错峰。预热晚 0.6 秒开始，用户完全感觉不到；
+        #   而首屏能实实在在快一倍。
+        time.sleep(0.6)
+
+        # 顺手把本线程降到 BELOW_NORMAL（对纯 IO 阶段仍有帮助）
+        try:
+            import ctypes
+            ctypes.windll.kernel32.SetThreadPriority(
+                ctypes.windll.kernel32.GetCurrentThread(), -1)   # THREAD_PRIORITY_BELOW_NORMAL
+        except Exception:
+            pass
+
         ann_dir = os.path.join(project_dir, "annotations")
         filled = 0
         for p in images:
@@ -3877,7 +3897,10 @@ class MainWindow(OcrOcvMixin, QMainWindow):
                 continue                        # 单张坏了不影响整体
         # 即使一张都没补（工程本来就没有掩膜），也要通知一次：
         # 否则 _mask_stats_ready_gen 永远不置位，之后新建的掩膜得等下次开关工程。
-        self.mask_stats_signal.emit(gen)
+        try:
+            self.mask_stats_signal.emit(gen)
+        except RuntimeError:
+            pass          # 窗口已销毁，无需通知
 
     def _on_mask_stats_ready(self, gen):
         """后台掩膜统计就绪 → 置位 ready 并重刷一次列表（此时全命中缓存）。"""
@@ -4079,13 +4102,6 @@ class MainWindow(OcrOcvMixin, QMainWindow):
             self._pred_count = {}
         if not hasattr(self, "_img_scores"):
             self._img_scores = {}
-        # Sort by annotation date if "Recent" is checked
-        if self.recent_check.isChecked():
-            def _json_mtime(p):
-                base = os.path.splitext(os.path.basename(p))[0]
-                jp = os.path.join(os.path.dirname(p), base + ".json")
-                return os.path.getmtime(jp) if os.path.exists(jp) else 0
-            self._all_images.sort(key=_json_mtime, reverse=True)
         total_train = 0
         total_val = 0
         total_test = 0
@@ -4093,6 +4109,58 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         total_shapes = 0
         ann_dir = os.path.join(os.path.dirname(self._all_images[0]) if self._all_images else "",
                                "..", "annotations")
+
+        # ── 目录索引（2026-10-29 第三轮性能：清掉最后的文件系统开销）──────────
+        # 原来循环里对每张图做 3 次 os.path.exists + 1 次 getmtime：
+        #   1690 张 ⇒ 5112 次 exists + 3610 次 stat ≈ 340ms（cProfile 实测），
+        #   占 _filter_images 剩余耗时的一半以上。
+        # 改成先各扫一次目录（os.scandir 是批量读目录项，比逐个 stat 便宜），
+        # 循环内只做内存查表。
+        # 失效风险：遍历期间有人在外部增删标注文件 —— 实际不会发生（单机单实例操作）。
+        _img_dir = os.path.dirname(self._all_images[0]) if self._all_images else ""
+        _img_names = None          # None = 扫描失败，循环里回退到 exists
+        _img_mtimes = {}
+        _need_mtime = self.recent_check.isChecked()
+        if _img_dir:
+            try:
+                _names = set()
+                with os.scandir(_img_dir) as _it:
+                    for _e in _it:
+                        _names.add(_e.name)
+                        if _need_mtime:
+                            try:
+                                _img_mtimes[_e.name] = _e.stat().st_mtime
+                            except OSError:
+                                _img_mtimes[_e.name] = 0.0
+                _img_names = _names
+            except OSError:
+                _img_names = None
+
+        _ann_index = None          # 文件名 -> mtime（掩膜只有 228 个，scan 很便宜）
+        try:
+            _ann = {}
+            with os.scandir(ann_dir) as _it:
+                for _e in _it:
+                    try:
+                        _ann[_e.name] = _e.stat().st_mtime
+                    except OSError:
+                        _ann[_e.name] = 0.0
+            _ann_index = _ann
+        except OSError:
+            _ann_index = None
+
+        # Sort by annotation date if "Recent" is checked
+        if self.recent_check.isChecked():
+            if _img_mtimes:
+                def _json_mtime(p):
+                    return _img_mtimes.get(
+                        os.path.splitext(os.path.basename(p))[0] + ".json", 0.0)
+            else:
+                def _json_mtime(p):
+                    base = os.path.splitext(os.path.basename(p))[0]
+                    jp = os.path.join(os.path.dirname(p), base + ".json")
+                    return os.path.getmtime(jp) if os.path.exists(jp) else 0
+            self._all_images.sort(key=_json_mtime, reverse=True)
         # Classification mode: load class_labels.json mapping once
         cls_mapping = {}
         if self._cls_mode and self.current_project:
@@ -4207,11 +4275,16 @@ class MainWindow(OcrOcvMixin, QMainWindow):
             _mask_classes = 0
             _mask_has_content = False
             _m_mtime = None
-            try:
-                if os.path.exists(mask_path):
-                    _m_mtime = os.path.getmtime(mask_path)
-            except OSError:
-                _m_mtime = None
+            # 用目录索引查 mtime（不再逐个 getmtime）；索引扫不到才回退到真实 IO
+            _m_mtime = None
+            if _ann_index is not None:
+                _m_mtime = _ann_index.get(base + "_mask.png")
+            else:
+                try:
+                    if os.path.exists(mask_path):
+                        _m_mtime = os.path.getmtime(mask_path)
+                except OSError:
+                    _m_mtime = None
 
             # ★ 预热未完成时**只读缓存、绝不自己解码**。
             #   第一版没做这个判断，结果主线程和后台预热线程抢同一批 PNG，
@@ -4233,8 +4306,13 @@ class MainWindow(OcrOcvMixin, QMainWindow):
                         _m_mtime, _mask_classes, _mask_has_content)
                 # else: 预热中 → 保持 (0, False) 占位，稍后补刷
 
-            _det_exists = os.path.exists(det_json_path)
-            _json_exists = os.path.exists(json_path)
+            # 同样走目录索引（两次 scandir 取代 3000+ 次 exists）
+            if _img_names is not None:
+                _det_exists = (base + "_det.json") in _img_names
+                _json_exists = (base + ".json") in _img_names
+            else:
+                _det_exists = os.path.exists(det_json_path)
+                _json_exists = os.path.exists(json_path)
             has_ann = _mask_has_content or _json_exists or _det_exists
 
             # Count shapes and collect labels for search
@@ -6536,7 +6614,13 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         classes = self._cached_classes
         if hasattr(self, "class_list"):
             self.class_list.set_project_dir(self._project_dir_or_none())
-            self.class_list.set_classes(classes)
+            # ★★ 2026-10-29 性能：先把表建出来，数字列留 0，
+            #   把 _compute_counts（遍历标注文件，1690 张工程实测 559ms）推到下一拍。
+            #   打开工程时这段原来卡在主线程上，是"双击之后干等"的第二个大头
+            #   （第一个是 _mark_stats_records 的 O(n²)）。
+            #   singleShot(0) 在下一个事件循环就执行，用户感知不到延迟。
+            self.class_list.set_classes(classes, with_counts=False)
+            QTimer.singleShot(0, lambda: self._deferred_class_counts(classes))
         # ★ 选中行也要跟上画布的当前类别（2026-10-15 补）：
         #    工具栏那格「类别:xx」删掉之后，**右栏这张表的选中行就是"当前类别"的唯一显示处**
         #    （单图模式画布状态行也显示，但多视图模式画布叠加是关的）。
@@ -6557,6 +6641,21 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         try:
             if hasattr(self, "infer_params"):
                 self.infer_params.set_project(self._project_dir_or_none(), classes)
+        except Exception:
+            pass
+
+    def _deferred_class_counts(self, classes):
+        """延后补算 Class 表的 train/test/val/empty 数字列。
+
+        `_refresh_class_ui` 里用 QTimer.singleShot(0) 排到这里，
+        让表先显示出来、再算统计（见那边的注释）。
+        期间如果类别表被换掉（切工程、改类别），对不上就放弃这一拍。
+        """
+        try:
+            if list(getattr(self, "_cached_classes", []) or []) != list(classes or []):
+                return
+            if hasattr(self, "class_list"):
+                self.class_list.refresh_counts()
         except Exception:
             pass
         # 工具栏那个「类别」格 2026-10-15 已删（当前类别由**右栏类别表的选中行**承担，
