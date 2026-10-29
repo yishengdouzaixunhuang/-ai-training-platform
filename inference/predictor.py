@@ -729,23 +729,67 @@ class Predictor:
         _wy = np.hanning(tile_size) if use_hy else np.ones(tile_size)
         hann = np.sqrt(_wy.reshape(-1, 1) * _wx.reshape(1, -1))
 
-        # Dynamic batch size for better GPU utilization
-        free_mb = (torch.cuda.get_device_properties(0).total_memory - torch.cuda.memory_allocated()) / 1024**2
-        batch_size = max(16, min(64, int(free_mb * 0.3 / (tile_size * tile_size * 3 * 2 / 1024**2))))
+        # ★★ 2026-10-29 显存修复：批大小改按「每批总像素」预算。
+        #
+        #   旧公式（下面被替换掉的那段）：
+        #     batch = free_mb * 0.3 / (tile²*3*2 / 1024²)
+        #   它只算了**输入张量**的大小（tile²×3 通道×2 字节 fp16），
+        #   完全没考虑 U-Net 的中间层激活 —— 而那才是显存大头：
+        #     UNet(base=16, depth=4) 单样本在 768² 上，
+        #     编码 4 层 + 解码 4 层 + skip 拼接，feature map 累加约 200~300 MB，
+        #     是输入张量（3.4 MB）的 **70 倍以上**。
+        #   实际后果（用户现场实测 2026-10-29）：
+        #     tile=768 → 旧公式给出 batch=64 → 峰值 10~13GB，
+        #     加上 PyTorch 缓存分配器的碎片，直接顶到 15.3/15.9GB，
+        #     产线没法用（再来一个任务就 OOM）。
+        #
+        #   新算法：按"一批允许多少像素"给预算，与模型结构解耦：
+        #     tile 256 → batch 24   tile 512 → 6   tile 768 → 2
+        #   1.6M 像素/批是保守值：768² 下约 2~3 张，峰值约 0.6~0.9GB。
+        #   想调吞吐可以改 `self._batch_px_budget`（或子类覆盖）。
+        _PX_BUDGET = int(getattr(self, "_batch_px_budget", 0) or 1_600_000)
+        batch_size = max(1, min(32, _PX_BUDGET // max(1, tile_size * tile_size)))
+        # 再叠加一道可用显存约束：每像素按 40 字节估（含激活+拼接临时量），只用 45%。
+        try:
+            free_mb = (torch.cuda.get_device_properties(0).total_memory
+                       - torch.cuda.memory_allocated()) / 1024**2
+            _by_mem = int(free_mb * 0.45 / (tile_size * tile_size * 40 / 1024**2))
+            batch_size = max(1, min(batch_size, max(1, _by_mem)))
+        except Exception:
+            pass
 
-        for i in range(0, len(tiles), batch_size):
-            batch = torch.stack(tiles[i:i+batch_size]).to(self.device)
+        def _forward(_start, _cnt):
+            """跑一批，返回 (类别掩膜 uint8, 置信度 float32)，都在 CPU 上。"""
+            _batch = torch.stack(tiles[_start:_start + _cnt]).to(self.device)
             with torch.amp.autocast('cuda'):
-                output = self.model(batch)
-            if isinstance(output, dict):
-                output = output["out"]
-            # 置信度：与类别同一套 Hann 窗融合，保证分数过滤与掩膜落在同一块上
+                _out = self.model(_batch)
+            if isinstance(_out, dict):
+                _out = _out["out"]
             with torch.amp.autocast('cuda', enabled=False):
-                prob_batch = output.float().softmax(1).max(1)[0].to(torch.float16).cpu().numpy().astype(np.float32)
-            # Move to CPU as uint8 (smaller transfer than float32)
-            batch_preds = output.argmax(1).to(torch.uint8).cpu().numpy()
+                _prob = (_out.float().softmax(1).max(1)[0]
+                         .to(torch.float16).cpu().numpy().astype(np.float32))
+            _preds = _out.argmax(1).to(torch.uint8).cpu().numpy()
+            return _preds, _prob
 
-            for j, (x1, y1, x2, y2, ph, pw) in enumerate(positions[i:i+batch_size]):
+        # ★ OOM 自动降级：显存不够就把**这一批**减半重试，而不是整个任务崩掉。
+        #   产线上不接受"跑到第 800 张忽然 OOM"这种失败方式。
+        i = 0
+        n_tiles = len(tiles)
+        while i < n_tiles:
+            cur = max(1, min(batch_size, n_tiles - i))
+            while True:
+                try:
+                    batch_preds, prob_batch = _forward(i, cur)
+                    break
+                except RuntimeError as _e:
+                    if "out of memory" not in str(_e).lower():
+                        raise
+                    torch.cuda.empty_cache()
+                    if cur <= 1:
+                        raise      # 单张都放不下，只能往上抛
+                    cur = max(1, cur // 2)
+
+            for j, (x1, y1, x2, y2, ph, pw) in enumerate(positions[i:i + cur]):
                 tp = batch_preds[j][:tile_size-ph, :tile_size-pw].astype(np.float32)
                 pp = prob_batch[j][:tile_size-ph, :tile_size-pw]
                 th, tw = tp.shape
@@ -753,6 +797,7 @@ class Predictor:
                 pred_sum[y1:y2, x1:x2] += tp * wgt
                 prob_sum[y1:y2, x1:x2] += pp * wgt
                 count_map[y1:y2, x1:x2] += wgt
+            i += cur
 
         count_map[count_map == 0] = 1
         self.last_prob = (prob_sum / count_map).astype(np.float32)
