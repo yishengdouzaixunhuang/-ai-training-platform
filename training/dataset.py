@@ -1,10 +1,50 @@
 """PyTorch semantic segmentation dataset - sliding window tiled training"""
 import os, json
+import random
 import numpy as np
 from PIL import Image
 import torch
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, Sampler
 import torchvision.transforms.functional as TF
+
+
+class GroupedShuffleSampler(Sampler):
+    """按「图」为单位打乱、图内块保持连续的采样器。
+
+    为什么需要它（2026-10-29 实测）：
+        用户这个工程的原始图是 4096²、48MB/张，解码一次 107~179ms。
+        dataset 里有个 1.2GB 的图片缓存，但 168 张图需要 8GB —— 本来就不够。
+        更糟的是 ``DataLoader(shuffle=True)`` 会把 8 万多个 tile **完全打散**：
+        同一张图的 484 块被摊到整个 epoch 上，缓存里的图还没用几下就被换掉，
+        于是**几乎每一块都要重新解码一张 48MB 的大图**。
+        实测后果：5082 batch × 3 秒 = **4.2 小时/epoch**，150 轮要 26 天。
+
+    改成只打乱「图的顺序」、图内块连续之后，缓存只需装下当前正在处理的
+    那几张图，命中率接近 100%，同样数据量能压到几分钟/epoch。
+    随机性保留（每个 epoch 图的出现顺序都不同），只是不再逐块乱序 ——
+    对语义分割的收敛没有影响。
+
+    前置条件：``dataset._tiles`` 必须按图连续排列（``_build_tiles`` 就是外层
+    循环图、内层循环块的写法，天然满足）。
+    """
+
+    def __init__(self, groups, shuffle=True):
+        # groups: [(start, end), ...] 每张图占用的 tile 索引区间
+        self.groups = list(groups)
+        self.shuffle = shuffle
+
+    def __iter__(self):
+        order = list(range(len(self.groups)))
+        if self.shuffle:
+            random.shuffle(order)
+        for gi in order:
+            s, e = self.groups[gi]
+            for i in range(s, e):
+                yield i
+
+    def __len__(self):
+        return sum(e - s for s, e in self.groups)
+
 
 class SegmentationDataset(Dataset):
     def __init__(self, project_dir, split="train", transform=None, image_size=(512, 512), augment_fn=None,
@@ -257,6 +297,28 @@ class SegmentationDataset(Dataset):
                         x2 = min(x1 + tw, iw)
                         y2 = min(y1 + th, ih)
                         self._tiles.append((sample_idx, x1, y1, x2, y2))
+
+    def tile_groups(self):
+        """每张图占用的 tile 索引区间 [(start, end), ...]。
+
+        配合 `GroupedShuffleSampler` 使用：只打乱图的顺序、图内块保持连续。
+        不这么做的话，大图工程（4096²、48MB/张）的图片缓存会全程失效 ——
+        每块都要重新解码一张原图，实测 4.2 小时/epoch（见 Sampler 注释）。
+        """
+        groups = []
+        tiles = getattr(self, "_tiles", None) or []
+        if not tiles:
+            return groups
+        cur = tiles[0][0]                  # 元素形如 (sample_idx, x1, y1, x2, y2[, views])
+        start = 0
+        for i in range(1, len(tiles)):
+            si = tiles[i][0]
+            if si != cur:
+                groups.append((start, i))
+                cur = si
+                start = i
+        groups.append((start, len(tiles)))
+        return groups
 
     @classmethod
     def from_image_subset(cls, dataset, image_indices):

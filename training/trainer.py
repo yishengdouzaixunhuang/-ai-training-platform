@@ -17,8 +17,30 @@ from torch.utils.data import DataLoader, random_split
 #      再把这里改回 4 / prefetch_factor=2。
 from tqdm import tqdm
 import numpy as np
-from training.dataset import SegmentationDataset
+from training.dataset import SegmentationDataset, GroupedShuffleSampler
 from training.models import create_model
+
+
+def _make_train_loader(train_ds, batch_size, drop):
+    """构造训练 DataLoader：能按图分组就用分组采样器。
+
+    为什么（2026-10-29 实测）：4096² 的图 48MB/张，dataset 的图片缓存只有 1.2GB。
+    `shuffle=True` 会把所有 tile 完全打散 ⇒ 同一张图的块被摊到整个 epoch ⇒
+    缓存全程失效 ⇒ 每块重新解码一张大图 ⇒ 4.2 小时/epoch。
+    改成按图分组打乱后命中率接近 100%，同样数据量几分钟就够。
+    整图训练（每张图只有一个 tile）时分组没有意义，走原来的 shuffle。
+    """
+    groups = []
+    try:
+        groups = train_ds.tile_groups()
+    except Exception:
+        groups = []
+    if groups and len(groups) < len(train_ds):
+        sampler = GroupedShuffleSampler(groups, shuffle=True)
+        return DataLoader(train_ds, batch_size=batch_size, sampler=sampler,
+                          num_workers=0, pin_memory=True, drop_last=drop)
+    return DataLoader(train_ds, batch_size=batch_size, shuffle=True,
+                      num_workers=0, pin_memory=True, drop_last=drop)
 from training.losses_ext import build_loss, LOSS_NAMES
 from training.augment_ext import AUGMENT_PRESETS
 from training.augment_config import build_augment_fn
@@ -140,7 +162,7 @@ class Trainer:
 
             drop = len(train_ds) > batch_size
             self._image_size = image_size
-            self.train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=0, pin_memory=True, drop_last=drop)
+            self.train_loader = _make_train_loader(train_ds, batch_size, drop)
             self.val_loader = DataLoader(val_ds, batch_size=min(batch_size, len(val_ds)), shuffle=False, num_workers=0)
 
             # Compute class weights from cached masks (fast, no DataLoader pass)
@@ -263,7 +285,7 @@ class Trainer:
                                 "train_names": _tn[:10], "val_names": _vn[:10]}
         except Exception:
             self._split_info = None
-        self.train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=0, pin_memory=True, drop_last=drop)
+        self.train_loader = _make_train_loader(train_ds, batch_size, drop)
         self.val_loader = DataLoader(val_ds, batch_size=min(batch_size, val_size), shuffle=False, num_workers=0, pin_memory=True, drop_last=False)
 
         # Compute class weights from cached masks (no DataLoader pass)
