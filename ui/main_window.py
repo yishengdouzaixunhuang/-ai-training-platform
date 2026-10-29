@@ -8903,6 +8903,27 @@ class MainWindow(OcrOcvMixin, QMainWindow):
                             ("%.1f" % _total) if _total is not None else "?"))
                     else:
                         self.log_signal.emit("[%d/%d] %s: FAILED - %s" % (i, total, base, err))
+                    # ★ 每 200 张打一次**真实**显存占用（2026-10-29 加）。
+                    #   起因：现场任务管理器一直显示 15.5/15.9GB，怀疑泄漏；
+                    #   但实测单张推理 PyTorch 峰值只有 980MB ⇒ 需要现场对照。
+                    #   看这三项：
+                    #     allocated = 当前真正在用的
+                    #     reserved  = PyTorch 向系统要下的池子（不还，但会复用）
+                    #     peak      = 本进程历史最高
+                    #   若 allocated/peak 都小而任务管理器仍显示 15GB，
+                    #   那 15GB 就不归 PyTorch 管（驱动预留 / 别的进程 / 显示口径）。
+                    if i % 200 == 0:
+                        try:
+                            import torch as _t
+                            if _t.cuda.is_available():
+                                self.log_signal.emit(
+                                    "[显存] %d/%d  allocated %.0f MB | reserved %.0f MB | peak %.0f MB"
+                                    % (i, total,
+                                       _t.cuda.memory_allocated() / 1024**2,
+                                       _t.cuda.memory_reserved() / 1024**2,
+                                       _t.cuda.max_memory_allocated() / 1024**2))
+                        except Exception:
+                            pass
                     self.infer_progress_signal.emit(i, total)
                 br = BatchRunner(flow, project_dir=project_dir, stop_check=lambda: self._stop_flag)
                 br.run(images, on_progress=on_progress)
