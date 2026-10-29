@@ -176,6 +176,11 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         self.trainer = None
         self._stop_flag = False
         self._project_gen = 0
+        # 掩膜统计缓存 + "哪个代次已经预热完毕"标记。
+        # 未预热完时主线程**只读缓存、绝不自己解码**（否则会和后台预热线程
+        # 抢同一批 PNG，实测反而更慢：主线程 6 秒 + 预热 2 秒白烧）。
+        self._mask_stat_cache = {}
+        self._mask_stats_ready_gen = -1
         self._ignore_class_row = -1
         self._all_images = []
         self._saved_left = 200
@@ -3423,6 +3428,10 @@ class MainWindow(OcrOcvMixin, QMainWindow):
 
     def _open_project_by_name(self, name):
         try:
+            # 作废上一个工程的扫描/预热线程：否则它们的 gen 仍等于当前值，
+            # 会继续往缓存里写、并误报"预热完成"。
+            self._project_gen += 1
+            self._mask_stats_ready_gen = -1
             self.current_project = self.pm.open_project(name)
             self._project_dir = str(self.pm.get_project_dir(name))
             self.canvas.set_project(self.pm.get_project_dir(name))
@@ -3826,10 +3835,14 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         threading.Thread(target=scan, daemon=True).start()
 
     def _prewarm_mask_stats(self, gen, project_dir, images):
-        """后台预解码掩膜，把 (mtime, 类别数, 是否有内容) 填进 _mask_stat_cache。
+        """后台预热两类标注统计，填满缓存；算完发信号让主线程补刷列表。
 
-        算完发 mask_stats_signal，主线程再刷一次列表 —— 那时全部命中缓存，
-        接近 0 耗时。用户看到的效果是：工程秒开，标注列的数字稍后补上。
+        ① JSON 标签 —— 走 core.label_scan 的**进程级**缓存。这些 JSON 合计上 GB
+           （单个最大 18MB，内容 99.9% 是顶点坐标），而这里只需要"有哪些 label"。
+           首次全解析很慢（实测过 4641ms 的段），但它纯 CPU/IO，适合丢后台。
+        ② 掩膜类别数 —— PIL.getcolors 统计，1500² 约 4.4ms/张。
+
+        用户看到的效果：工程秒开，列表立刻可用，「标注」列数字稍后自动补齐。
         """
         ann_dir = os.path.join(project_dir, "annotations")
         filled = 0
@@ -3837,6 +3850,16 @@ class MainWindow(OcrOcvMixin, QMainWindow):
             if gen != self._project_gen:
                 return                      # 已经切到别的工程，放弃这轮
             base = os.path.splitext(os.path.basename(p))[0]
+
+            # ① 预热 JSON 标签缓存（标签表用于列表搜索和"标注名"筛选）
+            jp = os.path.join(os.path.dirname(p), base + ".json")
+            try:
+                if os.path.exists(jp):
+                    self._cached_json_labels(jp)
+            except Exception:
+                pass
+
+            # ② 预热掩膜统计
             mp = os.path.join(ann_dir, base + "_mask.png")
             cache = getattr(self, "_mask_stat_cache", None)
             if cache is None:
@@ -3852,18 +3875,23 @@ class MainWindow(OcrOcvMixin, QMainWindow):
                 filled += 1
             except Exception:
                 continue                        # 单张坏了不影响整体
-        if filled:
-            self.mask_stats_signal.emit(gen)
+        # 即使一张都没补（工程本来就没有掩膜），也要通知一次：
+        # 否则 _mask_stats_ready_gen 永远不置位，之后新建的掩膜得等下次开关工程。
+        self.mask_stats_signal.emit(gen)
 
     def _on_mask_stats_ready(self, gen):
-        """后台掩膜统计就绪 → 重刷一次列表（此时缓存全命中，很快）。"""
+        """后台掩膜统计就绪 → 置位 ready 并重刷一次列表（此时全命中缓存）。"""
         if gen != self._project_gen:
             return
+        # ⚠️ 必须先置位：_filter_images 靠它判断"能不能自己解码"
+        self._mask_stats_ready_gen = gen
+        _t0 = time.perf_counter()
         try:
             keep = self.image_list_widget.currentRow()
         except Exception:
             keep = -1
         self._filter_images(self.search_input.text())
+        _dt = (time.perf_counter() - _t0) * 1000.0
         try:
             if 0 <= keep < self.image_list_widget.rowCount():
                 self._suppress_cell_change = True
@@ -3871,7 +3899,8 @@ class MainWindow(OcrOcvMixin, QMainWindow):
                 self._suppress_cell_change = False
         except Exception:
             pass
-        self.log("标注统计已后台预热完成，列表「标注」列已补齐（界面全程未阻塞）")
+        self.log("标注统计预热完成，列表回填 %.0f ms（已缓存 %d 张掩膜）"
+                 % (_dt, len(self._mask_stat_cache)))
 
     def _populate_image_list(self, data):
         gen, image_paths = data
@@ -4184,17 +4213,25 @@ class MainWindow(OcrOcvMixin, QMainWindow):
             except OSError:
                 _m_mtime = None
 
+            # ★ 预热未完成时**只读缓存、绝不自己解码**。
+            #   第一版没做这个判断，结果主线程和后台预热线程抢同一批 PNG，
+            #   实测"列表构建 5979ms + 预热 2s"两头白烧（用户实测 2026-10-29）。
+            #   现在的约定：解码只归后台预热线程；主线程拿不到就直接用占位，
+            #   等 mask_stats_signal 回来再补刷 —— 那时全部命中缓存。
+            _allow_decode = (self._mask_stats_ready_gen == self._project_gen)
+
             if _m_mtime is not None:
                 _hit = self._mask_stat_cache.get(mask_path)
                 if _hit is not None and _hit[0] == _m_mtime:
                     _mask_classes, _mask_has_content = _hit[1], _hit[2]
-                else:
+                elif _allow_decode:
                     try:
                         _mask_classes, _mask_has_content = _mask_stats_of(mask_path)
                     except Exception:
                         _mask_classes, _mask_has_content = 0, False
                     self._mask_stat_cache[mask_path] = (
                         _m_mtime, _mask_classes, _mask_has_content)
+                # else: 预热中 → 保持 (0, False) 占位，稍后补刷
 
             _det_exists = os.path.exists(det_json_path)
             _json_exists = os.path.exists(json_path)
@@ -4227,12 +4264,15 @@ class MainWindow(OcrOcvMixin, QMainWindow):
                 except Exception:
                     pass
             if _json_exists:
-                try:
-                    for lbl in self._cached_json_labels(json_path):
-                        shape_count += 1
-                        shape_labels.append(lbl)
-                except Exception:
-                    pass
+                # 预热未完成时也跳过：这批 JSON 合计上 GB，主线程扫一遍就是几秒冻结。
+                # shape_labels 只在预热期间为空，等补刷时全部回来（搜索/标注名筛选随之生效）。
+                if _allow_decode:
+                    try:
+                        for lbl in self._cached_json_labels(json_path):
+                            shape_count += 1
+                            shape_labels.append(lbl)
+                    except Exception:
+                        pass
             elif _mask_has_content:
                 shape_count = _mask_classes
 
