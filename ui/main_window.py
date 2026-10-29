@@ -3733,6 +3733,18 @@ class MainWindow(OcrOcvMixin, QMainWindow):
     def _import_images(self):
         if not self.current_project:
             return QMessageBox.information(self, "Hint", "Please open a project first")
+        # ★★ 2026-10-29 并发保护：
+        #   原来连点两次「导入图片」会起**两个拷贝线程**，两个线程都先 exists()
+        #   再 copy()，中间没有任何互斥 —— 完全可能同时往同一个目标文件写，
+        #   内容交错后文件就废了（用户实拍：导 2222 张期间又点了一次）。
+        #   加个标志挡住第二次。
+        if getattr(self, "_importing", False):
+            return QMessageBox.information(
+                self, "导入进行中",
+                "上一次导入还没结束，请等它完成后再导。\n\n"
+                "现在再点会起第二个拷贝线程，两个线程可能同时写同一个文件，"
+                "导致图片损坏（这类损坏很难事后发现）。")
+        self._importing = True
         proj_dir = str(self.pm.get_project_dir(self.current_project["name"]))
         # 多视图工程走专用对话框（每视图一个槽位 + 绑定图片组 + 预览），
         # 单图工程保持原有"选文件即导入"的流程不变。
@@ -3752,46 +3764,64 @@ class MainWindow(OcrOcvMixin, QMainWindow):
             def copy_files():
                 """拷贝图片 + 建空白 JSON。
 
-                ★★ 2026-10-29 修「导入到一半没反应」：
-                  原来这个循环里**没有任何异常处理**，也没检查磁盘空间。
-                  磁盘写满时 shutil.copy2 抛 OSError → 后台线程直接死掉 →
-                  界面停留在 "600/2222" 再无输出，用户以为卡死或网络卡了
-                  （用户实拍：104GB 的图往只剩 50GB 的盘里导，卡在 600 张）。
-                  现在：每张先探剩余空间，空间不够就**明确报错并停下**；
-                  单张失败记录下来继续跑，最后汇总。
+                ★★ 2026-10-29 这轮一共修了三个问题：
+                  ① 「导入到一半没反应」：原来循环里没有任何异常处理，磁盘写满时
+                     shutil.copy2 抛 OSError → 后台线程静默死掉 → 界面停在
+                     "600/2222" 再无输出（用户实拍）。现在会明确报错并停下。
+                  ② 「半截文件永远修不好」：原来只判断 os.path.exists 就跳过，
+                     上次中断留下的半截文件会被永久当成"已导入"，之后再也不重拷。
+                     现在比大小，不一致就重拷。
+                  ③ 「连点两次导入」：入口已加并发保护，这里用 try/finally
+                     保证标志一定能复位，不会把用户永久锁在"导入中"。
                 """
                 import shutil as _sh
                 total = len(files)
                 failed = []
                 stopped_at = None
-                for i, f in enumerate(files):
-                    dst = os.path.join(img_dir, os.path.basename(f))
-                    if not os.path.exists(dst):
+                try:
+                    for i, f in enumerate(files):
+                        dst = os.path.join(img_dir, os.path.basename(f))
+                        # 已存在也要校大小：上次写到一半的文件必须重拷，
+                        # 否则它会被永久当成"已导入"，以后再也修不好。
+                        _need_copy = True
                         try:
-                            # 留 2GB 余量：单张最大也就几十 MB，够缓冲
-                            _free = _sh.disk_usage(img_dir).free
-                            if _free < 2 * 1024 ** 3:
-                                stopped_at = (i, _free)
-                                break
-                            shutil.copy2(f, dst)
-                        except Exception as e:      # noqa: BLE001
-                            failed.append((os.path.basename(f),
-                                           f"{type(e).__name__}: {e}"))
-                            continue
-                    # Skip JSON creation for height map files (.tif/.tiff)
-                    if os.path.splitext(dst)[1].lower() in (".tif", ".tiff"):
-                        pass
-                    else:
-                        json_path = os.path.splitext(dst)[0] + ".json"
-                        if not os.path.exists(json_path):
-                            blank = {"version":"5.3.1","flags":{},"shapes":[],"imagePath":os.path.basename(dst),"imageData":None,"imageHeight":0,"imageWidth":0}
+                            if os.path.exists(dst):
+                                _need_copy = (os.path.getsize(dst) != os.path.getsize(f))
+                        except OSError:
+                            _need_copy = True
+
+                        if _need_copy:
                             try:
-                                with open(json_path, "w", encoding="utf-8") as jf:
-                                    json.dump(blank, jf, indent=2, ensure_ascii=False)
-                            except Exception:
-                                pass
-                    if (i + 1) % 100 == 0:
-                        self.log(f"Import progress: {i+1}/{total}")
+                                # 留 2GB 余量：单张最大也就几十 MB，够缓冲
+                                _free = _sh.disk_usage(img_dir).free
+                                if _free < 2 * 1024 ** 3:
+                                    stopped_at = (i, _free)
+                                    break
+                                shutil.copy2(f, dst)
+                            except Exception as e:      # noqa: BLE001
+                                failed.append((os.path.basename(f),
+                                               f"{type(e).__name__}: {e}"))
+                                continue
+                        # Skip JSON creation for height map files (.tif/.tiff)
+                        if os.path.splitext(dst)[1].lower() in (".tif", ".tiff"):
+                            pass
+                        else:
+                            json_path = os.path.splitext(dst)[0] + ".json"
+                            if not os.path.exists(json_path):
+                                blank = {"version":"5.3.1","flags":{},"shapes":[],"imagePath":os.path.basename(dst),"imageData":None,"imageHeight":0,"imageWidth":0}
+                                try:
+                                    with open(json_path, "w", encoding="utf-8") as jf:
+                                        json.dump(blank, jf, indent=2, ensure_ascii=False)
+                                except Exception:
+                                    pass
+                        if (i + 1) % 100 == 0:
+                            self.log(f"Import progress: {i+1}/{total}")
+                except Exception as e:          # noqa: BLE001
+                    self.log(f"❌ 导入线程异常终止：{type(e).__name__}: {e}")
+                finally:
+                    # 无论正常结束、中断还是抛异常，都必须放开这个锁，
+                    # 否则用户会被永久卡在"导入进行中"，只能重启软件。
+                    self._importing = False
 
                 # ── 收尾：把结果说清楚，别让用户对着空气等 ──
                 if stopped_at is not None:
