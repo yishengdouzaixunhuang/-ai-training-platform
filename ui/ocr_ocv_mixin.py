@@ -25,7 +25,7 @@ import traceback
 import numpy as np
 from PIL import Image
 from PyQt5.QtCore import Qt
-from PyQt5.QtWidgets import QTableWidgetItem
+from PyQt5.QtWidgets import QApplication, QMenu, QTableWidgetItem
 
 from ui.qt_thread import ui_call
 
