@@ -163,6 +163,8 @@ class MainWindow(OcrOcvMixin, QMainWindow):
     image_load_signal = pyqtSignal(object)
     # 后台预解码完掩膜统计后通知主线程刷新列表（参数=工程代次，用于丢弃过期结果）
     mask_stats_signal = pyqtSignal(int)
+    # 打开工程时的进度（当前, 总数, 阶段文字）。total<=0 表示"不确定进度"，进度条走马灯
+    load_progress_signal = pyqtSignal(int, int, str)
 
     def __init__(self):
         super().__init__()
@@ -189,6 +191,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         self.progress_signal.connect(self._update_progress)
         self.image_list_signal.connect(self._populate_image_list)
         self.mask_stats_signal.connect(self._on_mask_stats_ready)
+        self.load_progress_signal.connect(self._on_load_progress)
         self.infer_progress_signal.connect(self._update_infer_progress)
         self.stats_signal.connect(self._update_stats)
         self.stats_signal.connect(lambda a, p: self._update_ann_stats())
@@ -221,6 +224,17 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         self._init_ui()
         self._init_augment_panel()
         self._refresh_projects()
+
+        # 打开工程时的进度条（状态栏右侧，平时隐藏）。
+        # 大图工程「双击 → 数据齐全」实测要 11 秒（列表 3.3s + 后台统计标注 7.5s），
+        # 之前这段时间界面只有一句日志，用户不知道卡住还是在干活。
+        self._load_bar = QProgressBar()
+        self._load_bar.setFixedSize(180, 14)
+        self._load_bar.setTextVisible(True)
+        self._load_bar.setFormat("%v / %m")
+        self._load_bar.setVisible(False)
+        self.statusBar().addPermanentWidget(self._load_bar)
+        self._load_t0 = 0.0
 
         # System monitor in status bar (bottom-right)
         self._sys_monitor = SystemMonitor()
@@ -3448,6 +3462,12 @@ class MainWindow(OcrOcvMixin, QMainWindow):
 
     def _open_project_by_name(self, name):
         try:
+            # 先点亮状态栏进度：大图工程从双击到数据齐全要 10 秒上下，
+            # 等待期间得让用户知道后台在干活。processEvents 让它先真正画出来，
+            # 否则后面的同步操作会把第一次绘制一起吞掉。
+            self._load_t0 = time.perf_counter()
+            self.load_progress_signal.emit(0, 0, "正在打开工程…")
+            QApplication.processEvents()
             # 作废上一个工程的扫描/预热线程：否则它们的 gen 仍等于当前值，
             # 会继续往缓存里写、并误报"预热完成"。
             self._project_gen += 1
@@ -3500,6 +3520,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
             self.log(f"Opened: {name}")
             self.setWindowTitle(f"{APP_NAME} - {name}")
         except Exception as e:
+            self._hide_load_progress()
             QMessageBox.warning(self, "Error", str(e))
 
     def _close_project(self):
@@ -3919,6 +3940,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         def scan():
             img_dir = os.path.join(project_dir, "images")
             images = []
+            self.load_progress_signal.emit(0, 0, "正在扫描图片目录…")
             if os.path.exists(img_dir):
                 for f in sorted(os.listdir(img_dir)):
                     if f.lower().endswith((".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff")):
@@ -3962,9 +3984,17 @@ class MainWindow(OcrOcvMixin, QMainWindow):
 
         ann_dir = os.path.join(project_dir, "annotations")
         filled = 0
-        for p in images:
+        total = len(images)
+        for idx, p in enumerate(images, 1):
             if gen != self._project_gen:
                 return                      # 已经切到别的工程，放弃这轮
+            # 每 50 张报一次进度（4000 张约 80 次更新：跟得紧又不至于刷屏）。
+            # 这一段占整个加载的大头（实测 4096² 掩膜 31.7ms/张），必须让用户看见。
+            if idx % 50 == 0 or idx == total:
+                try:
+                    self.load_progress_signal.emit(idx, total, f"正在统计标注 {idx}/{total}")
+                except RuntimeError:
+                    return                  # 窗口已销毁
             base = os.path.splitext(os.path.basename(p))[0]
 
             # ① 预热 JSON 标签缓存（标签表用于列表搜索和"标注名"筛选）
@@ -4020,6 +4050,38 @@ class MainWindow(OcrOcvMixin, QMainWindow):
             pass
         self.log("标注统计预热完成，列表回填 %.0f ms（已缓存 %d 张掩膜）"
                  % (_dt, len(self._mask_stat_cache)))
+        self._hide_load_progress()
+
+    # ── 打开工程期间的进度显示 ─────────────────────────────────────────────
+    def _on_load_progress(self, cur, total, text):
+        """状态栏进度：后台线程发信号过来，这里刷 UI（Qt 信号天然跨线程安全）。"""
+        # 小工程几百毫秒就完事，进度条一冒头就消失反而更晃眼 —— 超过 400ms 还没完才显示。
+        # ⚠️ 用 isHidden() 而不是 isVisible()：后者要求所有祖先可见，
+        #    窗口最小化/未 show 时会误判成"没显示"（地雷第 5 条）。
+        if self._load_bar.isHidden():
+            if self._load_t0 and (time.perf_counter() - self._load_t0) < 0.4:
+                return
+            self._load_bar.setVisible(True)
+        if total and total > 0:
+            self._load_bar.setRange(0, total)
+            self._load_bar.setValue(min(cur, total))
+            self._load_bar.setFormat("%v / %m")
+        else:
+            # 不确定进度（还不知道总数）：用 Qt 的走马灯模式
+            self._load_bar.setRange(0, 0)
+            self._load_bar.setFormat(text or "加载中…")
+        if text:
+            self.statusBar().showMessage(text)
+
+    def _hide_load_progress(self):
+        """加载结束（成功或失败）统一收尾，别让进度条一直卡在那儿转。"""
+        try:
+            self._load_bar.setVisible(False)
+            self._load_bar.setRange(0, 100)
+            self._load_bar.setValue(0)
+            self.statusBar().clearMessage()
+        except Exception:
+            pass
 
     def _populate_image_list(self, data):
         gen, image_paths = data
