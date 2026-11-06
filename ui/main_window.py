@@ -165,6 +165,8 @@ class MainWindow(OcrOcvMixin, QMainWindow):
     mask_stats_signal = pyqtSignal(int)
     # 打开工程时的进度（当前, 总数, 阶段文字）。total<=0 表示"不确定进度"，进度条走马灯
     load_progress_signal = pyqtSignal(int, int, str)
+    # 后台把列表行数据算好后回主线程渲染（代次, payload, 起始时间戳）
+    filter_rows_signal = pyqtSignal(int, object, float)
 
     def __init__(self):
         super().__init__()
@@ -192,6 +194,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         self.image_list_signal.connect(self._populate_image_list)
         self.mask_stats_signal.connect(self._on_mask_stats_ready)
         self.load_progress_signal.connect(self._on_load_progress)
+        self.filter_rows_signal.connect(self._on_filter_rows_ready)
         self.infer_progress_signal.connect(self._update_infer_progress)
         self.stats_signal.connect(self._update_stats)
         self.stats_signal.connect(lambda a, p: self._update_ann_stats())
@@ -4257,20 +4260,36 @@ class MainWindow(OcrOcvMixin, QMainWindow):
             pass
 
     def _filter_images(self, text):
+        """触发一次列表刷新（数据准备在后台线程，渲染回主线程）。
+
+        2026-11-06：2001 张图的行记录组装原来在 UI 线程同步跑 8.6 秒，
+        进度条走到 100% 后界面直接僵住（用户反馈「打开工程很卡」的真凶）。
+        现在主线程只做「快照 UI 状态」这一件毫秒级的事，目录扫描 / 掩膜查表 /
+        行记录组装全部丢后台线程，算完用 filter_rows_signal 回主线程渲染。
+
+        调用方语义不变：所有调用点都只是「请求刷新」，没有一处依赖它同步返回。
+        连续触发时靠 _filter_gen 代次丢弃过期结果。
+        """
         _t_fi0 = time.perf_counter()
         if not hasattr(self, "_mask_stat_cache"):
             # 掩膜统计缓存：key = 掩膜绝对路径, value = (mtime, 类别数, 是否有内容)
-            # 见下方"标注统计缓存"注释 —— 这是打开工程不再卡的关键
             self._mask_stat_cache = {}
+        self._filter_gen = getattr(self, "_filter_gen", 0) + 1
+        _gen = self._filter_gen
         self._suppress_cell_change = True
-        self.image_list_widget.setRowCount(0)
-        text_lower = text.lower().strip()
-        # 标记是"工程级"数据，按工程缓存读一次即可（列表刷新是热路径）
+        _ctx = self._snapshot_filter_ctx(text)
+        threading.Thread(target=self._filter_rows_body,
+                         args=(_gen, _ctx, _t_fi0), daemon=True).start()
+
+    def _snapshot_filter_ctx(self, text):
+        """主线程：把后台要用到的 UI 值一次性拍成快照。
+
+        ⚠️ 后台线程不能碰 Qt 控件。以后新增筛选条件，务必在这里读控件，
+           再到 _filter_rows_body 里用 ctx["xxx"]，不要回去读 self.控件。
+        """
         self._ensure_marks_loaded()
         # split 表缓存：每次刷新重建一次（从文件读一次即可），循环内只查表
         self._split_map_cache = None
-        sf_text = self.split_filter.currentText()
-        annotated_only = self.annotated_check.isChecked()
         # 标注名字筛选：选项跟随工程类别（懒同步）
         lf_text = ""
         try:
@@ -4289,18 +4308,40 @@ class MainWindow(OcrOcvMixin, QMainWindow):
             lf_text = self.label_filter.currentText()
         except Exception:
             lf_text = ""
-        # Load prediction counts + IoU scores from outputs dir (triggered async by _populate_image_list)
-        # Ensure fallback dicts exist
+        # 预测数 / IoU 字典：保证存在，后台只读
         if not hasattr(self, "_pred_count"):
             self._pred_count = {}
         if not hasattr(self, "_img_scores"):
             self._img_scores = {}
+        return {
+            "text_lower": text.lower().strip(),
+            "split": self.split_filter.currentText(),
+            "annotated_only": self.annotated_check.isChecked(),
+            "label": lf_text,
+            "recent": self.recent_check.isChecked(),
+            "pred_thr": self.pred_count_spin.value(),
+            "pred_op": self.pred_op_combo.currentText(),
+            # 副本：后台会按「最近标注」排序，不能原地动主线程那份 _all_images
+            "images": list(self._all_images),
+        }
+
+    def _filter_rows_body(self, gen, ctx, _t_fi0):
+        """后台线程：构建行数据。**这里不许出现任何 Qt 控件访问。**"""
+        if gen != getattr(self, "_filter_gen", 0):
+            return                      # 已被更新的筛选条件取代
+        # 下面这些值全部来自主线程快照；_t_fi0 也由主线程传入，这里不要再赋值，
+        # 否则计时只从后台开始算，_last_filter_ms 会偏小。
+        images = ctx["images"]          # 副本：后台可自由排序，不动主线程那份
+        text_lower = ctx["text_lower"]
+        sf_text = ctx["split"]
+        annotated_only = ctx["annotated_only"]
+        lf_text = ctx["label"]
         total_train = 0
         total_val = 0
         total_test = 0
         total_annotated = 0
         total_shapes = 0
-        ann_dir = os.path.join(os.path.dirname(self._all_images[0]) if self._all_images else "",
+        ann_dir = os.path.join(os.path.dirname(images[0]) if images else "",
                                "..", "annotations")
 
         # ── 目录索引（2026-10-29 第三轮性能：清掉最后的文件系统开销）──────────
@@ -4310,10 +4351,10 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         # 改成先各扫一次目录（os.scandir 是批量读目录项，比逐个 stat 便宜），
         # 循环内只做内存查表。
         # 失效风险：遍历期间有人在外部增删标注文件 —— 实际不会发生（单机单实例操作）。
-        _img_dir = os.path.dirname(self._all_images[0]) if self._all_images else ""
+        _img_dir = os.path.dirname(images[0]) if images else ""
         _img_names = None          # None = 扫描失败，循环里回退到 exists
         _img_mtimes = {}
-        _need_mtime = self.recent_check.isChecked()
+        _need_mtime = ctx["recent"]
         if _img_dir:
             try:
                 _names = set()
@@ -4343,7 +4384,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
             _ann_index = None
 
         # Sort by annotation date if "Recent" is checked
-        if self.recent_check.isChecked():
+        if ctx["recent"]:
             if _img_mtimes:
                 def _json_mtime(p):
                     return _img_mtimes.get(
@@ -4353,7 +4394,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
                     base = os.path.splitext(os.path.basename(p))[0]
                     jp = os.path.join(os.path.dirname(p), base + ".json")
                     return os.path.getmtime(jp) if os.path.exists(jp) else 0
-            self._all_images.sort(key=_json_mtime, reverse=True)
+            images.sort(key=_json_mtime, reverse=True)
         # Classification mode: load class_labels.json mapping once
         cls_mapping = {}
         if self._cls_mode and self.current_project:
@@ -4364,15 +4405,15 @@ class MainWindow(OcrOcvMixin, QMainWindow):
             except Exception:
                 pass
         # Build filtered data list (deferred rendering)
-        self._filtered_data = []
+        rows = []
 
         # Mixed classification: build paired image list
         _mixed = getattr(self, "_mixed_cls_mode", False)
-        _image_sources = self._all_images
+        _image_sources = images
         if _mixed:
             _gray_map = {}
             _height_map = {}
-            for p in self._all_images:
+            for p in images:
                 b = os.path.splitext(os.path.basename(p))[0]
                 e = os.path.splitext(p)[1].lower()
                 if e in (".tif", ".tiff"):
@@ -4410,7 +4451,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         if _mv:
             try:
                 _maps = {v: {} for v in _mv_views}
-                for p in self._all_images:
+                for p in images:
                     _stem = os.path.splitext(os.path.basename(p))[0]
                     for v in _mv_views:
                         if _stem.endswith("_" + v):
@@ -4425,7 +4466,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
                 self._mv_group_count = 0
                 _mv = False
                 self._mv_mode_list = False
-                _image_sources = self._all_images
+                _image_sources = images
 
         for _img_entry in _image_sources:
             if _mixed:
@@ -4576,9 +4617,9 @@ class MainWindow(OcrOcvMixin, QMainWindow):
 
             # Prediction count filter
             pred_count = getattr(self, "_pred_count", {}).get(base, -1)
-            if self.pred_count_spin.value() > 0 and pred_count >= 0:
-                op = self.pred_op_combo.currentText()
-                threshold = self.pred_count_spin.value()
+            if ctx["pred_thr"] > 0 and pred_count >= 0:
+                op = ctx["pred_op"]
+                threshold = ctx["pred_thr"]
                 if op == "≥" and not (pred_count >= threshold):
                     continue
                 elif op == "=" and not (pred_count == threshold):
@@ -4712,7 +4753,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
             # 提前判会读到还没赋值的字段（不报错，但筛选结果是错的）。
             if not self._filter_expr.evaluate(rec):
                 continue
-            self._filtered_data.append(rec)
+            rows.append(rec)
 
             if split_status == " [Train]":
                 total_train += 1
@@ -4724,6 +4765,28 @@ class MainWindow(OcrOcvMixin, QMainWindow):
                 total_annotated += 1
                 total_shapes += shape_count
 
+        if gen != getattr(self, "_filter_gen", 0):
+            return                      # 算完发现已被取代，别用旧数据覆盖界面
+        payload = {
+            "rows": rows,
+            "train": total_train, "val": total_val, "test": total_test,
+            "annotated": total_annotated, "shapes": total_shapes,
+        }
+        try:
+            self.filter_rows_signal.emit(gen, payload, _t_fi0)
+        except RuntimeError:
+            pass                        # 窗口已销毁
+
+    def _on_filter_rows_ready(self, gen, payload, t_start):
+        """主线程：拿到后台构建好的行数据后渲染，并刷新各计数条。"""
+        if gen != getattr(self, "_filter_gen", 0):
+            return                      # 过期结果，丢掉
+        self._filtered_data = payload["rows"]
+        total_train = payload["train"]
+        total_val = payload["val"]
+        total_test = payload["test"]
+        total_annotated = payload["annotated"]
+        total_shapes = payload["shapes"]
         # Reset to page 0 and render
         self._current_page = 0
         self._render_page()
@@ -4795,8 +4858,9 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         self._refresh_img_info()
         # ⚠️ 这里**不能** self.log()（日志面板会重入，撑爆 C 栈，见上方注释）。
         #    耗时只存属性，由调用方（_populate_image_list）在安全位置打出来。
-        self._last_filter_ms = (time.perf_counter() - _t_fi0) * 1000.0
+        self._last_filter_ms = (time.perf_counter() - t_start) * 1000.0
         self._last_filter_rows = len(self._filtered_data or [])
+
 
     def _render_page(self):
         """Render current page from _filtered_data into the table."""
