@@ -453,6 +453,30 @@ class ClassTableView(QWidget):
             return set()
         return getattr(self, "_split_bases", {}).get((cid, split_key), set())
 
+    @staticmethod
+    def _dir_index(d):
+        """一次 scandir 拿 {文件名: (mtime_ns, size)}，代替逐张 os.stat。
+
+        Windows 上 FindFirstFile/FindNextFile 一次就把目录里每个条目的属性带回来，
+        所以遍历一遍目录远比 N 次 stat 便宜（实测 4002 次 stat 134ms，一次扫描 5ms）。
+
+        只收文件，跳过子目录；单个条目 stat 失败就跳过，不影响整体。
+        """
+        idx = {}
+        try:
+            with os.scandir(str(d)) as it:
+                for e in it:
+                    try:
+                        if not e.is_file():
+                            continue
+                        st = e.stat()
+                        idx[e.name] = (st.st_mtime_ns, st.st_size)
+                    except OSError:
+                        continue
+        except OSError:
+            pass
+        return idx
+
     def _count_segmentation(self, pd, labels, trains, tests, vals, split_map):
         """Count per-class image counts by split for segmentation projects.
 
@@ -464,12 +488,18 @@ class ClassTableView(QWidget):
         ann_dir = pd / "annotations"
         if not img_dir.is_dir():
             return
+        # 一次 scandir 拿全目录的 (mtime_ns, size)：下面 _seg_class_ids 判断缓存签名
+        # 时直接查表，不再逐张 stat。2001 张图的工程能省掉 4000 多次系统调用。
+        self._img_index = self._dir_index(img_dir)
+        self._ann_index = self._dir_index(ann_dir)
         groups = {}
-        for f in sorted(img_dir.iterdir()):
-            if not f.is_file() or f.suffix.lower() not in _IMG_EXT:
+        for name in self._img_index:
+            stem, ext = os.path.splitext(name)
+            if ext.lower() not in _IMG_EXT:
                 continue
-            groups.setdefault(_group_key(f.stem), []).append(f)
-        for key, files in groups.items():
+            groups.setdefault(_group_key(stem), []).append(img_dir / name)
+        for key in sorted(groups):
+            files = groups[key]
             # te_0 优先：列表行的 base 就是 te_0 的文件名
             files.sort(key=lambda x: (not x.stem.endswith("_te_0"), x.name))
             cids = set()
@@ -527,13 +557,21 @@ class ClassTableView(QWidget):
             cache = self._fb_cache = {}
         mpath = ann_dir / (img_path.stem + "_mask.png")
         dpath = img_path.with_name(img_path.stem + "_det.json")
+        idx_ann = getattr(self, "_ann_index", None)
+        idx_img = getattr(self, "_img_index", None)
         sig = []
-        for p in (mpath, dpath):
-            try:
-                st = p.stat()
-                sig.append((st.st_mtime_ns, st.st_size))
-            except Exception:
-                sig.append(None)
+        for p, index in ((mpath, idx_ann), (dpath, idx_img)):
+            if index:
+                # 有目录快照：名字不在里面就是文件不存在，不必再 stat
+                info = index.get(p.name)
+            else:
+                # 没有快照（目录不存在或读失败）：退回逐个 stat，行为与旧版一致
+                try:
+                    st = p.stat()
+                    info = (st.st_mtime_ns, st.st_size)
+                except Exception:
+                    info = None
+            sig.append(info)
         sig.append(tuple(labels))
         sig = tuple(sig)
         key = str(img_path)
