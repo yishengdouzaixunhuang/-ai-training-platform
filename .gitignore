@@ -52,6 +52,15 @@ env/
 .env
 *.venv*/
 
+# 项目内可搬迁依赖（OCR/onnxruntime/shapely/pyyaml，约 72MB 二进制）
+# 不进 git（体积大且是平台相关二进制），但随文件夹拷贝走；
+# clone 后用「安装vendor依赖.bat」一键重建
+vendor/
+
+# 离线安装用的 wheel 仓库（约 2.8GB，torch cu128 独占 2.6GB）
+# 不进 git，随文件夹拷贝走；clone 后联网 pip install -r requirements.txt
+wheels/
+
 # Temp
 tmp/
 temp/

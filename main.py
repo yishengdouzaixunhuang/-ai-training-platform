@@ -16,6 +16,18 @@ import torch
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+# 项目内 vendor/：OCR（rapidocr + onnxruntime）、shapely、pyyaml 这类可选依赖
+# 放在项目目录里，跟文件夹一起走 —— 换电脑打包过去就不用再 pip install，
+# 也不会因为漏装而在现场报 "No module named"。
+# 如果 site-packages 里也装了同样的包，vendor 优先（insert(0)）。
+_vendor = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vendor")
+if os.path.isdir(_vendor):
+    sys.path.insert(0, _vendor)
+    try:
+        os.add_dll_directory(_vendor)     # onnxruntime 的 DLL 搜索路径
+    except (AttributeError, OSError):
+        pass
+
 from PyQt5.QtWidgets import QApplication
 from PyQt5.QtGui import QIcon
 from ui.main_window import MainWindow

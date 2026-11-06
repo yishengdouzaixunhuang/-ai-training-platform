@@ -15,6 +15,8 @@
 - **真实工程数据不在仓库里**（在 `E:\05-TrainingProject\`），本包只有代码
 - 真实训练解释器：`C:\aitp_venv\Scripts\python.exe`
   （仓库里的 `.venv310` / `.venv312` 是**坏的**，已从包里排除，**不要用**）
+  ⚠️ 这个路径**必须是纯英文**，装到项目目录里 Qt 会卡死 —— 见地雷 31、
+  以及第 8 节「换电脑 SOP」
 
 ## 2. 怎么跑
 
@@ -39,6 +41,8 @@
 
 `probe_mark_ui.py` 还支持 `--real-project "<工程名>"`（跑真实工程）与 `--theme light`。
 它的结果会落盘 `_ui_probe_shots/probe_last_{ok,FAIL}.log` —— **间歇性失败时看这个文件**。
+
+> 换机器 / 新机器首次部署，看第 8 节的 SOP，别从头 pip install。
 
 ## 3. 目录速查
 
@@ -317,3 +321,82 @@
     ② 已按 JSON 重建该工程所有不一致掩膜（只 008 一个不一致，`[0,255]` → `[0,2,3,255]`）。
     ⚠️ 历史工程若怀疑掩膜陈旧，用同样的比对方式扫一遍：
        逐图 `shapes_to_mask(JSON)` 与现有 `_mask.png` 比对，不等才重写。
+
+31. **venv 绝不能放项目目录：中文路径下 `QApplication` 永久卡死**（2026-11-06 实测）
+    项目路径含中文和 `&`（`05-VibeCoding软件&工程`）。把 4.7GB 的 venv 建在项目内装完依赖，
+    启动时 `QApplication([])` **永远不返回** —— 进程挂住、无异常、无日志、`try/except` 也拦不住，
+    看起来就像卡死。
+    **同一个 venv 原样 `mv` 到 `D:\_venv_moved`（纯 ASCII）立刻正常**，所以问题在路径不在包。
+    排查手法：`faulthandler.dump_traceback_later(20, repeat=True)`，栈顶会停在
+    `app = QApplication([])`；换 cwd 无效，只有换路径才有效。
+    ⇒ 环境一律装纯英文路径（默认 `C:\aitp_venv`，备选 `%LOCALAPPDATA%\aitp_venv`），
+      **代码 / wheels / vendor 可以放项目里**（它们只是文件，不参与 DLL 加载）。
+    ⇒ `启动_便携.bat` 刻意**不找**项目内的 `.venv`，就是这个原因；
+      `启动平台.bat` 会在项目里建 `.venv310`，别用。
+
+## 8. 换电脑 / 换机器维护 SOP
+
+### 8.1 东西都在哪
+
+| 东西 | 位置 | 体积 | 跟项目走 |
+|---|---|---|---|
+| 代码 | 项目文件夹 | 79MB | ✅ |
+| 离线 wheel（37 个） | `项目\wheels\` | 2.8GB | ✅ |
+| OCR / onnxruntime / shapely / pyyaml | `项目\vendor\` | 72MB | ✅ |
+| Python 环境 | `C:\aitp_venv` | 4.7GB | ❌ 必须英文路径（地雷 31） |
+| 真实工程数据 | `E:\05-TrainingProject\` | — | ❌ 单独拷 |
+| SAM / YOLO 预训练权重 | `项目\models\` | 363MB | 按需 |
+
+`wheels/` 和 `vendor/` 都在 `.gitignore` 里（不进 git），但**跟着文件夹拷贝走**。
+
+### 8.2 搬到新机器：四步
+
+1. 拷整个项目文件夹（约 2.9GB）
+2. 装 **Python 3.12**（wheel 全是 cp312，3.13/3.14 装不上）
+   https://www.python.org/downloads/release/python-3127/ ，安装时勾 "Add python.exe to PATH"
+3. 双击 **`离线安装.bat`** —— 没环境就建 `C:\aitp_venv` 并离线装，约 4 分钟，**全程不联网**
+4. 双击 **`启动_便携.bat`** —— 依次找 `C:\aitp_venv` → `%LOCALAPPDATA%\aitp_venv` → PATH
+
+⚠️ **不要**把环境装进项目目录，也不要手工在项目里 `python -m venv .venv`（地雷 31）。
+
+### 8.3 只更新依赖、不换机器
+
+```cmd
+:: 小依赖（OCR 那几个）→ 装进项目 vendor\
+pip install --target .\vendor --no-deps --upgrade 包名
+
+:: 大包（torch 等）升级 → 重下 wheel 并刷新锁文件
+pip download -d wheels --no-deps 包名==版本
+pip freeze > requirements-lock.txt
+```
+
+也可以直接双击 `安装vendor依赖.bat`（重建整个 vendor\，需要联网）。
+
+### 8.4 三条命令判断环境健不健康
+
+```cmd
+:: ① 关键包能导入
+C:\aitp_venv\Scripts\python.exe -c "import torch, PyQt5, rapidocr_onnxruntime, shapely, yaml; print('ok')"
+
+:: ② Qt 能起来（最容易暴露路径问题：卡住不返回 = 路径含中文）
+C:\aitp_venv\Scripts\python.exe -c "from PyQt5.QtWidgets import QApplication; a=QApplication([]); print('qt ok')"
+
+:: ③ 平台能构造主窗口（无显示器也能跑）
+set QT_QPA_PLATFORM=offscreen
+C:\aitp_venv\Scripts\python.exe tests\test_smoke_startup.py
+```
+
+### 8.5 本机日常
+
+双击 `启动_本机.bat` 或 `启动_便携.bat` 都行，两者都指向 `C:\aitp_venv`。
+
+### 8.6 脚本别混用
+
+| 脚本 | 说明 |
+|---|---|
+| `启动_便携.bat` | **推荐**，自动找环境，只认英文路径 |
+| `离线安装.bat` | 换机器用；已有可用环境会自动跳过，不会重装 |
+| `安装vendor依赖.bat` | 只重建 `vendor\`（72MB，需联网） |
+| `启动_本机.bat` | 老脚本，硬编码 `C:\aitp_venv`，可用 |
+| `启动平台.bat` | 会建 `.venv310` 并联网装依赖，**别用**（地雷 31 + 版本不可控） |
+
