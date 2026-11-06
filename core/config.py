@@ -1,4 +1,4 @@
-﻿"""全局配置"""
+"""全局配置"""
 import os
 import json
 from pathlib import Path
