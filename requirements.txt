@@ -6,3 +6,15 @@ numpy>=1.24.0
 Pillow>=10.0.0
 matplotlib>=3.7.0
 tqdm>=4.65.0
+
+# ---------------------------------------------------------------------------
+# 下面五项体积小（合计约 72MB）但最容易漏装，已放到项目内的 vendor/ 目录，
+# 随文件夹一起拷贝即可，不需要在目标机器上 pip install。
+# 换了干净环境要重建时，直接用「安装vendor依赖.bat」，或手动：
+#   pip install --target ./vendor --no-deps rapidocr_onnxruntime onnxruntime shapely pyclipper pyyaml
+# ---------------------------------------------------------------------------
+rapidocr-onnxruntime>=1.4.0   # 截图 OCR（Tools 菜单 / Shift+X），模型随 wheel 自带约 16MB
+onnxruntime>=1.16.0           # OCR 推理 + inference/predictor.py 的 ONNX 后端
+shapely>=2.0.0                # detection/eval.py 的 OBB IoU；缺了会退化为近似算法、mAP 偏差
+pyyaml>=6.0                   # detection/trainer.py 读 data.yaml；缺了 k-fold 训练直接崩
+pyclipper>=1.2.0              # rapidocr 的依赖（文本框几何处理）

@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """屏幕截图 OCR 工具。
 
 用法（挂到主窗口 Tools 菜单）:
@@ -9,6 +9,7 @@
        -> 弹出结果对话框（文本按位置排序，可一键复制全部）。
 """
 import os
+import sys
 import tempfile
 import time
 
@@ -145,8 +146,20 @@ class OcrTask(QThread):
             from ocr.engine import get_ocr_engine
             results = get_ocr_engine().detect_and_recognize(self._img)
             self.done.emit({"ok": True, "results": results, "elapsed": time.time() - t0})
+        except ModuleNotFoundError as e:
+            # 缺依赖时给可操作的提示，不要把 "No module named ..." 原样甩给现场用户
+            msg = str(e)
+            if "rapidocr" in msg or "onnxruntime" in msg:
+                err = ("缺少 OCR 依赖 rapidocr_onnxruntime，无法识别。\n\n"
+                       "在平台所用的 Python 环境里执行：\n"
+                       "    pip install rapidocr_onnxruntime\n\n"
+                       f"当前解释器：{sys.executable}")
+            else:
+                err = f"识别失败：缺少 Python 模块 {msg}"
+            self.done.emit({"ok": False, "error": err, "elapsed": time.time() - t0})
         except Exception as e:  # noqa: BLE001
-            self.done.emit({"ok": False, "error": str(e), "elapsed": time.time() - t0})
+            self.done.emit({"ok": False, "error": f"识别失败: {e}",
+                            "elapsed": time.time() - t0})
 
 
 def compose_text(results, line_gap=15):
@@ -260,7 +273,7 @@ def _capture_and_ocr(main_win):
         try:
             if not res.get("ok"):
                 QMessageBox.warning(main_win, "截图 OCR",
-                                    f"识别失败: {res.get('error')}")
+                                    res.get("error") or "识别失败")
                 return
             dlg = ScreenOcrResultDialog(res.get("results", []),
                                         res.get("elapsed", 0.0), main_win)

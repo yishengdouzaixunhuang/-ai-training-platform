@@ -1,7 +1,29 @@
 """
 OCR Engine wrapping RapidOCR (PP-OCRv4 ONNX Runtime).
-Zero PaddlePaddle dependency. Auto-downloads models on first use.
+Zero PaddlePaddle dependency.
+
+⚠️ 导入顺序坑（Windows 实测，2026-11）：先建 QApplication 再 import onnxruntime
+   会直接段错误（进程 rc=139，无 Python 异常、无法捕获）；反过来先 import
+   onnxruntime 再建 QApplication 则正常。目前不触发，是因为 main.py 的铁律
+   「torch 必须先于 PyQt5」，torch 已加载后 onnxruntime 再导入也正常。
+   如果把 OCR 抽成独立脚本/工具，务必保证 onnxruntime 或 torch 先于 Qt 初始化。
+   实测矩阵（C:\\aitp_venv）：
+     QApplication -> onnxruntime            = 段错误 139
+     onnxruntime -> QApplication            = 正常
+     torch -> QApplication -> onnxruntime   = 正常
 """
+import os
+import sys
+
+# 兜底：不经 main.py 单独 import 时（比如写脚本调 OCR），也要能用项目内 vendor/ 的依赖
+_VENDOR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "vendor")
+if os.path.isdir(_VENDOR) and _VENDOR not in sys.path:
+    sys.path.insert(0, _VENDOR)
+    try:
+        os.add_dll_directory(_VENDOR)
+    except (AttributeError, OSError):
+        pass
+
 import numpy as np
 from PIL import Image
 
