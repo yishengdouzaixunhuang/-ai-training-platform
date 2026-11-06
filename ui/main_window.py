@@ -653,7 +653,16 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("Search...")
         self.search_input.setMinimumWidth(110)
-        self.search_input.textChanged.connect(self._filter_images)
+        # 防抖 280ms：列表构建已经挪到后台线程，每敲一个字符都会起一个全量扫描
+        # （2001 张图的目录索引 + json 扫描）。不防抖的话打 "NG" 就是两个线程并发，
+        # 打 5 个字符就是 5 个，磁盘 IO 互相抢，最后一个反而更慢才出来。
+        # 下拉框/勾选框不防抖 —— 它们不会连发。
+        self._filter_debounce = QTimer(self)
+        self._filter_debounce.setSingleShot(True)
+        self._filter_debounce.setInterval(280)
+        self._filter_debounce.timeout.connect(
+            lambda: self._filter_images(self.search_input.text()))
+        self.search_input.textChanged.connect(lambda *_: self._filter_debounce.start())
         ft.addWidget(self.search_input, 1)
         self.split_filter = QComboBox()
         # 对标友商 友商平台 的筛选下拉：除数据集外，还要能按"是否标注 / 是否有结果"筛。
@@ -4126,23 +4135,15 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         if gen != self._project_gen:
             return
         self._all_images = image_paths
-        self._suppress_cell_change = True
+        # 换工程：立刻丢掉上一个工程的行数据。列表构建是异步的，这 6.8 秒里
+        # 任何读 _filtered_data 的地方（Ctrl+Space、导出、_refresh_img_info）
+        # 都会拿到上一个工程的数据 —— 必须先清空。
+        self._filtered_data = []
+        # 抑制标志由 _filter_images 自己设、由 _render_page 负责复位，这里不要再插手。
+        # （原来紧跟一句 = False，等于立刻把刚设的 True 抹掉，原意已不存在）
         self._filter_images("")
-        self._suppress_cell_change = False
-        # 多视图信息在_这里_打日志（不能在 _filter_images 里打，会重入崩溃）
-        if getattr(self, "_mv_mode_list", False):
-            _meta = getattr(self, "_mv_view_meta", []) or []
-            _gn = getattr(self, '_mv_group_count', 0)
-            # 说清"一行 = 一颗电芯的 N 张视图"，否则人会以为列表少图了
-            # （2026-10-14 用户看到 33 行就去问"为什么只有 33 张"）
-            # ⚠️ 日志面板是 QTextEdit，不认 Markdown：这里只能写纯文本，
-            #    写 `**重点**` 会原样显示两个星号（截图里看到的）。
-            self.log(f"多视图列表：{_gn} 组 × {len(_meta)} 视图"
-                     f"（{' / '.join('%s %s' % (v, n) for v, n in _meta)}），已按组成行"
-                     f" —— 一行 = 一颗电芯的 {len(_meta)} 张视图，"
-                     f"共 {_gn * len(_meta)} 张图都在（展开看「图片名」列的多行文件名）")
-        elif getattr(self, "_mv_list_note", ""):
-            self.log(f"多视图识别/分组失败，按单图列表显示：{self._mv_list_note}")
+        # 多视图日志挪到 _on_filter_rows_ready：_mv_mode_list / _mv_view_meta /
+        # _mv_group_count 都是**后台线程**算出来的，此刻读到的还是上一轮的值。
         # Keep detection annotation state created by _set_task("detection")
         # for detection projects. The async image-list scan must not reset it,
         # otherwise the det overlay/BoxManager lose their loaded boxes and
@@ -4167,14 +4168,14 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         else:
             self.image_count_label.setText(f"Total: {len(image_paths)} images")
         self.log(f"Loaded {len(image_paths)} images in list")
-        _ms = getattr(self, "_last_filter_ms", None)
-        if _ms is not None:
-            self.log("列表构建耗时 %.0f ms（%d 行）" % (_ms, getattr(self, "_last_filter_rows", 0)))
-        if image_paths:
-            self._suppress_cell_change = True
-            self.image_list_widget.selectRow(0)
-            self._suppress_cell_change = False
-            self._load_image_by_index(0)
+        # 列表构建耗时改到 _on_filter_rows_ready 里打 —— 此刻只是刚把异步任务发出去，
+        # _last_filter_ms 还停在上一次的值上（首次为 None，这条日志会直接消失）
+        # ⚠️ 2026-11-06 列表构建异步化后：_filter_images 立刻返回，此刻表格还是空的，
+        #    直接 selectRow(0) 选不到任何东西（item(0,0) 是 None），
+        #    连带 _load_image_by_index(0) 在 `if item:` 处空转 —— 表现就是
+        #    「打开工程后列表有 2001 行、却没有任何选中行、画布一片空白」。
+        #    改成打标记，等 _render_page 真把行填进去之后再选（见其尾部）。
+        self._pending_select_first = bool(image_paths)
         self._refresh_class_ui()
 
     def _load_output_stats_async(self, project_dir):
@@ -4277,6 +4278,14 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         self._filter_gen = getattr(self, "_filter_gen", 0) + 1
         _gen = self._filter_gen
         self._suppress_cell_change = True
+        # 后台要跑 6.8 秒，这段时间必须给可见反馈，否则用户以为筛选没生效会反复点。
+        # 不清空列表（清空会闪、也丢当前上下文），只在统计条上挂个「进行中」。
+        try:
+            _prev = len(getattr(self, "_filtered_data", []) or [])
+            self.stats_summary.setText(
+                f"筛选中…（上次 {_prev} 行）" if _prev else "筛选中…")
+        except Exception:
+            pass
         _ctx = self._snapshot_filter_ctx(text)
         threading.Thread(target=self._filter_rows_body,
                          args=(_gen, _ctx, _t_fi0), daemon=True).start()
@@ -4289,7 +4298,8 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         """
         self._ensure_marks_loaded()
         # split 表缓存：每次刷新重建一次（从文件读一次即可），循环内只查表
-        self._split_map_cache = None
+        # split 表已改成 _filter_rows_body_impl 里的局部变量 _split_cache：
+        # 挂 self 会被两个并发后台线程互踩（目前靠 gen 丢弃结果侥幸不出错）
         # 标注名字筛选：选项跟随工程类别（懒同步）
         lf_text = ""
         try:
@@ -4326,13 +4336,35 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         }
 
     def _filter_rows_body(self, gen, ctx, _t_fi0):
-        """后台线程：构建行数据。**这里不许出现任何 Qt 控件访问。**"""
+        """后台线程入口：兜住所有异常。
+
+        这里必须包一层 try —— 下面 400 多行要读目录、读 json、查字典，任何一处抛异常：
+          ① daemon 线程里的异常在 pythonw 下连 stderr 都看不到，直接静默蒸发；
+          ② filter_rows_signal 永不 emit → 列表永远停在旧数据；
+          ③ 主线程入口设的 _suppress_cell_change=True 再没人置回 False
+             → 列表点击、方向键切换行从此全部失灵，直到下一次刷新成功。
+        所以异常也要 emit 一个 error payload，让主线程能复位并给出提示。
+        """
+        try:
+            self._filter_rows_body_impl(gen, ctx, _t_fi0)
+        except Exception as e:          # noqa: BLE001
+            import traceback
+            traceback.print_exc()
+            try:
+                self.filter_rows_signal.emit(
+                    gen, {"error": f"{type(e).__name__}: {e}"}, _t_fi0)
+            except RuntimeError:
+                pass                    # 窗口已销毁
+
+    def _filter_rows_body_impl(self, gen, ctx, _t_fi0):
+        """真正的构建逻辑。**这里不许出现任何 Qt 控件访问。**"""
         if gen != getattr(self, "_filter_gen", 0):
             return                      # 已被更新的筛选条件取代
         # 下面这些值全部来自主线程快照；_t_fi0 也由主线程传入，这里不要再赋值，
         # 否则计时只从后台开始算，_last_filter_ms 会偏小。
         images = ctx["images"]          # 副本：后台可自由排序，不动主线程那份
         text_lower = ctx["text_lower"]
+        _split_cache = None             # split 表：本线程局部缓存，不挂 self
         sf_text = ctx["split"]
         annotated_only = ctx["annotated_only"]
         lf_text = ctx["label"]
@@ -4635,18 +4667,18 @@ class MainWindow(OcrOcvMixin, QMainWindow):
                     # ★ 2026-10-23：split 表原来在**每张图**的循环里都 json.load 一次
                     #   （489 张 = 489 次读同一个文件，光这一项就几百 ms）。
                     #   现在循环外读一次、循环内只查表。
-                    if self._split_map_cache is None:
+                    if _split_cache is None:
                         pd = str(self.pm.get_project_dir(self.current_project["name"]))
                         sf = os.path.join(pd, "train_test_split.json")
                         if os.path.exists(sf):
                             has_split_file = True
                             with open(sf, "r", encoding="utf-8") as sfh:
-                                self._split_map_cache = json.load(sfh) or {}
+                                _split_cache = json.load(sfh) or {}
                         else:
-                            self._split_map_cache = {}
-                    if self._split_map_cache:
+                            _split_cache = {}
+                    if _split_cache:
                         has_split_file = True
-                        v = self._split_map_cache.get(base)
+                        v = _split_cache.get(base)
                         if v == "val":
                             split_status = " [Val]"
                         elif v == "test":
@@ -4771,6 +4803,14 @@ class MainWindow(OcrOcvMixin, QMainWindow):
             "rows": rows,
             "train": total_train, "val": total_val, "test": total_test,
             "annotated": total_annotated, "shapes": total_shapes,
+            # 多视图信息也一起带回去：这几个值是本线程刚算出来的，
+            # 主线程此刻直接读 self._mv_* 拿到的是上一轮的（日志会张冠李戴）
+            "mv_on": bool(getattr(self, "_mv_mode_list", False)),
+            "mv_meta": list(getattr(self, "_mv_view_meta", []) or []),
+            "mv_groups": int(getattr(self, "_mv_group_count", 0) or 0),
+            "mv_note": getattr(self, "_mv_list_note", ""),
+            # 切工程时旧线程仍可能 emit，主线程要靠这个丢掉跨工程的结果
+            "project_gen": self._project_gen,
         }
         try:
             self.filter_rows_signal.emit(gen, payload, _t_fi0)
@@ -4781,6 +4821,21 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         """主线程：拿到后台构建好的行数据后渲染，并刷新各计数条。"""
         if gen != getattr(self, "_filter_gen", 0):
             return                      # 过期结果，丢掉
+        # 后台抛了异常：必须复位抑制标志，否则列表点击从此失灵（也会卡住进度条）
+        if isinstance(payload, dict) and payload.get("error"):
+            self._suppress_cell_change = False
+            self._hide_load_progress()
+            try:
+                self.stats_summary.setText("筛选失败")
+                self.statusBar().showMessage(f"列表构建失败：{payload['error']}", 8000)
+            except Exception:
+                pass
+            return
+        # 切工程的瞬间旧线程仍可能 emit —— 不校验 project_gen 就会把上个工程的行
+        # 渲染进新工程（gen 只保证"同一工程内的先后"，不管跨工程）
+        if (payload.get("project_gen") is not None
+                and payload["project_gen"] != self._project_gen):
+            return
         self._filtered_data = payload["rows"]
         total_train = payload["train"]
         total_val = payload["val"]
@@ -4789,7 +4844,21 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         total_shapes = payload["shapes"]
         # Reset to page 0 and render
         self._current_page = 0
+        _was_open = bool(getattr(self, "_pending_select_first", False))  # _render_page 会消费掉
         self._render_page()
+
+        # 多视图日志：只在「刚打开工程」这一轮打，避免每次筛选都刷屏。
+        # 值取自 payload（后台刚算的），不要读 self._mv_* —— 后台可能已开始下一轮。
+        if _was_open:
+            if payload.get("mv_on"):
+                _meta = payload.get("mv_meta") or []
+                _gn = payload.get("mv_groups", 0)
+                self.log(f"多视图列表：{_gn} 组 × {len(_meta)} 视图"
+                         f"（{' / '.join('%s %s' % (v, n) for v, n in _meta)}），已按组成行"
+                         f" —— 一行 = 一颗电芯的 {len(_meta)} 张视图，"
+                         f"共 {_gn * len(_meta)} 张图都在（展开看「图片名」列的多行文件名）")
+            elif payload.get("mv_note"):
+                self.log(f"多视图识别/分组失败，按单图列表显示：{payload['mv_note']}")
 
         # Update stats summary bar
         # ⚠️ 多视图工程里"一行 = 一颗电芯的 N 张视图"，**行数与张数不是一个量纲**。
@@ -4860,6 +4929,12 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         #    耗时只存属性，由调用方（_populate_image_list）在安全位置打出来。
         self._last_filter_ms = (time.perf_counter() - t_start) * 1000.0
         self._last_filter_rows = len(self._filtered_data or [])
+        # 只有「打开工程」这一轮打耗时：搜索/切筛选会连发，每次都打会刷屏。
+        # 延迟一拍再 log —— 日志面板刷新会重入（见上方原注释），异步上下文里更难查。
+        if _was_open:
+            _ms, _n = self._last_filter_ms, self._last_filter_rows
+            QTimer.singleShot(0, lambda: self.log(
+                "列表构建耗时 %.0f ms（%d 行）" % (_ms, _n)))
 
 
     def _render_page(self):
@@ -4979,16 +5054,31 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         # Re-select the image currently being annotated so the user always
         # knows which row they are working on (even after list refresh).
         cur = getattr(self.canvas, "current_image_path", None)
+        _target = -1
         if cur:
             for r in range(self.image_list_widget.rowCount()):
                 it = self.image_list_widget.item(r, 0)
                 if it and it.data(Qt.UserRole) == cur:
-                    self.image_list_widget.selectRow(r)
-                    self.image_list_widget.scrollToItem(
-                        it, self.image_list_widget.PositionAtCenter)
+                    _target = r
                     break
+        # 打开工程时画布上还没有图（current_image_path 是 None），靠这个标记补选第一行。
+        # 没有它，异步渲染完成后「有 2001 行却一行没选中」，用户必须手点一下才见到图。
+        if (_target < 0 and getattr(self, "_pending_select_first", False)
+                and self.image_list_widget.rowCount() > 0):
+            _target = 0
+        self._pending_select_first = False
 
         self._suppress_cell_change = False
+        if _target >= 0:
+            # 锁定 → 选中 → 解锁 → 显式加载：selectRow 的副作用在锁定期间不触发，
+            # 这里必须只加载一次（20MP 图重复解码约 200ms，别指望信号再补一刀）。
+            self._suppress_cell_change = True
+            self.image_list_widget.selectRow(_target)
+            self.image_list_widget.scrollToItem(
+                self.image_list_widget.item(_target, 0),
+                self.image_list_widget.PositionAtCenter)
+            self._suppress_cell_change = False
+            self._load_image_by_index(_target)
         # 行数变了 ⇒ 表格该多高也跟着变（行少时收成内容高度，不留大片空白）
         self._schedule_fit_list_height()
 
