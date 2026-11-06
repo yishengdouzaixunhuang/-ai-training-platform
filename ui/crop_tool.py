@@ -4,7 +4,7 @@ import os, cv2, json
 import numpy as np
 from PyQt5.QtWidgets import (
     QDialog, QTabWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
-    QPushButton, QLabel, QSpinBox, QDoubleSpinBox, QLineEdit,
+    QPushButton, QLabel, QSpinBox, QDoubleSpinBox, QLineEdit, QComboBox,
     QFileDialog, QMessageBox, QListWidget, QProgressBar, QTextEdit,
     QGroupBox, QCheckBox, QWidget, QSplitter
 )
@@ -147,6 +147,12 @@ class CropToolDialog(QDialog):
         btn_out = QPushButton("..."); btn_out.setFixedWidth(28)
         btn_out.clicked.connect(self._pick_output)
         ol.addWidget(btn_out)
+        # 输出格式：默认跟随原图，避免 bmp 进来 png 出去
+        ol.addWidget(QLabel("Format:"))
+        self._out_fmt = QComboBox()
+        self._out_fmt.addItems(["Same as source", "PNG", "BMP", "JPG"])
+        self._out_fmt.setFixedWidth(120)
+        ol.addWidget(self._out_fmt)
         layout.addLayout(ol)
 
         # Tabs
@@ -175,8 +181,16 @@ class CropToolDialog(QDialog):
         self._sw_stride_y = QSpinBox(); self._sw_stride_y.setRange(1, 4096); self._sw_stride_y.setValue(256)
         l.addRow("Stride X:", self._sw_stride_x)
         l.addRow("Stride Y:", self._sw_stride_y)
-        self._sw_overlap = QDoubleSpinBox(); self._sw_overlap.setRange(0, 0.9); self._sw_overlap.setValue(0.0); self._sw_overlap.setSingleStep(0.1)
-        l.addRow("Overlap:", self._sw_overlap)
+        # 重叠率由 stride / window 决定，这里只读显示。
+        # 原来是个可输入的 QDoubleSpinBox，但全文件从来没读过它的值 ——
+        # 填了 0.5 也不生效，纯属骗人（2026-11-06 修）。
+        self._sw_overlap_label = QLabel("--")
+        self._sw_overlap_label.setStyleSheet("color: #555;")
+        l.addRow("Overlap (computed):", self._sw_overlap_label)
+        for sb in (self._sw_win_w, self._sw_win_h,
+                   self._sw_stride_x, self._sw_stride_y):
+            sb.valueChanged.connect(self._update_overlap_label)
+        self._update_overlap_label()
         self._sw_discard = QCheckBox("Discard edge tiles smaller than window")
         self._sw_discard.setChecked(True)
         l.addRow(self._sw_discard)
@@ -212,6 +226,35 @@ class CropToolDialog(QDialog):
             self._output_dir = d
             self._out_edit.setText(d)
 
+    def _update_overlap_label(self):
+        """按当前 window / stride 反算重叠率，只做显示。"""
+        try:
+            ow = self._sw_win_w.value()
+            oh = self._sw_win_h.value()
+            sx = self._sw_stride_x.value()
+            sy = self._sw_stride_y.value()
+            rx = (1.0 - sx / ow) * 100.0 if ow else 0.0
+            ry = (1.0 - sy / oh) * 100.0 if oh else 0.0
+            txt = "X %.1f%%  /  Y %.1f%%" % (rx, ry)
+            if rx < 0 or ry < 0:
+                txt += "   (负值 = 块之间有间隙)"
+            self._sw_overlap_label.setText(txt)
+        except Exception:
+            pass
+
+    def _out_ext(self, src_path):
+        """输出扩展名。默认跟随源文件，避免 bmp 进 png 出。
+
+        注意：这里返回的扩展名同时决定编码器，imwrite_u 内部按扩展名选
+        cv2.imencode 的格式 —— 所以不需要另写一份映射。
+        """
+        idx = self._out_fmt.currentIndex() if hasattr(self, "_out_fmt") else 0
+        if idx == 0:                                   # Same as source
+            ext = os.path.splitext(src_path)[1].lower()
+            return ext if ext in (".bmp", ".png", ".jpg", ".jpeg",
+                                  ".tif", ".tiff") else ".png"
+        return {1: ".png", 2: ".bmp", 3: ".jpg"}.get(idx, ".png")
+
     def _load_roi_preview(self):
         f, _ = QFileDialog.getOpenFileName(self, "Load Preview", "",
             "Images (*.png *.jpg *.jpeg *.bmp *.tiff)")
@@ -239,28 +282,38 @@ class CropToolDialog(QDialog):
         stride_y = self._sw_stride_y.value()
         discard = self._sw_discard.isChecked()
 
+        def _positions(size, win, stride):
+            """切窗位置：末尾回吸到边界，避免最后一块只有几个像素。"""
+            if win >= size:
+                return [0]
+            pos = list(range(0, size, stride))
+            last = size - win
+            if pos[-1] + win > size and pos[-1] != last:
+                pos[-1] = last
+            elif pos[-1] + win < size:
+                pos.append(last)
+            # 回吸后仍会切出不足窗口的，去掉（除非就是边界那一块）
+            pos = [p for p in pos if p + win <= size or p == last]
+            return sorted(set(pos))
+
         total = 0
+        skipped = []
         for path in self._files:
-            img = cv2.imdecode(np.fromfile(path, dtype=np.uint8), cv2.IMREAD_COLOR)
+            # ⚠️ 必须用 IMREAD_UNCHANGED：原来用 IMREAD_COLOR 会把单通道灰度图
+            # 硬转成三通道 BGR，灰度值复制成 3 份。数据没丢，但通道数变了、
+            # 体积涨 2 倍（实测 512x512：单通道 bmp 257KB -> 三通道 png 548KB）。
+            img = imread_u(path, cv2.IMREAD_UNCHANGED)
             if img is None:
+                skipped.append((os.path.basename(path), "读不出来"))
                 continue
             h, w = img.shape[:2]
+            if win_w > w or win_h > h:
+                skipped.append((os.path.basename(path),
+                                f"{w}x{h} 小于窗口 {win_w}x{win_h}"))
+                continue
             base = os.path.splitext(os.path.basename(path))[0]
+            ext = self._out_ext(path)
 
-            # Compute positions with edge snap-back
-            def _positions(size, win, stride):
-                pos = list(range(0, size, stride))
-                if not pos:
-                    return [0]
-                last = size - win
-                if pos[-1] + win > size and pos[-1] != last:
-                    pos[-1] = last
-                elif pos[-1] + win < size:
-                    pos.append(last)
-                # Remove positions that produce undersized tiles after snap-back
-                pos = [p for p in pos if p + win <= size or p == last]
-                return sorted(set(pos))
-                return sorted(set(pos))
             xs = _positions(w, win_w, stride_x)
             ys = _positions(h, win_h, stride_y)
 
@@ -270,12 +323,23 @@ class CropToolDialog(QDialog):
                     tile = img[y:y2, x:x2]
                     if discard and (tile.shape[1] < win_w or tile.shape[0] < win_h):
                         continue
-                    out_name = f"{base}_x{x}_y{y}_w{tile.shape[1]}x{tile.shape[0]}.png"
-                    out_path = os.path.join(self._output_dir, out_name)
-                    _, buf = cv2.imencode(".png", tile)
-                    buf.tofile(out_path)
+                    out_name = (f"{base}_x{x}_y{y}"
+                                f"_w{tile.shape[1]}x{tile.shape[0]}{ext}")
+                    if not imwrite_u(os.path.join(self._output_dir, out_name), tile):
+                        skipped.append((out_name, "写入失败"))
+                        continue
                     total += 1
-        QMessageBox.information(self, "Done", f"Sliding window: {total} tiles saved to:\n{self._output_dir}")
+
+        msg = f"Sliding window: {total} tiles saved to:\n{self._output_dir}"
+        msg += f"\n\n输出格式: {self._fmt_desc()}"
+        if skipped:
+            head = "、".join(s[0] for s in skipped[:3])
+            msg += f"\n\n跳过 {len(skipped)} 项：{head}" + (" ..." if len(skipped) > 3 else "")
+        QMessageBox.information(self, "Done", msg)
+
+    def _fmt_desc(self):
+        idx = self._out_fmt.currentIndex() if hasattr(self, "_out_fmt") else 0
+        return {0: "跟随源文件", 1: "PNG", 2: "BMP", 3: "JPG"}.get(idx, "PNG")
     def _crop_roi(self):
         roi = self._roi_canvas.get_roi()
         if roi is None:
@@ -287,47 +351,29 @@ class CropToolDialog(QDialog):
             return
 
         total = 0
+        skipped = []
         for path in self._files:
-            img = cv2.imdecode(np.fromfile(path, dtype=np.uint8), cv2.IMREAD_COLOR)
+            # 同 _crop_sliding：IMREAD_UNCHANGED 保住单通道，别把灰度复制成 3 份
+            img = imread_u(path, cv2.IMREAD_UNCHANGED)
             if img is None:
+                skipped.append((os.path.basename(path), "读不出来"))
                 continue
             h, w = img.shape[:2]
-            rx2, ry2 = min(rx + rw, w), min(ry + rh, h)
-            crop = img[ry:ry2, rx:rx2]
-            base = os.path.splitext(os.path.basename(path))[0]
-            out_name = f"{base}_roi_{rx}_{ry}_{rw}x{rh}.png"
-            out_path = os.path.join(self._output_dir, out_name)
-            _, buf = cv2.imencode(".png", crop)
-            buf.tofile(out_path)
-            total += 1
-
-        roi_json = os.path.join(self._output_dir, "_roi_params.json")
-        with open(roi_json, "w") as f:
-            json.dump({"x": rx, "y": ry, "w": rw, "h": rh}, f, indent=2)
-
-        QMessageBox.information(self, "Done", f"ROI crop: {total} images saved to:\n{self._output_dir}")
-        QMessageBox.information(self, "Done", f"Sliding window: {total} tiles saved to:\n{self._output_dir}")
-    def _crop_roi(self):
-        roi = self._roi_canvas.get_roi()
-        if roi is None:
-            QMessageBox.warning(self, "Warning", "Please draw a ROI rectangle first")
-            return
-        rx, ry, rw, rh = roi
-        if rw < 2 or rh < 2:
-            QMessageBox.warning(self, "Warning", "ROI too small")
-            return
-
-        total = 0
-        for path in self._files:
-            img = imread_u(path)
-            if img is None:
+            if rx >= w or ry >= h:
+                skipped.append((os.path.basename(path),
+                                f"ROI 在 {w}x{h} 之外"))
                 continue
-            h, w = img.shape[:2]
             rx2, ry2 = min(rx + rw, w), min(ry + rh, h)
             crop = img[ry:ry2, rx:rx2]
+            if crop.size == 0:
+                skipped.append((os.path.basename(path), "裁出空图"))
+                continue
             base = os.path.splitext(os.path.basename(path))[0]
-            out_name = f"{base}_roi_{rx}_{ry}_{rw}x{rh}.png"
-            imwrite_u(os.path.join(self._output_dir, out_name), crop)
+            ext = self._out_ext(path)
+            out_name = f"{base}_roi_{rx}_{ry}_{rw}x{rh}{ext}"
+            if not imwrite_u(os.path.join(self._output_dir, out_name), crop):
+                skipped.append((out_name, "写入失败"))
+                continue
             total += 1
 
         # If ROI was drawn on the preview image, save ROI params as JSON for reproducibility
@@ -335,4 +381,9 @@ class CropToolDialog(QDialog):
         with open(roi_json, "w") as f:
             json.dump({"x": rx, "y": ry, "w": rw, "h": rh}, f, indent=2)
 
-        QMessageBox.information(self, "Done", f"ROI crop: {total} images saved to:\n{self._output_dir}")
+        msg = f"ROI crop: {total} images saved to:\n{self._output_dir}"
+        msg += f"\n\n输出格式: {self._fmt_desc()}"
+        if skipped:
+            head = "、".join(s[0] for s in skipped[:3])
+            msg += f"\n\n跳过 {len(skipped)} 项：{head}" + (" ..." if len(skipped) > 3 else "")
+        QMessageBox.information(self, "Done", msg)
