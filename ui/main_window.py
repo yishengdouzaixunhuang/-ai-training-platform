@@ -3984,7 +3984,19 @@ class MainWindow(OcrOcvMixin, QMainWindow):
 
         ann_dir = os.path.join(project_dir, "annotations")
         filled = 0
+        reused = 0
         total = len(images)
+
+        # 工程级 sidecar：命中的掩膜直接复用上次的统计结果，不碰 PNG。
+        # 眉山中航那类工程 209 张 4096² 掩膜要 6.6 秒，有缓存后接近 0；
+        # 只有 mtime_ns + size 都变了（真改过标注）才重新解码。
+        try:
+            from core.mask_stats_cache import load as _msc_load, save as _msc_save
+            side = _msc_load(project_dir)
+        except Exception:
+            _msc_load = _msc_save = None
+            side = None                     # 模块不可用 → 退化成全量解码
+
         for idx, p in enumerate(images, 1):
             if gen != self._project_gen:
                 return                      # 已经切到别的工程，放弃这轮
@@ -4005,7 +4017,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
             except Exception:
                 pass
 
-            # ② 预热掩膜统计
+            # ② 预热掩膜统计：先查 sidecar，命中就不解码 PNG
             mp = os.path.join(ann_dir, base + "_mask.png")
             cache = getattr(self, "_mask_stat_cache", None)
             if cache is None:
@@ -4015,12 +4027,31 @@ class MainWindow(OcrOcvMixin, QMainWindow):
             try:
                 if not os.path.exists(mp):
                     continue
-                mt = os.path.getmtime(mp)
-                classes, has = _mask_stats_of(mp)
-                cache[mp] = (mt, classes, has)
-                filled += 1
+                st = os.stat(mp)
+                ns, sz, mt = st.st_mtime_ns, st.st_size, st.st_mtime
+                rel = os.path.relpath(mp, project_dir) if side is not None else None
+                h = side.get(rel) if (side is not None and rel) else None
+                if h is not None and h[0] == ns and h[1] == sz:
+                    cache[mp] = (mt, h[2], h[3])      # 命中：省掉这一次解码
+                    reused += 1
+                else:
+                    classes, has = _mask_stats_of(mp)
+                    cache[mp] = (mt, classes, has)
+                    filled += 1
+                    if side is not None and rel:
+                        side[rel] = (ns, sz, classes, has)
             except Exception:
                 continue                        # 单张坏了不影响整体
+
+        # 写回 sidecar（全量覆盖，几百条也就几十 KB）。写完才通知主线程，
+        # 这样下次打开工程时缓存一定是齐的。
+        if _msc_save is not None and side is not None:
+            try:
+                _msc_save(project_dir, side)
+            except Exception:
+                pass
+        if reused or filled:
+            self.log("标注统计：复用缓存 %d 张，新解码 %d 张" % (reused, filled))
         # 即使一张都没补（工程本来就没有掩膜），也要通知一次：
         # 否则 _mask_stats_ready_gen 永远不置位，之后新建的掩膜得等下次开关工程。
         try:
@@ -4034,6 +4065,10 @@ class MainWindow(OcrOcvMixin, QMainWindow):
             return
         # ⚠️ 必须先置位：_filter_images 靠它判断"能不能自己解码"
         self._mask_stats_ready_gen = gen
+        # 回填是**同步**的，2001 行实测要 8.6 秒（比统计标注本身还久）。
+        # 不提示的话，进度条刚走到 100% 界面就僵住，用户会以为点坏了。
+        self.load_progress_signal.emit(0, 0, "正在刷新列表…")
+        QApplication.processEvents()
         _t0 = time.perf_counter()
         try:
             keep = self.image_list_widget.currentRow()
