@@ -3749,7 +3749,8 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         try:
             project_dir = str(self.pm.get_project_dir(self.current_project["name"]))
             from classification.label_manager import LabelManager as ClsLabelManager
-            self.class_list.set_project_dir(project_dir)
+            # 统计由下面 set_classes(labels) 负责算，这里别算旧类别
+            self.class_list.set_project_dir(project_dir, with_counts=False)
             lm = ClsLabelManager(project_dir)
             data = lm.load()
             labels = data.get("labels", [])
@@ -4176,7 +4177,12 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         #    「打开工程后列表有 2001 行、却没有任何选中行、画布一片空白」。
         #    改成打标记，等 _render_page 真把行填进去之后再选（见其尾部）。
         self._pending_select_first = bool(image_paths)
-        self._refresh_class_ui()
+        # ★ 2026-11-06 去重：这里原来还有一次 _refresh_class_ui()。
+        #   打开工程时的正确顺序是 _load_classes()（3493 行）先刷一次类别表并排好统计，
+        #   等后台扫描完再到这个槽；而 _compute_counts 只依赖文件系统
+        #   （images/ 与 annotations/ 的内容），跟列表行数没有关系，
+        #   所以这一次刷新纯属重复 —— 实测眉山中航白跑 275ms、速博达 85ms。
+        #   若将来发现"列表变了类别表却不更新"，先回看这里。
 
     def _load_output_stats_async(self, project_dir):
         """Load prediction counts and IoU scores from outputs dir in background thread."""
@@ -6960,7 +6966,8 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         """Refresh class list and palette from _cached_classes."""
         classes = self._cached_classes
         if hasattr(self, "class_list"):
-            self.class_list.set_project_dir(self._project_dir_or_none())
+            # 统计留给下面的 singleShot(_deferred_class_counts)，这里不算
+            self.class_list.set_project_dir(self._project_dir_or_none(), with_counts=False)
             # ★★ 2026-10-29 性能：先把表建出来，数字列留 0，
             #   把 _compute_counts（遍历标注文件，1690 张工程实测 559ms）推到下一拍。
             #   打开工程时这段原来卡在主线程上，是"双击之后干等"的第二个大头

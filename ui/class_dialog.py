@@ -126,7 +126,7 @@ class ClassDialog(QDialog):
         else:
             from core.class_discovery import read_project_classes
             self._classes = read_project_classes(self.pd)
-        self.table.set_project_dir(self.pd)
+        self.table.set_project_dir(self.pd, with_counts=False)   # 下面 set_classes 会算
         self.table.set_classes(list(self._classes))
         self._update_state()
 

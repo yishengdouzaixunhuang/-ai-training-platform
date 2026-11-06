@@ -215,7 +215,7 @@ class ClassTableView(QWidget):
 
     # ---------- data ----------
 
-    def set_project_dir(self, path):
+    def set_project_dir(self, path, with_counts=True):
         """Remember the project directory so counts can be computed.
 
         ★ 2026-10-28：**只有路径真的变了才清缓存/重算**。
@@ -224,6 +224,11 @@ class ClassTableView(QWidget):
           "全量重扫" —— 而 `_refresh_class_ui` 在打开工程时会被调用多次，
           实测 `_seg_class_ids` 因此被调 1467 次（489×3）、累计 5.2 秒。
           （这是上一轮加缓存时留下的副作用：清了缓存却还指望后续命中。）
+
+        ★ 2026-11-06：`with_counts` 参数。这里原来无条件 `set_classes(self._classes)`，
+          算的是**旧类别** —— 而所有已知调用点紧接着都会用真正的类别再调一次
+          `set_classes(...)`，所以这一次纯属白算（实测眉山中航 506ms、速博达 158ms）。
+          调用方自己负责算统计，就传 False。
         """
         _new = str(path) if path else None
         _old = str(self._project_dir) if self._project_dir else None
@@ -237,7 +242,7 @@ class ClassTableView(QWidget):
             self._ann_index = None
         self._project_dir = path
         if changed and self._classes:
-            self.set_classes(self._classes)
+            self.set_classes(self._classes, with_counts=with_counts)
 
     def _fit_numeric_columns(self):
         """四个数字列（训练集/测试集/验证集/空集）按**表头实际文字宽**定宽。
