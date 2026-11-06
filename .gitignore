@@ -61,6 +61,9 @@ vendor/
 # 不进 git，随文件夹拷贝走；clone 后联网 pip install -r requirements.txt
 wheels/
 
+# Python 3.12 官方安装包（26MB），换机器时配合「安装Python3.12.bat」离线装解释器
+installers/
+
 # Temp
 tmp/
 temp/

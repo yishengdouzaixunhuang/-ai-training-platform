@@ -55,8 +55,8 @@ if not defined BASE (
     echo [X] 没找到 Python 3.12
     echo.
     echo     wheels\ 里的包是 cp312，必须用 Python 3.12
-    echo     下载: https://www.python.org/downloads/release/python-3127/
-    echo     安装时勾选 "Add python.exe to PATH"，装完再运行本脚本
+    echo     先双击「安装Python3.12.bat」装解释器（项目自带安装包，不用联网）
+    echo     或手动下载: https://www.python.org/downloads/release/python-3127/
     echo.
     pause
     exit /b 1

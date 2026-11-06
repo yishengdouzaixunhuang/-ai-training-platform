@@ -342,21 +342,27 @@
 |---|---|---|---|
 | 代码 | 项目文件夹 | 79MB | ✅ |
 | 离线 wheel（37 个） | `项目\wheels\` | 2.8GB | ✅ |
+| Python 3.12 安装包 | `项目\installers\` | 26MB | ✅ |
 | OCR / onnxruntime / shapely / pyyaml | `项目\vendor\` | 72MB | ✅ |
 | Python 环境 | `C:\aitp_venv` | 4.7GB | ❌ 必须英文路径（地雷 31） |
 | 真实工程数据 | `E:\05-TrainingProject\` | — | ❌ 单独拷 |
 | SAM / YOLO 预训练权重 | `项目\models\` | 363MB | 按需 |
 
-`wheels/` 和 `vendor/` 都在 `.gitignore` 里（不进 git），但**跟着文件夹拷贝走**。
+`wheels/` `installers/` `vendor/` 都在 `.gitignore` 里（不进 git），但**跟着文件夹拷贝走**。
 
-### 8.2 搬到新机器：四步
+### 8.2 搬到新机器：四步，全程可以不联网
 
 1. 拷整个项目文件夹（约 2.9GB）
-2. 装 **Python 3.12**（wheel 全是 cp312，3.13/3.14 装不上）
-   https://www.python.org/downloads/release/python-3127/ ，安装时勾 "Add python.exe to PATH"
-3. 双击 **`离线安装.bat`** —— 没环境就建 `C:\aitp_venv` 并离线装，约 4 分钟，**全程不联网**
+2. 双击 **`安装Python3.12.bat`**
+   - 已经装了 → 检测到直接跳过
+   - 没装 → 用项目自带的 `installers\python-3.12.7-amd64.exe` 静默安装（`InstallAllUsers=0`，
+     装到 `%LOCALAPPDATA%\Programs\Python\Python312`，不需要管理员权限）
+   - 自带包缺失 → 退到 `winget install Python.Python.3.12`
+   - 都没有 → 提示手动下载地址
+3. 双击 **`离线安装.bat`** —— 没环境就建 `C:\aitp_venv` 并离线装，约 4 分钟
 4. 双击 **`启动_便携.bat`** —— 依次找 `C:\aitp_venv` → `%LOCALAPPDATA%\aitp_venv` → PATH
 
+⚠️ wheel 全是 cp312，所以**必须 Python 3.12**，3.13 / 3.14 装不上。
 ⚠️ **不要**把环境装进项目目录，也不要手工在项目里 `python -m venv .venv`（地雷 31）。
 
 ### 8.3 只更新依赖、不换机器
@@ -394,6 +400,7 @@ C:\aitp_venv\Scripts\python.exe tests\test_smoke_startup.py
 
 | 脚本 | 说明 |
 |---|---|
+| `安装Python3.12.bat` | 装解释器：自带包静默装 → winget → 手动提示，已装则跳过 |
 | `启动_便携.bat` | **推荐**，自动找环境，只认英文路径 |
 | `离线安装.bat` | 换机器用；已有可用环境会自动跳过，不会重装 |
 | `安装vendor依赖.bat` | 只重建 `vendor\`（72MB，需联网） |
