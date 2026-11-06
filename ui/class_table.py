@@ -230,6 +230,11 @@ class ClassTableView(QWidget):
         changed = (_new != _old)
         if changed:
             self._fb_cache = {}
+            # 目录快照也跟着作废：否则切到新工程后，_seg_class_ids 会拿上一个工程的
+            # 快照判断"文件在不在"。目前 _count_segmentation 每次都会重建、且只有一个
+            # 调用点，串不了工程；但把这里清掉，将来挪到后台线程时不会踩坑。
+            self._img_index = None
+            self._ann_index = None
         self._project_dir = path
         if changed and self._classes:
             self.set_classes(self._classes)
@@ -458,9 +463,14 @@ class ClassTableView(QWidget):
         """一次 scandir 拿 {文件名: (mtime_ns, size)}，代替逐张 os.stat。
 
         Windows 上 FindFirstFile/FindNextFile 一次就把目录里每个条目的属性带回来，
-        所以遍历一遍目录远比 N 次 stat 便宜（实测 4002 次 stat 134ms，一次扫描 5ms）。
+        所以遍历一遍目录远比 N 次 stat 便宜。
 
-        只收文件，跳过子目录；单个条目 stat 失败就跳过，不影响整体。
+        ⚠️ 收录的是**目录下所有文件**，不只是图片：`images/` 里还放着 `_det.json`，
+        签名要查它。别把这个索引当"图片索引"复用。
+
+        返回三种情况，调用方要分清：
+          {…}   正常快照（空 dict 也是有效快照 —— 目录不存在时就是它）
+          None  目录存在但读不了（权限等），语义未知 → 调用方退回逐张 stat
         """
         idx = {}
         try:
@@ -473,8 +483,10 @@ class ClassTableView(QWidget):
                         idx[e.name] = (st.st_mtime_ns, st.st_size)
                     except OSError:
                         continue
+        except FileNotFoundError:
+            return {}                      # 目录不存在 == 里面没有文件，空快照就对了
         except OSError:
-            pass
+            return None                    # 读失败：不能当成"文件都不存在"
         return idx
 
     def _count_segmentation(self, pd, labels, trains, tests, vals, split_map):
@@ -555,17 +567,20 @@ class ClassTableView(QWidget):
         cache = getattr(self, "_fb_cache", None)
         if cache is None:
             cache = self._fb_cache = {}
-        mpath = ann_dir / (img_path.stem + "_mask.png")
-        dpath = img_path.with_name(img_path.stem + "_det.json")
+        stem = img_path.stem
+        mname = stem + "_mask.png"
+        dname = stem + "_det.json"
+        mpath = ann_dir / mname
+        dpath = img_path.with_name(dname)
         idx_ann = getattr(self, "_ann_index", None)
         idx_img = getattr(self, "_img_index", None)
         sig = []
-        for p, index in ((mpath, idx_ann), (dpath, idx_img)):
-            if index:
-                # 有目录快照：名字不在里面就是文件不存在，不必再 stat
-                info = index.get(p.name)
+        for p, name, index in ((mpath, mname, idx_ann), (dpath, dname, idx_img)):
+            if index is not None:
+                # 有快照就查表：空 dict 也是有效快照（名字查不到 = 文件不存在）
+                info = index.get(name)
             else:
-                # 没有快照（目录不存在或读失败）：退回逐个 stat，行为与旧版一致
+                # 快照不可用（目录读不了）：退回逐个 stat，行为与旧版一致
                 try:
                     st = p.stat()
                     info = (st.st_mtime_ns, st.st_size)
