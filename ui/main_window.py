@@ -232,21 +232,34 @@ class MainWindow(OcrOcvMixin, QMainWindow):
 
 
     def closeEvent(self, event):
-        """Clean up system monitor on close."""
+        """关窗前收尾：停系统监控、存两套训练参数、注销全局热键。
+
+        本文件历史上还有一份同名 closeEvent（原 6899 行），Python 里后定义者胜，
+        那一份会静默覆盖本函数，导致「停监控 / 存分类参数 / 注销热键」三件事从未执行。
+        现已合并为唯一一份，改这里就是全部。
+        """
         if hasattr(self, "_sys_monitor"):
             self._sys_monitor.stop()
-        # 保存分类训练面板参数，避免重启后回滚
-        if getattr(self, "_project_dir", None):
+
+        # 两套训练参数都要存：分割/检测写项目根的 .train_settings.json，
+        # 分类写工程目录下的 .cls_train_settings.json。
+        # 后者内部自带 "无工程直接 return"，这里不必再判断工程是否存在。
+        for _name in ("_save_panel_train_settings", "_save_cls_train_settings"):
+            _fn = getattr(self, _name, None)
+            if _fn is None:
+                continue
             try:
-                self._save_cls_train_settings()
+                _fn()
             except Exception:
                 pass
+
         if getattr(self, "_screen_ocr_global", False):
             try:
                 unregister_global_hotkey(int(self.winId()), self._screen_ocr_hotkey_id)
             except Exception:
                 pass
         super().closeEvent(event)
+
     def _init_ui(self):
         central = QWidget(); self.setCentralWidget(central)
         main_layout = QVBoxLayout(central); main_layout.setContentsMargins(4, 4, 4, 4)
@@ -6896,14 +6909,6 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         except Exception:
             pass
 
-    def closeEvent(self, event):
-        """关窗前把训练参数存盘（下次打开保留）。"""
-        try:
-            self._save_panel_train_settings()
-        except Exception:
-            pass
-        super().closeEvent(event)
-
     def _save_cls_train_settings(self):
         """Save ALL classification training settings to project dir (.cls_train_settings.json)."""
         if not self._project_dir:
@@ -8202,10 +8207,6 @@ class MainWindow(OcrOcvMixin, QMainWindow):
 
 
 
-
-    def _update_page_label(self):
-        sp = getattr(self.canvas, "_single_page", 0)
-        self._page_label.setText(f"{sp + 1}/2")
 
     def _update_page_label(self):
         sp = getattr(self.canvas, "_single_page", 0)
