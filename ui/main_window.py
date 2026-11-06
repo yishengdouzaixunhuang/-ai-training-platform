@@ -3760,6 +3760,19 @@ class MainWindow(OcrOcvMixin, QMainWindow):
             if labels:
                 self._cached_classes = labels
                 self.class_list.set_classes(labels)
+                # ★ 2026-11-06：这条路径**不经过** _refresh_class_ui，而后者尾部负责
+                #   同步「推理参数面板的类别下拉」和「共 N 个类别」标签。
+                #   原来靠 _populate_image_list 那次刷新兜住（已去掉，见那里的注释），
+                #   去掉后分类工程的推理面板会停在 _load_classes 时的类别上 ——
+                #   实测柳州国轩（project.json 的 classes 是空、真类别在 class_labels.json）
+                #   类别表显示 NG/OK 两行，但推理面板下拉是 0 项且禁用。
+                #   这里拿手里就有的 labels 直接同步，不依赖 _cached_classes 是否已更新。
+                self._update_class_count_label(len(labels))
+                try:
+                    if hasattr(self, "infer_params"):
+                        self.infer_params.set_project(project_dir, labels)
+                except Exception:
+                    pass
                 self.log(f"Classification labels: {len(labels)} classes")
             else:
                 self.log("No classification labels found")
