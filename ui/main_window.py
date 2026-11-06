@@ -7003,8 +7003,10 @@ class MainWindow(OcrOcvMixin, QMainWindow):
                 return
             if hasattr(self, "class_list"):
                 self.class_list.refresh_counts()
-        except Exception:
-            pass
+        except Exception as e:  # noqa: BLE001
+            # 不要 pass。这里曾吞掉过一个 TypeError（_dir_index 返回 None 被 for 迭代），
+            # 表现为类别表四个数字列静默变全 0，用户以为标注丢了，比崩溃更难查。
+            self.log("类别统计失败：%s: %s" % (type(e).__name__, e))
         # 工具栏那个「类别」格 2026-10-15 已删（当前类别由**右栏类别表的选中行**承担，
         # 选类别走数字键 1-9 / 右栏类别表）。这里因此**不再**需要重建工具栏菜单 ——
         # 原来那段留着会一直给一个不存在的控件喂数据，看着正常其实空转。

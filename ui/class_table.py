@@ -503,6 +503,13 @@ class ClassTableView(QWidget):
         # 一次 scandir 拿全目录的 (mtime_ns, size)：下面 _seg_class_ids 判断缓存签名
         # 时直接查表，不再逐张 stat。2001 张图的工程能省掉 4000 多次系统调用。
         self._img_index = self._dir_index(img_dir)
+        if self._img_index is None:
+            # images/ 目录在、但扫描失败（网络盘断连 / 权限被改 / 被别的进程独占）。
+            # _dir_index 返回 None 表示"语义未知"，**不能**拿它去 for 迭代：
+            # TypeError 会被 _deferred_class_counts 的 except 吞掉，数字列静默变全 0，
+            # 用户以为标注丢了（比崩更糟）。这一轮直接放弃统计，等下次刷新。
+            self._ann_index = None
+            return
         self._ann_index = self._dir_index(ann_dir)
         groups = {}
         for name in self._img_index:
