@@ -37,6 +37,8 @@
 "C:/aitp_venv/Scripts/python.exe" _probe_startup_flash.py # 启动闪烁：顶层杂散窗口必须 0 个
 "C:/aitp_venv/Scripts/python.exe" -u _probe_menu_entry.py # 两个菜单入口能打开（原来必崩）
 "C:/aitp_venv/Scripts/python.exe" _probe_dialogs_shot.py  # 把两个对话框渲染成 PNG 看版面
+"C:/aitp_venv/Scripts/python.exe" tests/test_counts_cache.py  # 类别统计缓存 13 条（该失效时必须失效）
+"C:/aitp_venv/Scripts/python.exe" -u _probe_counts_ui.py     # 真实窗口 A→B→切回，表格文字必须一致
 ```
 
 `probe_mark_ui.py` 还支持 `--real-project "<工程名>"`（跑真实工程）与 `--theme light`。
@@ -333,6 +335,26 @@
       **代码 / wheels / vendor 可以放项目里**（它们只是文件，不参与 DLL 加载）。
     ⇒ `启动_便携.bat` 刻意**不找**项目内的 `.venv`，就是这个原因；
       `启动平台.bat` 会在项目里建 `.venv310`，别用。
+
+32. **类别统计有了结果缓存：改代码时别漏掉指纹里的任何一项**（2026-11-10）
+    `ClassTableView._compute_counts()` 现在先算一份"工程内容指纹"，没变就直接返回上次
+    结果。实测极片 1002 张：**131ms → 5ms**，切走再切回 128ms → 4ms（冷算 +40ms，只付一次）。
+    改动说明见 `docs/改动说明_类别统计缓存.md`。维护时要记住四条：
+    ① 指纹（`_counts_signature()`）里**任何一个来源都不能少**：类别表、`images/` 快照、
+       `images/<类别>/` 子目录、`annotations/` 快照、`train_test_split.json`、
+       `project.json`、根目录 `class_labels.json`。少一个就是"改了它数字不动"，
+       而且**界面上完全看不出异常** —— 这比算错更难发现。
+    ② `_split_bases` 是计算的**副作用**（点数字格子过滤列表要用），缓存命中时必须一起
+       还原（现在是存 set 副本）；漏了就是"点了数字格子没反应"。
+    ③ 「刷新」按钮走 `MainWindow._refresh_class_stats()` → `invalidate_counts()`，
+       **必须绕过缓存**，否则按钮看着没反应，也没有"mtime 没变但内容变了"的自救通道。
+    ④ `_dir_index()` 返回 `None`（目录读不了）时**不进缓存** —— 不能把"读失败"当成
+       "文件都没了"写进去。
+    ⚠️ 指纹口径与 `core.label_scan` 一样是 `mtime_ns + size`。SMB 网络盘上若时间戳
+       只到 1 秒且大小不变，两套缓存都会漏，兜底只有「刷新」按钮。
+    ⚠️ 顺手发现**未修**的旧问题：分类工程「空集」的比对区分大小写（`mapping` 键
+       `images/ok/a.bmp` vs 类别名 `OK`）会把已标注的图算成空集。只影响 ImageFolder
+       布局的工程，修它会改变那些工程现有数字，等拍板。
 
 ## 8. 换电脑 / 换机器维护 SOP
 

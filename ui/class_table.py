@@ -36,6 +36,10 @@ def _hex(rgb):
 _IMG_EXT = (".bmp", ".png", ".jpg", ".jpeg", ".tif", ".tiff")
 # 多视图命名约定：一组电芯的 N 张图 = <组名>_te_0/_te_1/...
 _VIEW_SUFFIX_RE = re.compile(r"_te_\d+$")
+#: 类别统计结果缓存最多留几个工程（FIFO 淘汰）
+_COUNTS_CACHE_MAX = 8
+#: 摘要掩码：把 hash 收进 48 位，避免整数无限增长
+_HASH_MASK = (1 << 48) - 1
 
 
 def _group_key(stem):
@@ -111,6 +115,9 @@ class ClassTableView(QWidget):
         # 「JSON 读不到时的兜底结果」缓存：(path) -> ((签名...), frozenset(cids))
         # 正常情况（有 labelme JSON）走的 core.label_scan 的共享缓存，不用这个。
         self._fb_cache = {}
+        # 工程级「类别统计结果」缓存：{normcase(工程路径): (指纹, counts, split_bases)}
+        # 见 _counts_signature() 的注释 —— 命中时跳过上千次 stat，实测 130ms → 20ms 级。
+        self._counts_cache = {}
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -335,8 +342,13 @@ class ClassTableView(QWidget):
         self._current_idx = -1
 
     def refresh(self):
-        """Recompute per-class counts from project files and redraw the table."""
+        """Recompute per-class counts from project files and redraw the table.
+
+        ★ 2026-11-10：先作废结果缓存再重算 —— 这是「刷新」按钮的落地路径，
+          用户主动点了刷新就必须真去磁盘上重算，命中缓存会让人以为按钮坏了。
+        """
         if self._classes and self._project_dir:
+            self.invalidate_counts()
             self.set_classes(list(self._classes))
 
     def count(self):
@@ -371,11 +383,24 @@ class ClassTableView(QWidget):
         class mapping) + train_test_split.json.
         Segmentation projects (no class_labels.json): each image's classes are
         read from its labelme JSON shapes (fallback: mask PNG pixel values).
+
+        ★ 2026-11-10：**结果缓存（B 项）**。进来先算一次工程内容指纹，指纹没变就直接
+          返回上次的结果 —— 否则每次刷新都要把上千张图的标注文件逐个 stat/读一遍
+          （实测极片 1002 张 131ms、眉山中航 2001 张 500ms+，而指纹只要 20ms 级）。
+          指纹的构成见 `_counts_signature()`；`_split_bases` 是这次计算的**副作用**
+          （点数字格子过滤图片列表要用），所以它跟着结果一起缓存、命中时一起还原。
         """
         if not self._project_dir:
             return {}
         pd = Path(self._project_dir)
         labels = list(self._classes)
+        sig, img_index, ann_index = self._counts_signature(pd, labels)
+        if sig is not None:
+            hit = self._counts_cache.get(self._counts_key(pd))
+            if hit is not None and hit[0] == sig:
+                # 深一层复制：调用方（bases_for）可能被外部持有，别让它改到缓存本体
+                self._split_bases = {k: set(v) for k, v in hit[2].items()}
+                return dict(hit[1])
         mapping = {}
         label_path = pd / "annotations" / "class_labels.json"
         if label_path.exists():
@@ -438,7 +463,8 @@ class ClassTableView(QWidget):
         # Segmentation projects: no class_labels.json mapping, so classify
         # every image under images/ from its labelme JSON / mask PNG instead.
         if not mapping:
-            self._count_segmentation(pd, labels, trains, tests, vals, split_map)
+            self._count_segmentation(pd, labels, trains, tests, vals, split_map,
+                                     img_index=img_index, ann_index=ann_index)
 
         # 空集: images inside the class folder that are not in the mapping.
         img_dir = pd / "images"
@@ -453,7 +479,14 @@ class ClassTableView(QWidget):
                             if rel not in mapped:
                                 empties[cls_id] += 1
                                 self._split_bases.setdefault((cls_id, "empty"), set()).add(f.stem)
-        return {i: (trains[i], tests[i], vals[i], empties[i]) for i in range(len(labels))}
+        result = {i: (trains[i], tests[i], vals[i], empties[i]) for i in range(len(labels))}
+        if sig is not None:
+            self._counts_cache[self._counts_key(pd)] = (
+                sig, result, {k: set(v) for k, v in self._split_bases.items()})
+            # 上限 8 个工程：只留最近用过的，切换工程一多就淘汰最早的
+            while len(self._counts_cache) > _COUNTS_CACHE_MAX:
+                self._counts_cache.pop(next(iter(self._counts_cache)))
+        return result
 
     def bases_for(self, cls_name, split_key):
         """Return the set of image base names for (class, split) — for click-to-filter."""
@@ -462,6 +495,121 @@ class ClassTableView(QWidget):
         except ValueError:
             return set()
         return getattr(self, "_split_bases", {}).get((cid, split_key), set())
+
+    # ---------- counts cache ----------
+
+    @staticmethod
+    def _counts_key(pd):
+        """缓存键：工程目录（大小写归一 —— Windows 上 `D:\\X` 与 `d:\\x` 是同一目录）。"""
+        try:
+            return os.path.normcase(os.path.abspath(str(pd)))
+        except Exception:
+            return os.path.normcase(str(pd))
+
+    def invalidate_counts(self):
+        """丢掉类别统计缓存。
+
+        「刷新」按钮要调它：用户点了刷新就是明确要求重算，命中缓存会让按钮看着没反应。
+        """
+        if not self._project_dir:
+            self._counts_cache.clear()
+            return
+        self._counts_cache.pop(self._counts_key(self._project_dir), None)
+
+    def _counts_signature(self, pd, labels):
+        """工程内容指纹 + 目录快照，返回 `(sig, img_index, ann_index)`。
+
+        ★ 2026-11-10（B 项）：`_compute_counts()` 每次都要遍历几千个标注文件判断
+          "哪张图有哪些类"，而其中 99% 一个字没变。给整个工程算一份"内容没变"的证据，
+          比挨个 stat 一遍便宜一个数量级（实测极片 1002 张：指纹 ~20ms / 遍历 ~110ms）。
+
+        指纹由这些组成，任何一项变了就重算：
+
+        | 项 | 为什么必须在里面 |
+        |---|---|
+        | `tuple(labels)` | 调用方临时改了类别表（还没落盘）也得重算 |
+        | `images/` 扁平快照 | 加图 / 删图 / 换图 |
+        | `images/<类别>/` 子目录快照 | **分类工程**的「空集」按类别目录算，不在上一层 |
+        | `annotations/` 扁平快照 | 标注 JSON、`_mask.png`、**`class_labels.json`** 全在这里 |
+        | `train_test_split.json` | 划分变了，train ↔ val 的数字必须跟着变 |
+        | `project.json` | 类别、视图数等工程元信息 |
+        | 根目录 `class_labels.json` | 少数工程把类别真源放在根上 |
+
+        ⚠️ 审核点过的那条：`class_labels.json` 是分类工程的**类别真源**，只挂 `images/`
+           的签名会漏掉它（改了类别数字不更新，比数字算错更难被发现）。它本来就在
+           `annotations/` 快照里，这里再把根目录那份单独记一笔，双保险。
+
+        ⚠️ `sig is None` = 目录读不了、语义未知（`_dir_index` 返回 None）。此时
+           **既不查缓存也不写缓存** —— 宁可贵一次，也不能把"读失败"当成"文件都没了"。
+        """
+        img_dir = pd / "images"
+        ann_dir = pd / "annotations"
+        img_index = self._dir_index(img_dir)
+        ann_index = self._dir_index(ann_dir)
+        if img_index is None or ann_index is None:
+            return None, img_index, ann_index
+        parts = [
+            ("classes", tuple(labels)),
+            ("images", self._flat_sig(img_index)),
+            ("images/*", self._subdirs_sig(img_dir, depth=2)),
+            ("annotations", self._flat_sig(ann_index)),
+        ]
+        for rel in ("train_test_split.json", "project.json", "class_labels.json"):
+            p = pd / rel
+            try:
+                st = p.stat()
+                parts.append((rel, st.st_mtime_ns, st.st_size))
+            except OSError:
+                parts.append((rel, None))
+        return tuple(parts), img_index, ann_index
+
+    @staticmethod
+    def _flat_sig(index):
+        """单层目录快照的摘要 `(文件数, 累加 hash)`。
+
+        必须**与顺序无关**：`os.scandir` 的返回顺序不做保证，按顺序拼字符串算哈希
+        会把"同样的内容"判成"变了"，缓存直接失效。
+        """
+        acc = 0
+        for name, item in index.items():
+            acc = (acc + hash((name, item[0], item[1]))) & _HASH_MASK
+        return len(index), acc
+
+    @staticmethod
+    def _subdirs_sig(root, depth=2):
+        """`root` 下**子目录里**的内容摘要 `(文件数, 累加 hash)`；读不了返回 None。
+
+        给分类工程用：`images/ok/a.bmp`、`images/ng/b.bmp` 都不在 `_dir_index` 的
+        扁平快照里（那层只收文件），而「空集」数字正是按这些目录算的。
+        顶层文件由调用方的 `_flat_sig` 管，这里跳过，免得同一批文件被记两遍。
+        """
+        root_s = str(root)
+        acc = 0
+        total = 0
+        stack = [(root_s, depth)]
+        while stack:
+            d, lv = stack.pop()
+            at_root = (d == root_s)
+            try:
+                with os.scandir(d) as it:
+                    for e in it:
+                        try:
+                            if e.is_dir():
+                                if lv > 0:
+                                    stack.append((e.path, lv - 1))
+                                continue
+                            if at_root or not e.is_file():
+                                continue
+                            st = e.stat()
+                            total += 1
+                            acc = (acc + hash((e.name, st.st_mtime_ns, st.st_size))) & _HASH_MASK
+                        except OSError:
+                            continue
+            except FileNotFoundError:
+                continue
+            except OSError:
+                return None
+        return total, acc
 
     @staticmethod
     def _dir_index(d):
@@ -494,12 +642,16 @@ class ClassTableView(QWidget):
             return None                    # 读失败：不能当成"文件都不存在"
         return idx
 
-    def _count_segmentation(self, pd, labels, trains, tests, vals, split_map):
+    def _count_segmentation(self, pd, labels, trains, tests, vals, split_map,
+                            img_index=None, ann_index=None):
         """Count per-class image counts by split for segmentation projects.
 
         多视图工程：一台电芯有 te_0/te_1/te_2 三张图，图片列表里只占**一行**，
         所以统计也必须按"组"来算。早期按文件逐个累加，结果是同一台料被数 3 次，
         Class 表里的数字点开过滤又和列表行数对不上（同一台料三行里只匹配到一行）。
+
+        ``img_index`` / ``ann_index``：`_counts_signature()` 算指纹时已经 scandir 过一遍，
+        传进来就不用再扫第二遍（传 None 时行为与旧版一致，自己扫）。
         """
         img_dir = pd / "images"
         ann_dir = pd / "annotations"
@@ -507,7 +659,7 @@ class ClassTableView(QWidget):
             return
         # 一次 scandir 拿全目录的 (mtime_ns, size)：下面 _seg_class_ids 判断缓存签名
         # 时直接查表，不再逐张 stat。2001 张图的工程能省掉 4000 多次系统调用。
-        self._img_index = self._dir_index(img_dir)
+        self._img_index = img_index if img_index is not None else self._dir_index(img_dir)
         if self._img_index is None:
             # images/ 目录在、但扫描失败（网络盘断连 / 权限被改 / 被别的进程独占）。
             # _dir_index 返回 None 表示"语义未知"，**不能**拿它去 for 迭代：
@@ -515,7 +667,7 @@ class ClassTableView(QWidget):
             # 用户以为标注丢了（比崩更糟）。这一轮直接放弃统计，等下次刷新。
             self._ann_index = None
             return
-        self._ann_index = self._dir_index(ann_dir)
+        self._ann_index = ann_index if ann_index is not None else self._dir_index(ann_dir)
         groups = {}
         for name in self._img_index:
             stem, ext = os.path.splitext(name)

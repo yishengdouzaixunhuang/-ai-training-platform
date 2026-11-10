@@ -6972,6 +6972,11 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         用户在外部补了 JSON 标注、或类别表还是空的时，按"刷新"就是要重新发现类别。
         """
         self._load_classes()
+        # ★ 2026-11-10：用户按「刷新」= 明确要求重新统计，先作废结果缓存。
+        #   否则磁盘上什么都没变时代码会直接返回上次的数字（虽然结果一样，
+        #   但遇到"内容改了、mtime/大小没变"的怪情况就无法自救了）。
+        if hasattr(self, "class_list"):
+            self.class_list.invalidate_counts()
         self._refresh_class_ui()
         self.log("[Class] 已重读 project.json 并重扫标注 JSON，统计数据已更新")
 
