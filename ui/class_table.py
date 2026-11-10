@@ -396,8 +396,13 @@ class ClassTableView(QWidget):
         labels = list(self._classes)
         sig, img_index, ann_index = self._counts_signature(pd, labels)
         if sig is not None:
-            hit = self._counts_cache.get(self._counts_key(pd))
+            key = self._counts_key(pd)
+            hit = self._counts_cache.get(key)
             if hit is not None and hit[0] == sig:
+                # 命中就把它挪到末尾 —— dict 保持插入序，末尾 = "最近用过"，配合
+                # `_trim_counts_cache()` 才是真 LRU。原来只按插入序淘汰（FIFO），
+                # 而"来回切两个工程"正是这里的典型用法，先被淘汰的反而是常用的那个。
+                self._counts_cache[key] = self._counts_cache.pop(key)
                 # 深一层复制：调用方（bases_for）可能被外部持有，别让它改到缓存本体
                 self._split_bases = {k: set(v) for k, v in hit[2].items()}
                 return dict(hit[1])
@@ -481,20 +486,26 @@ class ClassTableView(QWidget):
                                 self._split_bases.setdefault((cls_id, "empty"), set()).add(f.stem)
         result = {i: (trains[i], tests[i], vals[i], empties[i]) for i in range(len(labels))}
         if sig is not None:
+            # ⚠️ 存**副本**，再 return 本地这份 result —— 与命中路径的 `dict(hit[1])` 对称。
+            #    第一版这里存的是 result 本体（return 的也是它），实测：
+            #    `r[1] = (999,999,999,999)` 之后，再命中缓存拿到的就是 999 ——
+            #    "错且下次还错"，而且注释里明明写着"别让它改到缓存本体"。审核抓到的就是这个。
             self._counts_cache[self._counts_key(pd)] = (
-                sig, result, {k: set(v) for k, v in self._split_bases.items()})
-            # 上限 8 个工程：只留最近用过的，切换工程一多就淘汰最早的
-            while len(self._counts_cache) > _COUNTS_CACHE_MAX:
-                self._counts_cache.pop(next(iter(self._counts_cache)))
+                sig, dict(result), {k: set(v) for k, v in self._split_bases.items()})
+            self._trim_counts_cache()
         return result
 
     def bases_for(self, cls_name, split_key):
-        """Return the set of image base names for (class, split) — for click-to-filter."""
+        """Return the set of image base names for (class, split) — for click-to-filter.
+
+        ★ 2026-11-10：返回**副本**。原来直接给内部 set 本体，而缓存命中时
+          `_split_bases` 会被整体替换成新对象 ⇒ 外部持有的旧引用会悬空（拿到上一份数据）。
+        """
         try:
             cid = self._classes.index(cls_name)
         except ValueError:
             return set()
-        return getattr(self, "_split_bases", {}).get((cid, split_key), set())
+        return set(getattr(self, "_split_bases", {}).get((cid, split_key), set()))
 
     # ---------- counts cache ----------
 
@@ -516,6 +527,16 @@ class ClassTableView(QWidget):
             return
         self._counts_cache.pop(self._counts_key(self._project_dir), None)
 
+    def _trim_counts_cache(self):
+        """超过上限就淘汰**最早被用到**的那个（配合命中的"挪到末尾"= LRU）。
+
+        第一版的注释写的是"只留最近用过的"，实现却只按插入序淘汰（FIFO）——
+        "在两个工程间来回切"正是这里的典型用法，先插进来那个会先被淘汰，
+        也就是**最常用的那个先死**。审核提的 P2-4。
+        """
+        while len(self._counts_cache) > _COUNTS_CACHE_MAX:
+            self._counts_cache.pop(next(iter(self._counts_cache)))
+
     def _counts_signature(self, pd, labels):
         """工程内容指纹 + 目录快照，返回 `(sig, img_index, ann_index)`。
 
@@ -529,7 +550,7 @@ class ClassTableView(QWidget):
         |---|---|
         | `tuple(labels)` | 调用方临时改了类别表（还没落盘）也得重算 |
         | `images/` 扁平快照 | 加图 / 删图 / 换图 |
-        | `images/<类别>/` 子目录快照 | **分类工程**的「空集」按类别目录算，不在上一层 |
+        | `images/<类别>/` 子目录快照 | **分类工程**的「空集」按类别目录算，不在上一层（子目录名由同一次 scandir 带回来，不多扫一遍） |
         | `annotations/` 扁平快照 | 标注 JSON、`_mask.png`、**`class_labels.json`** 全在这里 |
         | `train_test_split.json` | 划分变了，train ↔ val 的数字必须跟着变 |
         | `project.json` | 类别、视图数等工程元信息 |
@@ -539,19 +560,23 @@ class ClassTableView(QWidget):
            的签名会漏掉它（改了类别数字不更新，比数字算错更难被发现）。它本来就在
            `annotations/` 快照里，这里再把根目录那份单独记一笔，双保险。
 
-        ⚠️ `sig is None` = 目录读不了、语义未知（`_dir_index` 返回 None）。此时
-           **既不查缓存也不写缓存** —— 宁可贵一次，也不能把"读失败"当成"文件都没了"。
+        ⚠️ `sig is None` = 目录读不了、语义未知。此时**既不查缓存也不写缓存** ——
+           宁可贵一次，也不能把"读失败"当成"文件都没了"。
+           `images/`、`annotations/`、以及 `images/*` 子目录摘要，任何一处读不了都算。
         """
         img_dir = pd / "images"
         ann_dir = pd / "annotations"
-        img_index = self._dir_index(img_dir)
+        img_index, img_dirs = self._scan_dir(img_dir)     # 一次扫描，文件与子目录都拿到
         ann_index = self._dir_index(ann_dir)
         if img_index is None or ann_index is None:
+            return None, img_index, ann_index
+        sub_sig = self._subdirs_sig(img_dirs, depth=2)
+        if sub_sig is None:
             return None, img_index, ann_index
         parts = [
             ("classes", tuple(labels)),
             ("images", self._flat_sig(img_index)),
-            ("images/*", self._subdirs_sig(img_dir, depth=2)),
+            ("images/*", sub_sig),
             ("annotations", self._flat_sig(ann_index)),
         ]
         for rel in ("train_test_split.json", "project.json", "class_labels.json"):
@@ -569,6 +594,11 @@ class ClassTableView(QWidget):
 
         必须**与顺序无关**：`os.scandir` 的返回顺序不做保证，按顺序拼字符串算哈希
         会把"同样的内容"判成"变了"，缓存直接失效。
+
+        ⚠️ 用的是内置 `hash()` ⇒ **受 `PYTHONHASHSEED` 影响**（字符串哈希每个进程不同）。
+           本缓存因此只能活在**进程内**：谁要把它落盘/跨进程复用，指纹一定对不上，
+           而且对不上的表现是"缓存永不命中"（还算安全）或"拼出相同摘要"（就不安全了）。
+           要持久化必须换成 `hashlib` 的稳定摘要。
         """
         acc = 0
         for name, item in index.items():
@@ -576,20 +606,24 @@ class ClassTableView(QWidget):
         return len(index), acc
 
     @staticmethod
-    def _subdirs_sig(root, depth=2):
-        """`root` 下**子目录里**的内容摘要 `(文件数, 累加 hash)`；读不了返回 None。
+    def _subdirs_sig(dirs, depth=2):
+        """给定**第一层子目录列表**，算里面所有文件的摘要 `(文件数, 累加 hash)`。
 
-        给分类工程用：`images/ok/a.bmp`、`images/ng/b.bmp` 都不在 `_dir_index` 的
+        给分类工程用：`images/OK/a.bmp`、`images/NG/b.bmp` 都不在 `_dir_index` 的
         扁平快照里（那层只收文件），而「空集」数字正是按这些目录算的。
-        顶层文件由调用方的 `_flat_sig` 管，这里跳过，免得同一批文件被记两遍。
+        顶层文件由调用方的 `_flat_sig` 管，这里不碰，免得同一批文件被记两遍。
+
+        `dirs` 由 `_scan_dir()` 在同一次 scandir 里顺带给出，所以本函数只扫子目录。
+
+        读不了返回 None —— 调用方必须把它当成"整份指纹不可用"，不能当 0 个文件。
+        第一版就是把 None 直接塞进 parts 里，结果**照样进缓存**（审核 P2-3）：
+        这与"`_dir_index` 返回 None 就不缓存"是两套哲学，会静默存下不完整的指纹。
         """
-        root_s = str(root)
         acc = 0
         total = 0
-        stack = [(root_s, depth)]
+        stack = [(d, depth - 1) for d in dirs]
         while stack:
             d, lv = stack.pop()
-            at_root = (d == root_s)
             try:
                 with os.scandir(d) as it:
                     for e in it:
@@ -598,7 +632,7 @@ class ClassTableView(QWidget):
                                 if lv > 0:
                                     stack.append((e.path, lv - 1))
                                 continue
-                            if at_root or not e.is_file():
+                            if not e.is_file():
                                 continue
                             st = e.stat()
                             total += 1
@@ -612,7 +646,40 @@ class ClassTableView(QWidget):
         return total, acc
 
     @staticmethod
-    def _dir_index(d):
+    def _scan_dir(d):
+        """一次 scandir 同时拿「文件快照」和「子目录列表」：`(idx, dirs)`。
+
+        为什么要合并：`_counts_signature()` 既要 `images/` 的文件快照、又要它的
+        子目录（分类工程的 `images/<类别>/`）。分两次 scandir 就是把同一个 1002 条目的
+        目录扫两遍（实测多 15ms），冷算那 +44ms 里有它一份。审核提的 P2-5 就是这个。
+
+        语义与 `_dir_index` 一致：
+          `({…}, [dirs])`  正常
+          `(None, None)`   目录存在但读不了 → 语义未知，调用方不得用它下结论
+        """
+        idx = {}
+        dirs = []
+        try:
+            with os.scandir(str(d)) as it:
+                for e in it:
+                    try:
+                        if e.is_dir():
+                            dirs.append(e.path)
+                            continue
+                        if not e.is_file():
+                            continue
+                        st = e.stat()
+                        idx[e.name] = (st.st_mtime_ns, st.st_size)
+                    except OSError:
+                        continue
+        except FileNotFoundError:
+            return {}, []                  # 目录不存在 == 里面没有文件，空快照就对了
+        except OSError:
+            return None, None              # 读失败：不能当成"文件都不存在"
+        return idx, dirs
+
+    @classmethod
+    def _dir_index(cls, d):
         """一次 scandir 拿 {文件名: (mtime_ns, size)}，代替逐张 os.stat。
 
         Windows 上 FindFirstFile/FindNextFile 一次就把目录里每个条目的属性带回来，
@@ -625,22 +692,7 @@ class ClassTableView(QWidget):
           {…}   正常快照（空 dict 也是有效快照 —— 目录不存在时就是它）
           None  目录存在但读不了（权限等），语义未知 → 调用方退回逐张 stat
         """
-        idx = {}
-        try:
-            with os.scandir(str(d)) as it:
-                for e in it:
-                    try:
-                        if not e.is_file():
-                            continue
-                        st = e.stat()
-                        idx[e.name] = (st.st_mtime_ns, st.st_size)
-                    except OSError:
-                        continue
-        except FileNotFoundError:
-            return {}                      # 目录不存在 == 里面没有文件，空快照就对了
-        except OSError:
-            return None                    # 读失败：不能当成"文件都不存在"
-        return idx
+        return cls._scan_dir(d)[0]
 
     def _count_segmentation(self, pd, labels, trains, tests, vals, split_map,
                             img_index=None, ann_index=None):
