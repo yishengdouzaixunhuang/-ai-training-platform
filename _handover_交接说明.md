@@ -38,7 +38,8 @@
 "C:/aitp_venv/Scripts/python.exe" -u _probe_menu_entry.py # 两个菜单入口能打开（原来必崩）
 "C:/aitp_venv/Scripts/python.exe" _probe_dialogs_shot.py  # 把两个对话框渲染成 PNG 看版面
 "C:/aitp_venv/Scripts/python.exe" tests/test_counts_cache.py  # 类别统计缓存 16 条（该失效时必须失效）
-"C:/aitp_venv/Scripts/python.exe" tests/test_task_isolation.py  # 任务级停止标志 13 条（两个任务同时在队列里）
+"C:/aitp_venv/Scripts/python.exe" tests/test_task_isolation.py  # 任务级停止标志 15 条（两个任务同时在队列里 + OCV 路径）
+"C:/aitp_venv/Scripts/python.exe" tests/test_undefined_names.py  # 未定义名字扫描（改完批量替换必跑）
 "C:/aitp_venv/Scripts/python.exe" tests/test_result.py           # 统一返回与错误码 11 条（含真实模块已用上）
 "C:/aitp_venv/Scripts/python.exe" -u _probe_counts_ui.py     # 真实窗口 A→B→切回，表格文字必须一致
 ```
@@ -392,7 +393,12 @@
          `threading.Event` 令牌（存在 `self._infer_stops`，`_stop_infer_tokens()` 统一点亮）。
          五个推理入口都把 `stop` 显式往下传，深层 `BatchRunner(stop_check=stop)`。
        - 令牌**不写 `finally: release()`** —— "每个出口都要记得复位"就是旧 bug 的根因；
-         已置位的旧令牌不影响下一轮（每次现造），超过 32 个自动瘦身。
+         已置位的旧令牌不影响下一轮（每次现造）。容器是 `deque(maxlen=32)`，
+         按**添加顺序**丢最老的（原来写"清掉已置位的"，而跑完的令牌根本不会被 set，
+         等于清不掉 —— 审核抓的 P2）。
+    ⚠️ **批量改 `stop_check=` 时，每一个函数都得确认 `stop` 在自己作用域里有定义。**
+       我就在这里漏了 `_ocv_batch_inspect`（只改了用法、没定义）⇒ OCV 批量一点就
+       NameError，还是抛在子线程里被吞掉。现在由 `tests/test_undefined_names.py` 兜。
     ⚠️ `self._stop_flag` **还在**，但只剩一个用途：**没有队列控件时的训练兜底线程**。
        推理一行都不读它了。**新写的流程别再用它** —— 走 ctx 里的任务标志，或 `_infer_stop()`。
        等所有训练/推理都入队后才能删，现在删就是"删了半边"。
@@ -424,6 +430,22 @@
     ⚠️ 失败时 `value` 是 `None`，取默认值要 `.unwrap_or({})`，别直接 `.value`。
     ⚠️ 下一步迁移建议按"失败最该被看见"排序：`ui/task_queue._save_history`（静默吞异常）、
        `ui/class_table` 的两处 JSON 读取。**别一口气改 610 处** —— 那等于重写整个错误处理。
+
+35. **`tests/test_undefined_names.py`：名字写错不再靠人眼**（2026-11-11）
+    用 stdlib `symtable` 扫 `ui/ core/ training/ …`，找"被引用、但不是局部/参数/import/
+    闭包变量、也不在模块级或 builtins 里"的名字 —— 那种名字运行到必 `NameError`。
+    它是被一次真实事故逼出来的：把 `stop_check=self._active_stop` 批量替换成
+    `stop_check=stop` 时，`ui/ocr_ocv_mixin.py` 的 `_ocv_batch_inspect` **只改了用法、
+    没定义 `stop`** ⇒ OCV 批量检测 NameError，抛在子线程里被吞，界面只停在
+    "Batch inspecting..."。**91 项测试全绿也没抓到**：时序用例全在队列层/标志层。
+    这一扫还揪出三条**既有**的同类 NameError（都不是新引入的）：
+    `training/multiview.py` 的 `_log`（正好在"用户点停止"那条日志上）、
+    `classification/trainer.py` 的 `scale_factor`（`k_folds>1` 存折 ckpt 时）、
+    `ui/system_monitor.py` 的 `ctypes`（被 `except` 吞成"核显显存读不到"）。
+    ⚠️ 它只查**名字**。方法名拼错靠 `test_dispatch_targets_exist`；`self.xxx` 属性名拼错
+       目前没人管（要类型信息）。三类是互补的，别指望一个静态检查包打天下。
+    ⚠️ 扫描器自带自检（喂一段坏/好源码，确认能抓且不误报）—— 没有自检的静态检查
+       写错了会返回空列表，测试永远是绿的。
 
 ## 8. 换电脑 / 换机器维护 SOP
 

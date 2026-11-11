@@ -1,5 +1,6 @@
 """Main Window - Optimized for large datasets"""
 import os, json, re, sys, threading, shutil, cv2
+from collections import deque
 import torch
 from datetime import datetime
 import time
@@ -179,8 +180,12 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         self._cached_classes = ["background"]
         self.trainer = None
         self._stop_flag = False
-        # 裸线程推理各自的停止令牌（见 _infer_stop）；队列任务不走这里
-        self._infer_stops = set()
+        # 裸线程推理各自的停止令牌（见 _infer_stop）；队列任务不走这里。
+        # ⚠️ 用 deque(maxlen=32) —— **按添加顺序**丢最老的。原来写的是
+        #    "超过 32 个就清掉已置位的"，但正常跑完的推理**永远不会被 set**，
+        #    那个过滤等于什么都清不掉（审核抓到的 P2），长度会一直涨。
+        #    同时最多 5 条推理在跑，32 个窗口足够。
+        self._infer_stops = deque(maxlen=32)
         self._project_gen = 0
         # 掩膜统计缓存 + "哪个代次已经预热完毕"标记。
         # 未预热完时主线程**只读缓存、绝不自己解码**（否则会和后台预热线程
@@ -8570,15 +8575,12 @@ class MainWindow(OcrOcvMixin, QMainWindow):
 
         ⚠️ 令牌**不做释放**：留着的已置位令牌不影响下一次推理（每次现造新的）。
            刻意不写 `finally: release()` —— "每个出口都要记得复位"正是旧 bug 的根因。
-           数量靠下面这行兜住：超过 32 个就把已置位的清掉。
+           数量靠 `self._infer_stops` 是 `deque(maxlen=32)` 兜住（按添加顺序丢最老的）。
         """
         if stop is not None:
             return stop
-        import threading
-        if len(self._infer_stops) > 32:
-            self._infer_stops = {ev for ev in self._infer_stops if not ev.is_set()}
         ev = threading.Event()
-        self._infer_stops.add(ev)
+        self._infer_stops.append(ev)      # deque 满了自动丢最老的（见 __init__ 注释）
         return ev.is_set
 
     def _stop_infer_tokens(self):

@@ -1297,7 +1297,12 @@ class ClassificationTrainer:
                     "epochs": epochs, "batch_size": batch_size, "lr": lr,
                     "optimizer": optimizer, "loss": loss_func,
                     "image_size": image_size,
-                    "scale_factor": list(scale_factor) if isinstance(scale_factor, (tuple, list)) else scale_factor,
+                    # 这里原来裸用 `scale_factor` —— 它不是本函数的参数/局部变量，
+                    # k_folds>1 训练到"存折 checkpoint"这一步必 NameError。
+                    # 用 self._scale_factor（train() 里已设，且本文件别处也这么取）。
+                    "scale_factor": (list(self._scale_factor)
+                                     if isinstance(self._scale_factor, (tuple, list))
+                                     else self._scale_factor),
                     "k_folds": k, "resume": False,
                     "weight_decay": weight_decay, "momentum": momentum,
                     "label_smoothing": label_smoothing, "focal_gamma": focal_gamma,

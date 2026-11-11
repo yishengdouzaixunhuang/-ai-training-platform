@@ -726,7 +726,9 @@ def train_multiview(project_dir, model_name="deeplabv3", epochs=30, batch_size=2
                 try:
                     if stop_check():
                         stopped = True
-                        _log("⏹ 已收到停止请求：当前 batch 结束后退出（本轮验证仍会跑完，约几秒）")
+                        # `_log` 在本函数里不存在（那是别的函数的局部名），本作用域叫 `log`。
+                        # 这条日志正好在"用户点停止"的路径上 ⇒ 一点停止就 NameError。
+                        log("⏹ 已收到停止请求：当前 batch 结束后退出（本轮验证仍会跑完，约几秒）")
                         break
                 except Exception:
                     pass

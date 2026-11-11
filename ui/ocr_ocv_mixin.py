@@ -288,8 +288,13 @@ class OcrOcvMixin:
         except Exception as e:
             self.log_signal.emit(f"OCV inspect error: {e}")
 
-    def _ocv_batch_inspect(self):
-        """Batch inspect all images in the project."""
+    def _ocv_batch_inspect(self, *, stop=None):
+        """Batch inspect all images in the project.
+
+        `stop` 与 `_run_ocr_batch` 同义：队列任务传自己的标志，直接点按钮时为 None
+        ⇒ 走 `_infer_stop()` 现造的令牌。
+        """
+        stop = self._infer_stop(stop)
         if not self.current_project:
             return
         pd = str(self.pm.get_project_dir(self.current_project["name"]))

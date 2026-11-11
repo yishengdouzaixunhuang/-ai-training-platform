@@ -197,6 +197,7 @@ class _GpuProbe:
 
     def _pdh_read(self):
         try:
+            import ctypes          # 本函数原来直接用 ctypes 但作用域里没有（被 except 吞成"读不到"）
             out = {}
             self._pdh.PdhCollectQueryData(self._query)
             for path, c in self._counters:

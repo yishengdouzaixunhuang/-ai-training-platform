@@ -445,6 +445,71 @@ def test_cls_training_goes_through_queue():
         w._task_queue.clear_finished()
 
 
+def test_ocv_batch_path_wires_stop():
+    """★ OCV 批量检测这条路径必须真的能跑起来，且停止判据接的是令牌。
+
+    2026-11-11 那轮把 `stop_check=self._active_stop` 批量改成 `stop_check=stop` 时，
+    给 `_run_ocr_batch` 补了 `stop = self._infer_stop(stop)`，**漏了 `_ocv_batch_inspect`**
+    —— 那个方法里的 `stop` 从未定义，一点"Batch Inspect"就 NameError，
+    而且抛在子线程里被吞掉，用户只看到状态栏卡住。
+    队列层/标志层的用例一条都不走这条路径，所以 87 项全绿也没抓到。
+    """
+    import flow.batch as fb
+
+    w = _window()
+    _drain(w)
+    tmp = tempfile.mkdtemp(prefix="ocv_")
+    os.makedirs(os.path.join(tmp, "images"), exist_ok=True)
+    os.makedirs(os.path.join(tmp, "models"), exist_ok=True)
+    with open(os.path.join(tmp, "models", "ocv_model.pkl"), "wb") as f:
+        f.write(b"stub")
+    w.current_project = {"name": "stub"}
+    w.pm.get_project_dir = lambda name: tmp
+
+    seen = {}
+
+    class FakeRunner:
+        def __init__(self, flow, project_dir=None, stop_check=None):
+            seen["stop"] = stop_check
+
+        def run(self, images, on_progress=None):
+            seen["ran"] = True
+
+    orig = (fb.BatchRunner, fb.list_images, fb.build_ocv_flow)
+    fb.BatchRunner = FakeRunner
+    fb.list_images = lambda pd: ["a.bmp"]
+    fb.build_ocv_flow = lambda **kw: object()
+    try:
+        w._ocv_batch_inspect()
+        wait_until(lambda: "stop" in seen, desc="OCV 批量启动（NameError 会让这一步超时）")
+        assert callable(seen["stop"]), "BatchRunner 没拿到可调用的 stop_check"
+        assert seen["stop"]() is False, "新推理的判据不该是「已停」"
+        w._stop_batch()
+        assert seen["stop"]() is True, "「停止推理」没停到 OCV 批量"
+    finally:
+        fb.BatchRunner, fb.list_images, fb.build_ocv_flow = orig
+        w.current_project = None
+
+
+def test_infer_token_store_is_bounded():
+    """令牌容器不能无限涨 —— 只保留最新 32 个。
+
+    ★ 审核 P2：原来写的是"超过 32 个就清掉**已置位**的"，而正常跑完的推理
+      **永远不会被 set**，那个过滤等于什么都清不掉，长度一直涨、每次还白重建一遍。
+      现在用 `deque(maxlen=32)`，按添加顺序丢最老的。
+    """
+    w = _window()
+    _drain(w)
+    w._infer_stops.clear()
+    latest = None
+    for _ in range(40):
+        latest = w._infer_stop()
+    assert len(w._infer_stops) <= 32, "令牌容器涨到 %d 个（上限没生效）" % len(w._infer_stops)
+    assert latest() is False, "最新一个令牌必须是干净的"
+    w._stop_batch()
+    assert latest() is True, "窗口内的令牌应被「停止推理」点亮"
+
+
 def main():
     print("=== 任务级停止标志 回归测试（P0-3）===")
     checks = [
@@ -461,6 +526,8 @@ def main():
         ("分派目标方法都存在", test_dispatch_targets_exist),
         ("★ 新任务不需要谁复位", test_no_reset_needed_anywhere),
         ("★ 分类训练走队列且标志接对", test_cls_training_goes_through_queue),
+        ("★ OCV 批量路径真的能跑且接对判据", test_ocv_batch_path_wires_stop),
+        ("令牌容器有上限", test_infer_token_store_is_bounded),
     ]
     for name, fn in checks:
         check(name, fn)
