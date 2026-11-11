@@ -40,6 +40,7 @@
 "C:/aitp_venv/Scripts/python.exe" tests/test_counts_cache.py  # 类别统计缓存 16 条（该失效时必须失效）
 "C:/aitp_venv/Scripts/python.exe" tests/test_task_isolation.py  # 任务级停止标志 15 条（两个任务同时在队列里 + OCV 路径）
 "C:/aitp_venv/Scripts/python.exe" tests/test_undefined_names.py  # 未定义名字扫描（改完批量替换必跑）
+"C:/aitp_venv/Scripts/python.exe" tests/test_project_switch_view.py  # 切换工程后视图同步 5 条
 "C:/aitp_venv/Scripts/python.exe" tests/test_result.py           # 统一返回与错误码 11 条（含真实模块已用上）
 "C:/aitp_venv/Scripts/python.exe" -u _probe_counts_ui.py     # 真实窗口 A→B→切回，表格文字必须一致
 ```
@@ -446,6 +447,26 @@
        目前没人管（要类型信息）。三类是互补的，别指望一个静态检查包打天下。
     ⚠️ 扫描器自带自检（喂一段坏/好源码，确认能抓且不误报）—— 没有自检的静态检查
        写错了会返回空列表，测试永远是绿的。
+
+36. **切换工程必须"先清后载"，而且要在改 `_project_dir` 之前清**（2026-11-11 用户报）
+    现象：双击「工程管理」里另一个工程，右边画布还是**上一个**工程的图（连文件标签、
+    已标注数都是旧的）。不是"没切换"，是切换期间**还挂着上一个工程的东西**：
+    - `canvas.set_project()` 只设 `project_dir`/`label_manager`，**不清 image/mask/叠加层**；
+    - 首图要等后台列表扫完（海目星二期 2001 张实测 **9.6s 才出列表、10.8s 才出图**）。
+    现在 `_open_project_by_name()` 开头调 `_reset_view_for_project_switch()`：
+    停掩膜防抖 + 清画布全部字段 + 清列表行 + 信息栏归零；紧接着
+    `_preview_first_image()` 直接 scandir 第一张图显示出来（~0.3s），
+    实测"看到新工程的图" 10.8s → **1.1s**。`_close_project()` 共用同一套清理。
+    ⚠️ **顺序**：清理必须在 `self._project_dir = <新工程>` **之前** ——
+       `_mask_png_timer`（标注改动→写 `annotations/<base>_mask.png`，500ms 防抖）
+       在触发时才读 `_project_dir`。放后面就会把**旧图的掩膜写进新工程的 annotations**
+       （文件名对不上任何图，统计时像"孤儿文件"，极难发现）。
+    ⚠️ 列表构建那 9.6 秒**没优化**（扫描+掩膜预热是真实开销）。想让首屏更快，
+       方向是"先出列表、统计后补"，不是继续改这段。
+    ⚠️ 预览只认 `images/` **顶层**第一张：分类工程是 `images/<类别>/` 布局，直接跳过
+       （猜错类别的图比空白更让人困惑）。
+    回归：`tests/test_project_switch_view.py` 5 条（含"返回那一刻不许还是旧图"、
+    "不等列表就有新工程首图"、"来回切不串工程"），变异 3/3 全红。
 
 ## 8. 换电脑 / 换机器维护 SOP
 

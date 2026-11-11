@@ -3479,6 +3479,108 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         self._refresh_projects()
         self._open_project_by_name(name)
 
+    def _preview_first_image(self, project_dir):
+        """换工程时**先把新工程的第一张图显示出来**，不等列表扫完。
+
+        为什么需要：清空画布只解决了"看到旧图"，但用户接着会盯着空白等。
+        实测 海目星二期 2001 张：**列表就绪 9577ms、首图 10814ms** —— 大头在列表
+        构建（扫描 + 掩膜统计预热），跟"显示一张图"没关系。这里直接 scandir 拿
+        第一个图片文件名（2001 条约 10ms）+ 解码一张，约 0.3s 就能出图。
+        列表到位后 `_render_page` 会按 `current_image_path` 匹配到第 0 行再加载一次
+        （同一张图），顺带把选中行也点亮。
+
+        ⚠️ 只在 `images/` 顶层找（分类工程的 `images/<类别>/` 布局不猜，直接跳过）：
+           猜错会显示别的类的图，比空白更让人困惑。
+        """
+        try:
+            img_dir = os.path.join(str(project_dir), "images")
+            if not os.path.isdir(img_dir):
+                return
+            first = None
+            with os.scandir(img_dir) as it:
+                for e in it:
+                    try:
+                        if not e.is_file():
+                            continue
+                        if os.path.splitext(e.name)[1].lower() not in (
+                                ".bmp", ".png", ".jpg", ".jpeg", ".tif", ".tiff"):
+                            continue
+                        if first is None or e.name < first:
+                            first = e.name
+                    except OSError:
+                        continue
+            if not first:
+                return                      # 顶层没图（分类的类别子目录）→ 不猜
+            self.canvas.load_image(os.path.join(img_dir, first))
+            self._refresh_img_info()
+        except Exception as e:
+            # 预览失败不影响后续正常加载，但留个痕（别静默）
+            try:
+                self.log("[预览] 显示首图失败：%s: %s" % (type(e).__name__, e))
+            except Exception:
+                pass
+
+    def _reset_view_for_project_switch(self):
+        """换工程**瞬间**把上一个工程的残留清干净：画布、列表、信息栏、待写的掩膜。
+
+        2026-11-11 用户报："双击切换工程，右边窗口没有同步切换对应的图片"。
+        实测根因：`canvas.set_project()` 只换 `project_dir` / `label_manager`，
+        **不动 image / mask / 叠加层 / current_image_path**；而新工程的首图要等
+        后台扫描 + 首图解码完成才加载 —— 实测 海目星二期 2001 张 **8.2 秒**、
+        速博达 **9.6 秒**。这 8~10 秒里画布一直挂着**上一个工程**的图，
+        用户当然认为"没切换"。
+
+        更危险的是第二个后果：`label_manager` 此刻已经是**新工程**的，
+        而 `current_image_path` 还是旧工程的图 ⇒ 任何自动保存（掩膜 PNG 的 500ms
+        防抖、JSON 保存）都会把**旧图的名字**写进**新工程**的 annotations 目录。
+        所以这里除了清画布，还要先停掉那个防抖定时器。
+
+        ⚠️ 必须在 `self._project_dir = <新工程>` **之前**调用（定时器一触发就会读
+           当时的 `_project_dir`），见 `_open_project_by_name` 的调用位置。
+        """
+        # ① 停掉"标注改动 → 写 mask.png"的防抖，别让它带着旧图的名字跨工程落盘
+        try:
+            self._mask_png_timer.stop()
+        except Exception:
+            pass
+        # ② 画布：所有"上一张图"的东西全清（漏一个就会看到旧叠加层/旧预测）
+        c = self.canvas
+        for attr in ("image", "mask", "display_pixmap", "prediction_overlay",
+                     "current_image_path", "_prediction_mask", "_pred_prob",
+                     "_cached_qimage", "_cached_gray", "_cached_overlay_rgba_qimage",
+                     "_heatmap_qimage", "_show_heatmap", "_ocr_overlay",
+                     "_gray_image", "_height_image", "_height_path"):
+            try:
+                setattr(c, attr, None)
+            except Exception:
+                pass
+        for attr, val in (("_overlay_dirty", True), ("_show_heatmap", False)):
+            try:
+                setattr(c, attr, val)
+            except Exception:
+                pass
+        try:
+            c.update()
+        except Exception:
+            pass
+        # ③ 列表：不清的话旧行还在，双击旧行能把旧图又拉回画布
+        self._all_images = []
+        self._filtered_data = []
+        self._pending_select_first = False
+        try:
+            self.image_list_widget.setRowCount(0)
+        except Exception:
+            pass
+        # ④ 计数与信息栏（"文件 --"，宽高/标注/耗时全部归零）
+        try:
+            self.image_count_label.setText("Total: 0 images")
+        except Exception:
+            pass
+        try:
+            self._refresh_img_info()
+        except Exception:
+            pass
+
     def _open_project_by_name(self, name):
         try:
             # 先点亮状态栏进度：大图工程从双击到数据齐全要 10 秒上下，
@@ -3487,6 +3589,9 @@ class MainWindow(OcrOcvMixin, QMainWindow):
             self._load_t0 = time.perf_counter()
             self.load_progress_signal.emit(0, 0, "正在打开工程…")
             QApplication.processEvents()
+            # ★ 2026-11-11：**必须在换 _project_dir 之前**清视图 ——
+            #   否则掩膜防抖定时器会带着旧图名字写进新工程（见那边的注释）。
+            self._reset_view_for_project_switch()
             # 作废上一个工程的扫描/预热线程：否则它们的 gen 仍等于当前值，
             # 会继续往缓存里写、并误报"预热完成"。
             self._project_gen += 1
@@ -3494,6 +3599,9 @@ class MainWindow(OcrOcvMixin, QMainWindow):
             self.current_project = self.pm.open_project(name)
             self._project_dir = str(self.pm.get_project_dir(name))
             self.canvas.set_project(self.pm.get_project_dir(name))
+            # ★ 2026-11-11：先把新工程的第一张图显示出来（约 0.3s），
+            #   别让用户盯着空白等列表扫完（海目星二期实测 9.6s 才出列表）。
+            self._preview_first_image(self._project_dir)
 
             # Auto-detect task type BEFORE async image scan
             # (prevents race condition where scan completes before _mixed_cls_mode is set)
@@ -3548,6 +3656,11 @@ class MainWindow(OcrOcvMixin, QMainWindow):
             self._save_cls_train_settings()
         
         self._project_gen += 1  # Invalidate any pending scan threads
+        # 与"切换工程"共用同一套清理（画布/列表/信息栏/掩膜防抖）
+        try:
+            self._reset_view_for_project_switch()
+        except Exception:
+            pass
         self.current_project = None
         self._project_dir = None
         self._all_images = []
