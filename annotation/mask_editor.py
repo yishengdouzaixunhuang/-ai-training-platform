@@ -142,7 +142,7 @@ class AnnotationCanvas(QWidget):
         self.project_dir = project_dir
         self.label_manager = LabelManager(project_dir)
 
-    def reset_view(self):
+    def reset_for_project_switch(self):
         """丢掉"当前这张图"留下的一切（换工程 / 关工程时调）。
 
         ★ 2026-11-11：这份清单原来**硬编码在 `MainWindow._reset_view_for_project_switch()`**
@@ -151,6 +151,12 @@ class AnnotationCanvas(QWidget):
           一模一样（残影），下一轮排查要从头再来一遍。
           所以清单搬到这里：**加字段的人和清字段的人在同一个文件**。
           以后加任何"跟当前图绑定"的字段，都要在下面补一行。
+
+        ⚠️ **不要把它改名成 `reset_view`。** 本类末尾（约 2420 行）已有一个
+           `reset_view()`（工具栏「刷新视图」用，只做 `_fit_to_window()`）。
+           同一类里后定义的方法会静默覆盖先定义的 —— 我第一版就叫 `reset_view`，
+           结果这 58 行一行都没执行，而主窗口那 15 个 `setattr` 已经删掉了，
+           等于切换工程时**一个字段都没清**。现在由 `tests/test_duplicate_defs.py` 兜住。
 
         刻意**不动**的东西（它们是用户偏好，不是这张图的状态）：
         `_mode` / `current_class_id` / `brush_size` / `_show_annotation` 之类的显示开关 /

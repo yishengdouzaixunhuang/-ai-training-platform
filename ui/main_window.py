@@ -3557,9 +3557,12 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         # ② 画布：字段清单**不在这里**（2026-11-11 重构）——
         #    原来 15 个 setattr 硬编码在本函数里，谁给 canvas 加一个 `_cached_xxx`，
         #    这里必然漏，而漏了的症状和"看到上一张图"一模一样。
-        #    现在清单在 `AnnotationCanvas.reset_view()`：加字段和清字段在同一个文件。
+        #    现在清单在 `AnnotationCanvas.reset_for_project_switch()`：加字段和清字段在同一个文件。
+        #    ⚠️ 方法名**不是** `reset_view` —— 那个名字属于工具栏「刷新视图」（只做 _fit_to_window）。
+        #       同一类里后定义的方法会静默覆盖先定义的：我第一版就叫 reset_view，
+        #       那 58 行清理一行都没执行，详见 tests/test_duplicate_defs.py。
         try:
-            self.canvas.reset_view()
+            self.canvas.reset_for_project_switch()
         except Exception as e:
             self.log("[切换工程] 清画布失败：%s: %s" % (type(e).__name__, e))
         # ③ 列表：不清的话旧行还在，双击旧行能把旧图又拉回画布

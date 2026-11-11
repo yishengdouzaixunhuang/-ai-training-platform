@@ -304,19 +304,94 @@ def test_autosave_during_preview_window_goes_to_new_project():
     assert old_files == [], "★ 旧工程的 annotations 被写了东西：%r" % old_files
 
 
+def test_reset_actually_clears_canvas_fields():
+    """★ 清理必须**真的执行**：往每个字段塞哨兵值，切一次后必须一个都不剩。
+
+    这条是被一次事故逼出来的（2026-11-11 审核驳回）：第一版把清单写进
+    `AnnotationCanvas.reset_view()`，而本类末尾**早就有一个** `reset_view()`
+    （工具栏「刷新视图」，只做 `_fit_to_window()`）。类体里后定义的覆盖先定义的，
+    于是那 58 行清理**一行都没跑**，而主窗口的 15 个 `setattr` 已经删了
+    ⇒ 切换工程时一个字段都没清。
+
+    原来的 `test_switch_clears_view_immediately` 抓不到，因为它只断言
+    `current_image_path != 旧图` —— 而 `_open_project_by_name` 在清理之后紧接着
+    调 `_preview_first_image()`，`load_image()` 顺手就把这个字段覆盖成新图了。
+    **唯一被断言的字段，恰好被预览救了。** 所以这里直接对 `_reset_view_for_project_switch()`
+    本身下断言，一个字段一个字段地看。
+    """
+    import numpy as np
+
+    w = window()
+    c = w.canvas
+    # 塞哨兵：类型各不相同，避免"假清空"（比如只置 None 却留下空 dict）
+    c.current_image_path = "SENTINEL/old_project/old.bmp"
+    c._cached_qimage = "SENTINEL_QIMAGE"
+    c._cached_gray = "SENTINEL_GRAY"
+    c.prediction_overlay = "SENTINEL_OVERLAY"
+    c._prediction_mask = "SENTINEL_MASK"
+    c._pred_prob = "SENTINEL_PROB"
+    c._pred_overlay_cache = {"stale": 1}
+    c._pred_stats_cache = {"stale": 2}
+    c._height_image = "SENTINEL_HEIGHT"
+    c._height_path = "SENTINEL/old.tif"
+    c._polygon_points = [(1, 2), (3, 4)]
+    c._stroke_pts = [(5, 6)]
+    c.image = np.zeros((4, 4, 3), dtype=np.uint8)
+    c.zoom_level = 7.5
+
+    w._reset_view_for_project_switch()
+
+    leftovers = {
+        "current_image_path": c.current_image_path,
+        "_cached_qimage": c._cached_qimage,
+        "_cached_gray": c._cached_gray,
+        "prediction_overlay": c.prediction_overlay,
+        "_prediction_mask": c._prediction_mask,
+        "_pred_prob": c._pred_prob,
+        "_pred_overlay_cache": c._pred_overlay_cache,
+        "_pred_stats_cache": c._pred_stats_cache,
+        "_height_image": c._height_image,
+        "_height_path": c._height_path,
+        "_polygon_points": c._polygon_points,
+        "_stroke_pts": c._stroke_pts,
+        "image": c.image,
+    }
+    def _cleared(v):
+        """None / 空 dict / 空 list 都算清干净了（这三者的"空"形态不同，别只认 None）。"""
+        return v is None or (isinstance(v, (dict, list, tuple)) and not v)
+
+    dirty = sorted(k for k, v in leftovers.items() if not _cleared(v))
+    assert not dirty, "★ 切换工程后这些字段没清（清理逻辑没执行？）：%s" % dirty
+    assert c.zoom_level == 1.0, "★ 缩放没复位：%r" % c.zoom_level
+
+    # 用户偏好**不该**被清
+    c.brush_size = 17
+    c.current_class_id = 3
+    w._reset_view_for_project_switch()
+    assert c.brush_size == 17, "笔刷大小是用户偏好，不该被清"
+    assert c.current_class_id == 3, "当前类别是用户偏好，不该被清"
+
+
 def test_reset_list_is_owned_by_canvas():
     """清字段的清单必须住在 canvas 里，不能又散回主窗口。
 
     ★ 审核建议：清单硬编码在 `MainWindow` 里，将来谁给 canvas 加一个 `_cached_xxx`
       就必然漏，症状和"切换后看到上一张图"一模一样。
+
+    ⚠️ 方法名必须是 `reset_for_project_switch`，**不能**叫 `reset_view` ——
+      那个名字已被本类的「刷新视图」占用，同名会被覆盖（这条断言就是那次事故的墓碑）。
     """
     import inspect
     from annotation.mask_editor import AnnotationCanvas
     from ui.main_window import MainWindow
 
-    assert hasattr(AnnotationCanvas, "reset_view"), "canvas 没有 reset_view()"
+    assert hasattr(AnnotationCanvas, "reset_for_project_switch"), \
+        "canvas 没有 reset_for_project_switch()"
+    assert "reset_view" not in dir(AnnotationCanvas) or \
+        AnnotationCanvas.reset_view is not AnnotationCanvas.reset_for_project_switch, \
+        "两个方法撞名了"
     src = inspect.getsource(MainWindow._reset_view_for_project_switch)
-    assert "canvas.reset_view()" in src, "主窗口没走 canvas.reset_view()"
+    assert "canvas.reset_for_project_switch()" in src, "主窗口没走 canvas.reset_for_project_switch()"
     for field in ("_cached_qimage", "_prediction_mask", "_pred_prob", "_cached_gray"):
         assert field not in src, "主窗口里又在直接清 %s —— 清单该回到 canvas" % field
 
@@ -325,6 +400,7 @@ def main():
     print("=== 切换工程后视图同步 回归测试 ===")
     checks = [
         ("★ 切换瞬间清掉旧工程的一切", test_switch_clears_view_immediately),
+        ("★ 清理真的执行（哨兵值）", test_reset_actually_clears_canvas_fields),
         ("★ 不等列表就显示新工程首图", test_first_image_shown_without_waiting_for_list),
         ("最终加载新工程首图", test_switch_eventually_loads_new_project),
         ("关工程也清空", test_close_project_clears_view),

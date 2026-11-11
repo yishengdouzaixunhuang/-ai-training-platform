@@ -40,7 +40,8 @@
 "C:/aitp_venv/Scripts/python.exe" tests/test_counts_cache.py  # 类别统计缓存 16 条（该失效时必须失效）
 "C:/aitp_venv/Scripts/python.exe" tests/test_task_isolation.py  # 任务级停止标志 15 条（两个任务同时在队列里 + OCV 路径）
 "C:/aitp_venv/Scripts/python.exe" tests/test_undefined_names.py  # 未定义名字扫描（改完批量替换必跑）
-"C:/aitp_venv/Scripts/python.exe" tests/test_project_switch_view.py  # 切换工程后视图同步 5 条
+"C:/aitp_venv/Scripts/python.exe" tests/test_project_switch_view.py  # 切换工程后视图同步 10 条（含哨兵值）
+"C:/aitp_venv/Scripts/python.exe" tests/test_duplicate_defs.py      # 类内重名方法扫描（搬方法/改名前必跑）
 "C:/aitp_venv/Scripts/python.exe" tests/test_result.py           # 统一返回与错误码 11 条（含真实模块已用上）
 "C:/aitp_venv/Scripts/python.exe" -u _probe_counts_ui.py     # 真实窗口 A→B→切回，表格文字必须一致
 ```
@@ -469,12 +470,38 @@
        `sorted(os.listdir())` ⇒ 取字典序最小；勾了「Recent」列表按**标注 JSON 的 mtime
        降序** ⇒ 预览要按同一 key 挑（`_preview_first_image` 里已分两支）。
        不一致的表现是"预览一张、列表选中另一张"，用户觉得图没变却跳了行。
-    ★ 清字段的**清单住在 `AnnotationCanvas.reset_view()`**（`annotation/mask_editor.py`），
-       不在主窗口。给 canvas 加任何"跟当前图绑定"的字段，都必须去那儿补一行 ——
-       加字段的人和清字段的人在同一个文件，才不会再漏（漏了的症状就是残影）。
+    ★ 清字段的**清单住在 `AnnotationCanvas.reset_for_project_switch()`**
+       （`annotation/mask_editor.py`），不在主窗口。给 canvas 加任何"跟当前图绑定"的字段，
+       都必须去那儿补一行 —— 加字段的人和清字段的人在同一个文件，才不会再漏。
        用户偏好（`_mode`/`current_class_id`/`brush_size`/显示开关/色表）刻意不清。
+    ⚠️⚠️ 方法名**绝不能叫 `reset_view`**：本类末尾已有一个 `reset_view()`（工具栏
+       「刷新视图」，只做 `_fit_to_window()`），Python 类体里后定义的覆盖先定义的
+       —— 我第一版就叫 `reset_view`，那 58 行清理**一行都没执行**，主窗口的 15 个
+       `setattr` 又已经删了，净效果是切换工程时**一个字段都没清**（比改前更糟）。
+       没报错、没警告、测试全绿。现在由 `tests/test_duplicate_defs.py` 兜。
     回归：`tests/test_project_switch_view.py` 5 条（含"返回那一刻不许还是旧图"、
     "不等列表就有新工程首图"、"来回切不串工程"），变异 3/3 全红。
+
+37. **`tests/test_duplicate_defs.py`：类内同名方法 = 后一个静默覆盖前一个**（2026-11-11）
+    Python 不会警告。改完后症状是"新代码好像没生效"，极难往"方法重名"上想。
+    用 `ast` 遍历每个 `ClassDef` 的直接子节点，按方法名分组，≥2 次即报。
+    排除语言允许的情形：`@property` + `@x.setter/getter/deleter`、`typing.overload`、
+    `singledispatch.register`。当前 190 个 `.py` 里 **0 处**真重名（4 处 property 对被正确放过）。
+    ⚠️ 它与 `test_undefined_names.py` 互补：那个查"名字不存在"，这个查"名字存在两份"。
+    ⚠️ 读源码给 `ast.parse` 时**传 bytes**，别 `io.open(encoding="utf-8")` ——
+       本项目一半文件带 UTF-8 BOM，读成 str 会变成 `U+FEFF` 然后满屏"语法错误"。
+    ⚠️ `annotation/mask_editor.py` 整份是 **CRLF**，写脚本改它时锚点要按 CRLF 或先归一化；
+       但**别顺手把整个文件的换行符也改了**（会让 diff 变成 2400 行）。
+
+38. **变异检验必须打在"会被执行"的路径上**（2026-11-11，审核驳回那次的根教训）
+    上一轮我做的变异是「把字段名写回主窗口 → 源码扫描红」，那条打在**源码文本层**。
+    真实情况是清理函数根本没被调用，所以"删掉清理逻辑"这种变异**不会红** ——
+    **变异护住了一个不存在的东西**，测试全绿也说明不了任何事。
+    判据：一个变异能变红，前提是那段代码真的在跑。改完搬迁/改名/重构后，
+    **先用 `inspect.getsource()` 把"实际生效的那段"打出来看一眼**，比读源码可靠
+    （重名方法 / 装饰器包装 / 条件导入都会让你读到的那份不是执行的那份）。
+    同理，断言要挑"没有别的路径会顺手修好"的字段：切工程后 `current_image_path`
+    会被首图预览覆盖，所以拿它当唯一断言等于没验。
 
 ## 8. 换电脑 / 换机器维护 SOP
 
