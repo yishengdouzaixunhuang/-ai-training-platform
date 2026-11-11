@@ -364,6 +364,21 @@ def test_reset_actually_clears_canvas_fields():
     assert not dirty, "★ 切换工程后这些字段没清（清理逻辑没执行？）：%s" % dirty
     assert c.zoom_level == 1.0, "★ 缩放没复位：%r" % c.zoom_level
 
+    # ── "清成空"不够，还得清成**后续代码期望的类型** ──
+    # 这几个字段在 canvas 里是按容器用的，清成 None 会当场 TypeError：
+    #   `_pred_overlay_cache`  → `if cache_key in self._pred_overlay_cache:`（None 不可 in）
+    #   `_pred_stats_cache`    → `self._pred_stats_cache.get(cid)`
+    #   `_polygon_points`      → `len(self._polygon_points)`
+    # 所以"{} 与 None 都算清干净"只适用于**断言它们没残留**，不适用于**类型**。
+    assert isinstance(c._pred_overlay_cache, dict) and c._pred_overlay_cache == {}, \
+        "★ _pred_overlay_cache 应清成空 dict（后续有 `in` 判断），实际 %r" % (c._pred_overlay_cache,)
+    assert isinstance(c._pred_stats_cache, dict) and c._pred_stats_cache == {}, \
+        "★ _pred_stats_cache 应清成空 dict（后续有 .get()），实际 %r" % (c._pred_stats_cache,)
+    assert isinstance(c._polygon_points, list) and c._polygon_points == [], \
+        "★ _polygon_points 应清成空 list（后续有 len()），实际 %r" % (c._polygon_points,)
+    assert isinstance(c._stroke_pts, list) and c._stroke_pts == [], \
+        "★ _stroke_pts 应清成空 list，实际 %r" % (c._stroke_pts,)
+
     # 用户偏好**不该**被清
     c.brush_size = 17
     c.current_class_id = 3
