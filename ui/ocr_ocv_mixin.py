@@ -98,7 +98,7 @@ class OcrOcvMixin:
                         self.log_signal.emit("[%d/%d] %s: FAILED - %s" % (i, total, fname, err))
                     ui_call(self.ocr_progress.setMaximum, total)
                     ui_call(self.ocr_progress.setValue, i)
-                br = BatchRunner(flow, project_dir=pd, stop_check=lambda: self._stop_flag)
+                br = BatchRunner(flow, project_dir=pd, stop_check=self._active_stop)
                 br.run(images, on_progress=on_progress)
                 # 保存批量推理结果到 ocr_results.json 文件
                 import json as _json
@@ -313,7 +313,7 @@ class OcrOcvMixin:
                     ok_cnt += 1
                 else:
                     ng_cnt += 1
-            br = BatchRunner(flow, project_dir=pd, stop_check=lambda: self._stop_flag)
+            br = BatchRunner(flow, project_dir=pd, stop_check=self._active_stop)
             br.run(images, on_progress=on_progress)
             self.log_signal.emit(f"OCV batch: {ok_cnt} OK, {ng_cnt} NG out of {len(images)}")
             ui_call(self.ocv_status.setText, "Ready")

@@ -7429,7 +7429,10 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         self.cls_train_status.setText("Preparing...")
         self._cls_stop_btn.setEnabled(True)
         self._cls_start_btn.setEnabled(False)
-        self._stop_flag = False
+        # ★ 2026-11-11（P0-3）：这里原来有 `self._stop_flag = False`。
+        #   分类训练当时是**裸起线程**、不走队列，于是它和分割训练共用同一个全局标志：
+        #   点"开始分类训练"会顺手把正在跑的分割训练的取消状态抹掉。
+        #   现在分类训练也登记成队列任务（TRAIN），标志跟着任务走。
         # Auto-pop the independent Loss/Acc window when training starts
         if hasattr(self, "_cls_loss_window"):
             self._cls_loss_window.show()
@@ -7437,8 +7440,13 @@ class MainWindow(OcrOcvMixin, QMainWindow):
             self._cls_loss_window.activateWindow()
         self._cls_scale_ratio = 1.0
 
-        def run():
+        def run(_qctx=None):
+            # ★ 停止标志：队列任务问它自己那份；没有队列（老路径）才退回全局。
+            _stop = (lambda: _qctx.task.stop_flag) if _qctx is not None \
+                else (lambda: self._stop_flag)
             try:
+                if _qctx is not None:
+                    _qctx.phase("training")
                 if mixed_mode:
                     from classification.trainer import DualClassificationTrainer
                     self._cls_trainer = DualClassificationTrainer(project_dir, model_name=model_name)
@@ -7446,12 +7454,12 @@ class MainWindow(OcrOcvMixin, QMainWindow):
                     from classification.trainer import ClassificationTrainer
                     self._cls_trainer = ClassificationTrainer(project_dir, model_name=model_name)
                 def epoch_cb(epoch, total, train_loss=0, val_acc=0):
-                    if self._stop_flag:
+                    if _stop():
                         self._cls_trainer._stop_flag = True
                     self.progress_signal.emit(epoch, total)
                     ui_call(self.cls_train_status.setText, f"Epoch {epoch}/{total}")
                 def stop_check():
-                    return self._stop_flag
+                    return _stop()
                 self._cls_trainer.train(
                     epochs=epochs, batch_size=batch_size, lr=lr,
                     optimizer=optim_name, loss_func=loss_name,
@@ -7484,8 +7492,26 @@ class MainWindow(OcrOcvMixin, QMainWindow):
                 ui_call(self.cls_train_status.setText, "Ready")
                 ui_call(self._cls_stop_btn.setEnabled, False)
                 ui_call(self._cls_start_btn.setEnabled, True)
-        import threading
-        threading.Thread(target=run, daemon=True).start()
+
+        # ★ 2026-11-11（P0-3）：分类训练也登记成队列任务。
+        #   它原来是裸起线程 —— 队列的串行保证管不到它，于是"分割训练跑着 + 再开分类训练"
+        #   会同时占显存，两个任务还共用 `_stop_flag`（取消一个停两个）。
+        _q = getattr(self, "_task_queue", None)
+        if _q is not None:
+            from ui.task_queue import TaskKind as _TK
+            _t = _q.submit(_TK.TRAIN,
+                           "cls:%s [%s]" % (model_name, time.strftime("%Y%m%d_%H%M%S")),
+                           project=os.path.basename(project_dir),
+                           total=int(epochs or 0),
+                           detail="%s · %d epochs · batch=%d" % (mode_label, epochs, batch_size),
+                           run=run)
+            # 前面已经有任务在跑 ⇒ 这一行只是排队，状态别写成 "Preparing..." 骗人
+            if _q.running is not _t:
+                self.cls_train_status.setText("Queued...")
+        else:
+            self._stop_flag = False          # 老路径才用全局标志，起线程前清一次
+            import threading
+            threading.Thread(target=run, daemon=True).start()
 
     def _on_cls_mixed_toggled(self, checked):
         """Handle mixed mode checkbox toggle."""
@@ -7662,7 +7688,8 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         tta_on = self.cls_tta_check.isChecked()
         auto_heatmap_on = (hasattr(self, "cls_auto_heatmap")
                            and self.cls_auto_heatmap.isChecked())
-        self._stop_flag = False
+        if getattr(self, "_active_infer_ctx", None) is None:
+            self._stop_flag = False      # 只有老路径（直接点按钮 / 无队列）才用全局标志
         self.cls_infer_progress.setVisible(True)
         self.cls_infer_progress.setMaximum(total)
         self.cls_infer_progress.setValue(0)
@@ -7678,7 +7705,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
                     ct = DualClassificationTrainer(project_dir)
                     ct.load_model(model_file)
                     for i, (gray_path, height_path) in enumerate(images):
-                        if self._stop_flag:
+                        if self._active_stop():
                             self.log_signal.emit(f"Batch classification stopped at {i}/{total}")
                             break
                         gray_path, height_path = images[i]
@@ -7705,7 +7732,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
                         f"Batch inference: device={ct.device}, TTA={tta_on}, "
                         f"keep_aspect={getattr(ct, '_keep_aspect', False)}, model={model_file}")
                     for i, img_path in enumerate(images):
-                        if self._stop_flag:
+                        if self._active_stop():
                             self.log_signal.emit(f"Batch classification stopped at {i}/{total}")
                             break
                         base = os.path.splitext(os.path.basename(img_path))[0]
@@ -7755,7 +7782,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
                         hm_total = len(images)
                         hm_done = 0
                         for img_path in images:
-                            if self._stop_flag:
+                            if self._active_stop():
                                 break
                             base = os.path.splitext(os.path.basename(img_path))[0]
                             hm_file = os.path.join(hm_dir, base + "_heatmap.jpg")
@@ -8515,16 +8542,58 @@ class MainWindow(OcrOcvMixin, QMainWindow):
 
     # ============ Stop Handlers ============
 
+    def _active_stop(self):
+        """当前任务是否被要求停止 —— 队列任务**问它自己的标志**，没有队列才看全局。
+
+        ★ 2026-11-11（重构清单 P0-3）：深层的批量推理循环（`BatchRunner`、OCR）
+          拿不到 `ctx`，只能通过这个方法问。它优先取 `_active_infer_ctx`（队列任务的
+          上下文，`_batch_inference._run` 里设的），所以"取消推理任务 B"不会误伤正在
+          跑的训练 A —— 这正是原来 `stop_check=lambda: self._stop_flag` 的病灶。
+        """
+        ctx = getattr(self, "_active_infer_ctx", None)
+        if ctx is not None:
+            try:
+                return bool(ctx.task.stop_flag)
+            except Exception:
+                pass
+        return bool(getattr(self, "_stop_flag", False))
+
+    def _cancel_running_task(self, kind=None):
+        """把队列里**正在跑**的那个任务标成取消（按 kind 过滤，可选）。
+
+        返回是否真的找到了目标。点「停止」按钮走这里；找不到就退回老的全局标志
+        （无队列控件、或任务是老路径直接起线程的时候）。
+        """
+        q = getattr(self, "_task_queue", None)
+        if q is None:
+            return False
+        try:
+            t = q.running
+            if t is None:
+                return False
+            if kind is not None and getattr(t, "kind", None) != kind:
+                return False
+            q.request_cancel(t.id)
+            return True
+        except Exception:
+            return False
+
     def _stop_batch(self):
-        self._stop_flag = True
+        from ui.task_queue import TaskKind as _TK
+        self._stop_flag = True                      # 老路径（无队列）仍认这个
+        self._cancel_running_task(_TK.INFER)        # 队列任务：只取消推理那个
         self.log("Stopping inference...")
 
     def _stop_inference(self):
+        from ui.task_queue import TaskKind as _TK
         self._stop_flag = True
+        self._cancel_running_task(_TK.INFER)
         self.log("Stopping...")
 
     def _stop_training(self):
+        from ui.task_queue import TaskKind as _TK
         self._stop_flag = True
+        self._cancel_running_task(_TK.TRAIN)        # 队列任务：只取消训练那个
         if self.trainer is not None:
             self.trainer._stop_requested = True
         if hasattr(self, '_det_trainer') and self._det_trainer is not None:
@@ -8614,7 +8683,10 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         augment = self._get_augment_flags()
         cv_folds = settings.get("k_folds", 1)
 
-        self._stop_flag = False
+        # ★ 2026-11-11（P0-3）：这里原来有一句 `self._stop_flag = False`。
+        #   它在**提交那一刻**就把全局标志清了 —— 若此刻正在跑别的任务（比如批量推理），
+        #   用户刚点的"取消"会被这一下悄悄抹掉。标志是全局的，任何一次复位都会波及别人。
+        #   现在任务的停止标志跟着任务走，提交时不需要、也不该清任何东西。
         self.btn_train_stop.setEnabled(True)
         self.train_status.setText("Training...")
         self.train_progress.setVisible(True)
@@ -8685,21 +8757,18 @@ class MainWindow(OcrOcvMixin, QMainWindow):
 
             为什么要有这层：trainer 的 progress_callback 原来只喂 UI 进度条，
             队列要的是**同一个**数字（两处各算一套必然对不上）。
+            （原来这里还包了一层没用上的 `_cb`，已删 —— 跑在核心路径上的死代码就是坑。）
             """
-            _qctx = ctx
-
-            def _cb(c, t):
-                try:
-                    _qctx.progress(c, t)
-                except Exception:
-                    pass
-                self.progress_signal.emit(c, t)
-
-            run(_qctx)
+            ctx.phase("training")
+            run(ctx)
 
         def run(_qctx=None):
             _cb = (lambda c, t: (_qctx.progress(c, t), self.progress_signal.emit(c, t))) \
                 if _qctx is not None else (lambda c, t: self.progress_signal.emit(c, t))
+            # ★ 停止标志：队列任务问**它自己**那份；没有队列（老路径）才退回全局。
+            #   注意是 lambda 而不是取值 —— 取一次就是快照，之后点取消它永远看不到。
+            _stop = (lambda: _qctx.task.stop_flag) if _qctx is not None \
+                else (lambda: self._stop_flag)
             try:
                 if _trainer_ref is None:
                     raise RuntimeError(
@@ -8709,7 +8778,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
                     image_size=image_size, loss_name=loss_name,
                     augment=augment, k_folds=cv_folds, resume=resume,
                     early_stop_patience=int(settings.get("early_stop_patience", 0) or 0),
-                    stop_check=lambda: self._stop_flag,
+                    stop_check=_stop,
                     log_callback=lambda msg: self.log_signal.emit(msg),
                     progress_callback=_cb,
                     plot_callback=lambda h: self.chart_signal.emit(h),
@@ -8725,9 +8794,11 @@ class MainWindow(OcrOcvMixin, QMainWindow):
                 self.log_signal.emit(traceback.format_exc())
                 ui_call(self.train_status.setText, "Failed")
             finally:
-                # ★ 复位 _stop_flag：否则"取消一次"之后**后面所有任务都会秒停**
-                #   （标志是全局的，原先只靠停止按钮路径复位，队列路径漏了）
-                self._stop_flag = False
+                # ★ 只有老路径（全局标志）才需要复位 —— 否则"取消一次"之后
+                #   **后面所有任务都会秒停**（标志是全局的）。
+                #   队列任务的标志随对象消失，这里什么都不用做。
+                if _qctx is None:
+                    self._stop_flag = False
                 # ⚠️ 这里是子线程：直接碰控件会随机崩，统一排队回主线程
                 ui_call(self.btn_train_stop.setEnabled, False)
                 ui_call(self.train_progress.setVisible, False)
@@ -8747,17 +8818,22 @@ class MainWindow(OcrOcvMixin, QMainWindow):
                       detail="%d epochs · batch=%d" % (epochs, batch_size),
                       run=_queue_run_progress)
         else:
+            self._stop_flag = False          # 老路径才用全局标志，起线程前清一次
             threading.Thread(target=run, daemon=True).start()
 
     def _on_task_cancel(self, task_id):
-        """队列里点×：置取消标志（不强杀线程，见 task_queue 里的说明）。"""
+        """队列里点×：只置**这个任务自己**的取消标志（不强杀线程，见 task_queue 的说明）。
+
+        ★ 2026-11-11（P0-3）：这里原来还有一句 `self._stop_flag = True` ——
+          取消一行排队中的推理，会把**正在跑的训练**一起停掉；而且那个全局标志
+          之后要靠各处 `finally` 复位，漏一处就是"后面所有任务秒停"。
+          现在每个任务的标志在它自己身上，连坐不可能发生。
+        """
         q = getattr(self, "_task_queue", None)
         if q is None:
             return
         t = q.get(task_id)
         if t is not None:
-            # 训练/推理共用_stop_flag，正在跑的那个也要真的停下来
-            self._stop_flag = True
             q.request_cancel(task_id)
             self.log("已请求取消任务：%s" % t.title)
 
@@ -8776,7 +8852,8 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         epochs = self.det_epochs_spin.value() if hasattr(self, 'det_epochs_spin') else 200
         batch_size = self.det_batch_spin.value() if hasattr(self, 'det_batch_spin') else 16
         image_size = self.det_img_size_spin.value() if hasattr(self, 'det_img_size_spin') else 640
-        self._stop_flag = False
+        if getattr(self, "_active_infer_ctx", None) is None:
+            self._stop_flag = False      # 只有老路径（直接点按钮 / 无队列）才用全局标志
         self.btn_det_train_stop.setEnabled(True)
         self.det_train_status.setText("Preparing...")
         self.det_train_progress.setVisible(True)
@@ -8960,7 +9037,8 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         if not keys:
             return QMessageBox.warning(self, "Warning", "没有三视图齐全的组")
         total = len(keys)
-        self._stop_flag = False
+        if getattr(self, "_active_infer_ctx", None) is None:
+            self._stop_flag = False      # 只有老路径（直接点按钮 / 无队列）才用全局标志
         self.btn_infer_stop.setEnabled(True)
         self.infer_progress.setVisible(True)
         self.infer_progress.setMaximum(total); self.infer_progress.setValue(0)
@@ -8977,7 +9055,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
                 t = self._mv_tile(project_dir)
                 for i, key in enumerate(keys, 1):
                     _t0 = time.time()
-                    if self._stop_flag:
+                    if self._active_stop():
                         self.log_signal.emit("已停止（完成 %d/%d 组）" % (done, total)); break
                     try:
                         paths = self._mv_group_paths(project_dir, key)
@@ -9180,15 +9258,17 @@ class MainWindow(OcrOcvMixin, QMainWindow):
                     else "检测" if self._detection_mode else "分割")
 
         def _run(ctx):
-            self._stop_flag = False
-            self._active_infer_ctx = ctx
+            # ★ 2026-11-11（P0-3）：这里原来进出各清一次 `self._stop_flag`。
+            #   排队等着的时候清一次、跑完再清一次 —— 而"正在跑的另一个任务"
+            #   正因为这个全局标志被取消，一清就白取消了。任务自己的标志不需要任何人清。
+            ctx.phase("inferring")
+            self._active_infer_ctx = ctx     # 深层循环用 _active_stop() 问它自己的标志
             try:
                 self._dispatch_batch_inference(project_dir)
                 if not ctx.canceled:
                     ctx.progress(max(1, ctx.task.total or 1), ctx.task.total or 1)
             finally:
                 self._active_infer_ctx = None
-                self._stop_flag = False
 
         q.submit(_TK.INFER,
                  "批量推理·%s [%s]" % (kindname, time.strftime("%H%M%S")),
@@ -9226,7 +9306,8 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         if not images:
             return QMessageBox.warning(self, "Warning", "No images found")
         total = len(images)
-        self._stop_flag = False
+        if getattr(self, "_active_infer_ctx", None) is None:
+            self._stop_flag = False      # 只有老路径（直接点按钮 / 无队列）才用全局标志
         self.btn_infer_stop.setEnabled(True)
         self.infer_progress.setVisible(True)
         self.infer_progress.setMaximum(total)
@@ -9289,7 +9370,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
                         except Exception:
                             pass
                     self.infer_progress_signal.emit(i, total)
-                br = BatchRunner(flow, project_dir=project_dir, stop_check=lambda: self._stop_flag)
+                br = BatchRunner(flow, project_dir=project_dir, stop_check=self._active_stop)
                 br.run(images, on_progress=on_progress)
                 self.log_signal.emit("Batch inference complete! Results: %s" % out_dir)
                 ui_call(self.infer_status.setText, "Complete")
@@ -9321,7 +9402,8 @@ class MainWindow(OcrOcvMixin, QMainWindow):
             return QMessageBox.warning(self, "Warning", "No images found")
         classes = getattr(self, "_cached_classes", None) or ["background"]
         total = len(images)
-        self._stop_flag = False
+        if getattr(self, "_active_infer_ctx", None) is None:
+            self._stop_flag = False      # 只有老路径（直接点按钮 / 无队列）才用全局标志
         self.btn_infer_stop.setEnabled(True)
         self.infer_progress.setVisible(True)
         self.infer_progress.setMaximum(total)
@@ -9341,7 +9423,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
                     else:
                         self.log_signal.emit("[%d/%d] %s: FAILED - %s" % (i, total, base, err))
                     self.infer_progress_signal.emit(i, total)
-                br = BatchRunner(flow, project_dir=project_dir, stop_check=lambda: self._stop_flag)
+                br = BatchRunner(flow, project_dir=project_dir, stop_check=self._active_stop)
                 br.run(images, on_progress=on_progress)
                 self.log_signal.emit("Batch detection complete! %d images, results: %s" % (ok_cnt, out_dir))
                 ui_call(self.infer_status.setText, "Complete")

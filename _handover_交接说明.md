@@ -37,7 +37,8 @@
 "C:/aitp_venv/Scripts/python.exe" _probe_startup_flash.py # 启动闪烁：顶层杂散窗口必须 0 个
 "C:/aitp_venv/Scripts/python.exe" -u _probe_menu_entry.py # 两个菜单入口能打开（原来必崩）
 "C:/aitp_venv/Scripts/python.exe" _probe_dialogs_shot.py  # 把两个对话框渲染成 PNG 看版面
-"C:/aitp_venv/Scripts/python.exe" tests/test_counts_cache.py  # 类别统计缓存 13 条（该失效时必须失效）
+"C:/aitp_venv/Scripts/python.exe" tests/test_counts_cache.py  # 类别统计缓存 16 条（该失效时必须失效）
+"C:/aitp_venv/Scripts/python.exe" tests/test_task_isolation.py  # 任务级停止标志 10 条（两个任务同时在队列里）
 "C:/aitp_venv/Scripts/python.exe" -u _probe_counts_ui.py     # 真实窗口 A→B→切回，表格文字必须一致
 ```
 
@@ -366,6 +367,30 @@
     ⚠️ 顺手发现**未修**的旧问题：分类工程「空集」的比对区分大小写（`mapping` 键
        `images/ok/a.bmp` vs 类别名 `OK`）会把已标注的图算成空集。只影响 ImageFolder
        布局的工程，修它会改变那些工程现有数字，等拍板。
+
+33. **停止标志现在挂在任务上，谁再写 `self._stop_flag` 谁就是开倒车**（2026-11-11，清单 P0-3）
+    原来全平台一个 `self._stop_flag`，撑起训练/分类训练/批量推理/单张推理/OCR 六条路径。
+    四个真实病灶（都已修，见 `docs/改动说明_任务级停止标志.md`）：
+    ① **连坐**：取消队列里排队的一行推理，正在跑的训练一起停（`_on_task_cancel` 里那句
+       `self._stop_flag = True` —— 已删）；
+    ② **秒停**：取消过一次之后，后面每个任务在第一步就停（全局标志要靠各处 `finally` 复位）；
+    ③ **分类训练压根不走队列**（`_start_cls_training` 是裸 `threading.Thread`），
+       它和分割训练共用标志，点"开始分类训练"顺手把分割训练的取消状态抹掉 —— 现在入队了；
+    ④ **提交即抹**：`_start_training` / `_batch_inference._run` 在提交那一刻就清全局标志，
+       把用户刚点的取消悄悄干掉。
+    现在：`task.cancel_requested` 是唯一状态，`task.stop_flag` 只是它的**读写别名**（别加第二个字段）；
+    队列任务 `stop_check=lambda: ctx.task.stop_flag`；深层循环（`BatchRunner`/OCR）用
+    `self._active_stop()`（有任务上下文就问任务，没有才看全局）；「停止」按钮走
+    `_cancel_running_task(kind)`，**只打同类**正在跑的那个。
+    ⚠️ `self._stop_flag` **还在**：无队列的老路径（`_batch_inference` 兜底、分类训练兜底、
+       检测训练）仍用它。**新写的流程别再用它** —— 用 `_active_stop()`，或在 ctx 里问任务。
+       等这些路径全入队后才能删，现在删就是"删了半边"。
+    ⚠️ 检测训练（YOLO）仍未入队，走它自己的 `_det_trainer.stop()`；要统一得先让它入队。
+    ⚠️ **这类 bug 不能拿"跑一遍不崩"当验证**：复现窗口是"A 正在跑、B 还在排队"的那一瞬间。
+       `tests/test_task_isolation.py` 就是按这个时序造的（起一个卡住的任务当"正在跑的那个"，
+       再塞第二个进去，然后对第二个动手），并且把**旧的缺陷形状**逐条塞回去验证它会红（7/7）。
+    ⚠️ 顺手记一条：`new_table()` 那类"看起来像已经算过一次"的辅助函数害人不浅 ——
+       本轮又遇到一次（`TaskQueue.running` 之前是私有 `_running`，测试想验"当前任务"就得自己造）。
 
 ## 8. 换电脑 / 换机器维护 SOP
 

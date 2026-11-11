@@ -19,6 +19,11 @@
 3. **取消是"请求式"**：`request_cancel()` 只置标志，真正停下来要等任务自己检查到。
    训练在 epoch 边界检查、推理在每张图后检查 ⇒ 最坏等一个 epoch/一张图。
    **绝不在队列线程里强杀线程** —— 那样会留下半个写坏的权重文件。
+4. **停止标志挂在任务上，不是全局**（2026-11-11，重构清单 P0-3）。原来平台只有一个
+   `self._stop_flag`：取消任务 A 会连坐任务 B；"取消一次"之后后面每个任务都会秒停
+   （于是每处 `finally` 都得记得复位，漏一处就复发）。现在 `task.cancel_requested`
+   就是那个标志，任务结束随对象消失，**没有任何地方需要复位**。
+   交接文档第 20 条那个 `self.trainer` 单槽崩溃，根因也是同一个"共享可变状态"。
 
 ETA 估算：`已完成步数 / 已用时` 线性外推。对训练用 epoch 级进度，对推理用图片级进度。
 早期样本太少（<2 个进度点或<3%完成度）时**故意不显示 ETA** —— 那一刻的估算纯属噪声，
@@ -97,7 +102,25 @@ class Task:
     started_at: float = 0.0
     finished_at: float = 0.0
     cancel_requested: bool = False
+    #: 当前阶段（""|"preparing"|"training"|"validating"|"saving"|"inferring"），
+    #: 由任务自己用 `ctx.phase("validating")` 上报，UI 只读不算。
+    phase: str = ""
     id: str = field(default_factory=lambda: uuid.uuid4().hex[:8])
+
+    # ── 停止标志（**每个任务自己一份**）──
+    # 交接文档第 20 条那个 bug 的根因：平台原来是**一个全局 `_stop_flag`**，
+    # 任务 A 的取消会误伤任务 B，而且"取消一次"之后后面每个任务都会秒停。
+    # 现在标志挂在 Task 上，任务结束随对象消失，不需要任何地方"记得复位"。
+    # ⚠️ 刻意**不新增字段**：字段名就叫 `cancel_requested`（取消请求），
+    #    `stop_flag` 只是它的读写别名 —— 两份状态迟早会打架。
+    @property
+    def stop_flag(self):
+        """这个任务自己的停止标志（`cancel_requested` 的别名，读写同一份）。"""
+        return bool(self.cancel_requested)
+
+    @stop_flag.setter
+    def stop_flag(self, value):
+        self.cancel_requested = bool(value)
 
     # ── 进度与 ETA ──
     @property
@@ -175,6 +198,11 @@ class TaskQueue:
             if t.id == task_id:
                 return t
         return None
+
+    @property
+    def running(self):
+        """当前正在跑的那个任务（没有就 None）。「停止」按钮靠它找目标。"""
+        return self._running
 
     # ── 变更通知 ──
     def _notify(self):
@@ -361,8 +389,25 @@ class _Ctx:
         self._t.detail = str(msg)[-200:]
         self._q._notify()
 
+    def phase(self, name):
+        """上报当前阶段（"preparing"/"training"/"validating"/"saving"/"inferring"）。
+
+        只是给 UI 显示用；**不参与任何判断**，所以传什么都不会改变执行流程。
+        """
+        self._t.phase = str(name or "")
+        self._q._notify()
+
     @property
     def canceled(self):
+        return bool(self._t.cancel_requested)
+
+    @property
+    def stop_requested(self):
+        """同 `canceled`，但读起来更像"要不要停" —— 给 `stop_check=` 用。
+
+        ⚠️ 别把 `self._t.cancel_requested` 存成局部 bool 再传出去：
+           那是一次性快照，之后用户点取消它就永远看不到。
+        """
         return bool(self._t.cancel_requested)
 
     def check_cancel(self):
