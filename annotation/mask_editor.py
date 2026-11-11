@@ -142,6 +142,64 @@ class AnnotationCanvas(QWidget):
         self.project_dir = project_dir
         self.label_manager = LabelManager(project_dir)
 
+    def reset_view(self):
+        """丢掉"当前这张图"留下的一切（换工程 / 关工程时调）。
+
+        ★ 2026-11-11：这份清单原来**硬编码在 `MainWindow._reset_view_for_project_switch()`**
+          里（15 个 `setattr(c, attr, None)`）。那种写法的必然结果是：谁给 canvas 加一个新的
+          `_cached_xxx`，清字段那一侧就会漏 —— 而漏了的症状和"切换工程后画布还显示上一张图"
+          一模一样（残影），下一轮排查要从头再来一遍。
+          所以清单搬到这里：**加字段的人和清字段的人在同一个文件**。
+          以后加任何"跟当前图绑定"的字段，都要在下面补一行。
+
+        刻意**不动**的东西（它们是用户偏好，不是这张图的状态）：
+        `_mode` / `current_class_id` / `brush_size` / `_show_annotation` 之类的显示开关 /
+        `_height_colormap`。谁把偏好也清了，用户每次换工程都得重设一遍。
+        """
+        # ── 图像本体与掩膜 ──
+        self.image = None
+        self.mask = None
+        self.display_pixmap = None
+        self.current_image_path = None
+        self._cached_qimage = None
+        self._cached_gray = None
+        # ── 叠加层（标注/预测/检测/热力图/OCR）──
+        self.prediction_overlay = None
+        self._prediction_mask = None
+        self._pred_prob = None
+        self._cached_overlay_qimage = None
+        self._cached_overlay_rgba_qimage = None
+        self._det_overlay = None
+        self._heatmap_qimage = None
+        self._show_heatmap = False
+        self._ocr_overlay = None
+        self._overlay_dirty = True
+        # ── 每张图算出来的缓存（不清会拿上一张的统计去画这一张）──
+        self._pred_overlay_cache = {}
+        self._pred_stats_cache = {}
+        # ── 高度图（.tif 那套）──
+        self._height_image = None
+        self._cached_height_qimage = None
+        self._cached_height_pil = None
+        self._height_path = None
+        self._height_vmin = None
+        self._height_vmax = None
+        self._gray_image = None
+        # ── 交互中间态（半截的多边形/笔画不能跨工程留着）──
+        self._cursor_pt = None
+        self._drawing = False
+        self._polygon_points = []
+        self._stroke_pts = []
+        self._drag_start_pos = None
+        # ── 视图几何 ──
+        self.zoom_level = 1.0
+        self.pan_offset_x = 0
+        self.pan_offset_y = 0
+        try:
+            self.update()
+        except Exception:
+            pass
+
     def load_image(self, image_path):
         self.current_image_path = image_path
         pil_img = Image.open(image_path)

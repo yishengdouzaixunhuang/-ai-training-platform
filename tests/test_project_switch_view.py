@@ -31,6 +31,15 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 os.chdir(ROOT)
 
+# ⚠️ 与 main.py 一致：torch 必须先于 PyQt5（否则 WinError 1114 c10.dll）——
+#    之前把 Qt 的 import 写在模块顶部忘了这条，整份用例全炸在这上面。
+try:
+    import torch  # noqa: F401
+except OSError as _e:  # pragma: no cover
+    print("[warn] torch 加载失败：%s" % _e)
+
+from PyQt5.QtCore import Qt  # noqa: E402
+
 failures = []
 _APP = None
 _WIN = None
@@ -189,6 +198,129 @@ def test_switch_back_and_forth():
         prev = cur
 
 
+# ---------------------------------------------------------------- 预览/中间态
+
+def _mk_project(root, name, files, json_mt=None):
+    """造一个最小工程：images/*.png（+ 对应 json），返回目录。"""
+    from PIL import Image as _Img
+    pd = os.path.join(root, name)
+    img_dir = os.path.join(pd, "images")
+    os.makedirs(img_dir, exist_ok=True)
+    os.makedirs(os.path.join(pd, "annotations"), exist_ok=True)
+    with open(os.path.join(pd, "project.json"), "w", encoding="utf-8") as f:
+        f.write('{"name": "%s", "task_type": "语义分割", "classes": ["background"]}' % name)
+    for fn in files:
+        _Img.new("RGB", (8, 8), (20, 20, 20)).save(os.path.join(img_dir, fn))
+        jp = os.path.join(img_dir, os.path.splitext(fn)[0] + ".json")
+        with open(jp, "w", encoding="utf-8") as f:
+            f.write('{"shapes": []}')
+        if json_mt and os.path.splitext(fn)[0] in json_mt:
+            t = json_mt[os.path.splitext(fn)[0]]
+            os.utime(jp, (t, t))
+    return pd
+
+
+def test_preview_matches_list_first_row():
+    """预览那张图必须就是列表第一行 —— 否则"图没变却跳了行"。
+
+    列表默认顺序是 `sorted(os.listdir())`（见 `_load_image_list_async`），
+    预览用 `min(名字)`，两者必须一致。
+    """
+    w = window()
+    w._open_project_by_name(PROJ_A)
+    wait_ready(PROJ_A)
+    # 列表第一行的图片路径（UserRole 里存的是路径）
+    it = w.image_list_widget.item(0, 0)
+    first_row = str(it.data(Qt.UserRole) or "") if it is not None else ""
+    cur = str(getattr(w.canvas, "current_image_path", "") or "")
+    assert first_row, "列表第一行没拿到路径，用例前提不成立"
+    assert os.path.normcase(cur) == os.path.normcase(first_row), \
+        "预览/列表不一致：canvas=%r 第一行=%r" % (cur, first_row)
+
+
+def test_preview_respects_recent_sort():
+    """勾了「Recent」时列表按标注 JSON 的 mtime 降序，预览也必须按同一规则挑。"""
+    tmp = tempfile.mkdtemp(prefix="sw_recent_")
+    # aa.png 的 json 很旧，zz.png 的 json 很新：字典序最小是 aa，但 Recent 下首行是 zz
+    pd = _mk_project(tmp, "p", ["aa.png", "zz.png"],
+                     json_mt={"aa": 1000.0, "zz": 2000.0})
+    w = window()
+    w.canvas.set_project(pd)
+    w._project_dir = pd
+
+    w.recent_check.blockSignals(True)
+    try:
+        w.recent_check.setChecked(False)
+        w._preview_first_image(pd)
+        assert os.path.basename(w.canvas.current_image_path) == "aa.png", \
+            "默认顺序应该取字典序最小的 aa.png，实际 %r" % w.canvas.current_image_path
+
+        w.recent_check.setChecked(True)
+        w._preview_first_image(pd)
+        assert os.path.basename(w.canvas.current_image_path) == "zz.png", \
+            "Recent 顺序应该取标注最新的 zz.png，实际 %r" % w.canvas.current_image_path
+    finally:
+        w.recent_check.setChecked(False)
+        w.recent_check.blockSignals(False)
+
+
+def test_autosave_during_preview_window_goes_to_new_project():
+    """★ "有图无列表"的中间态：自动保存必须写进**新**工程，且文件名对得上。
+
+    审核指出：预览期间列表还是空的（海目星二期有 9.6 秒），这窗口里用户可以画一笔
+    触发 `_mask_png_timer`。此时 `label_manager` / `_project_dir` 都已是新工程，
+    `current_image_path` 是预览那张图 —— 写出来的掩膜应该落在新工程、名字对得上。
+    这里直接驱动"清理 → 预览 → 同步掩膜"三步，把中间态钉住。
+    """
+    import numpy as np
+
+    tmp = tempfile.mkdtemp(prefix="sw_mid_")
+    pd_old = _mk_project(tmp, "old", ["old1.png"])
+    pd_new = _mk_project(tmp, "new", ["new1.png", "new2.png"])
+
+    w = window()
+    w.canvas.set_project(pd_old)
+    w._project_dir = pd_old
+    w._preview_first_image(pd_old)
+    assert os.path.basename(w.canvas.current_image_path) == "old1.png"
+
+    # 切换：清理 → 换目录 → 预览（此时列表还没建，正是中间态）
+    w._reset_view_for_project_switch()
+    w._project_dir = pd_new
+    w.canvas.set_project(pd_new)
+    w._preview_first_image(pd_new)
+    assert w.image_list_widget.rowCount() == 0, "用例前提：列表还没建好"
+
+    # 模拟"用户画了一笔 → 防抖触发"
+    w.canvas.mask = np.zeros((8, 8), dtype=np.uint8)
+    w._sync_mask_png_for_current()
+
+    new_ann = os.path.join(pd_new, "annotations")
+    old_ann = os.path.join(pd_old, "annotations")
+    new_files = sorted(os.listdir(new_ann))
+    old_files = sorted(os.listdir(old_ann))
+    assert new_files == ["new1.png".replace(".png", "_mask.png")], \
+        "新工程该只多出一张对应预览图的掩膜，实际 %r" % new_files
+    assert old_files == [], "★ 旧工程的 annotations 被写了东西：%r" % old_files
+
+
+def test_reset_list_is_owned_by_canvas():
+    """清字段的清单必须住在 canvas 里，不能又散回主窗口。
+
+    ★ 审核建议：清单硬编码在 `MainWindow` 里，将来谁给 canvas 加一个 `_cached_xxx`
+      就必然漏，症状和"切换后看到上一张图"一模一样。
+    """
+    import inspect
+    from annotation.mask_editor import AnnotationCanvas
+    from ui.main_window import MainWindow
+
+    assert hasattr(AnnotationCanvas, "reset_view"), "canvas 没有 reset_view()"
+    src = inspect.getsource(MainWindow._reset_view_for_project_switch)
+    assert "canvas.reset_view()" in src, "主窗口没走 canvas.reset_view()"
+    for field in ("_cached_qimage", "_prediction_mask", "_pred_prob", "_cached_gray"):
+        assert field not in src, "主窗口里又在直接清 %s —— 清单该回到 canvas" % field
+
+
 def main():
     print("=== 切换工程后视图同步 回归测试 ===")
     checks = [
@@ -197,6 +329,10 @@ def main():
         ("最终加载新工程首图", test_switch_eventually_loads_new_project),
         ("关工程也清空", test_close_project_clears_view),
         ("来回切换不串工程", test_switch_back_and_forth),
+        ("预览图 == 列表第一行", test_preview_matches_list_first_row),
+        ("预览排序跟随「Recent」", test_preview_respects_recent_sort),
+        ("★ 中间态自动保存写进新工程", test_autosave_during_preview_window_goes_to_new_project),
+        ("★ 清字段清单住在 canvas 里", test_reset_list_is_owned_by_canvas),
     ]
     for name, fn in checks:
         check(name, fn)

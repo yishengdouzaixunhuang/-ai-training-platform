@@ -465,6 +465,14 @@
        方向是"先出列表、统计后补"，不是继续改这段。
     ⚠️ 预览只认 `images/` **顶层**第一张：分类工程是 `images/<类别>/` 布局，直接跳过
        （猜错类别的图比空白更让人困惑）。
+    ⚠️ 预览的**排序必须和列表一致**：默认（未勾「Recent」）列表是
+       `sorted(os.listdir())` ⇒ 取字典序最小；勾了「Recent」列表按**标注 JSON 的 mtime
+       降序** ⇒ 预览要按同一 key 挑（`_preview_first_image` 里已分两支）。
+       不一致的表现是"预览一张、列表选中另一张"，用户觉得图没变却跳了行。
+    ★ 清字段的**清单住在 `AnnotationCanvas.reset_view()`**（`annotation/mask_editor.py`），
+       不在主窗口。给 canvas 加任何"跟当前图绑定"的字段，都必须去那儿补一行 ——
+       加字段的人和清字段的人在同一个文件，才不会再漏（漏了的症状就是残影）。
+       用户偏好（`_mode`/`current_class_id`/`brush_size`/显示开关/色表）刻意不清。
     回归：`tests/test_project_switch_view.py` 5 条（含"返回那一刻不许还是旧图"、
     "不等列表就有新工程首图"、"来回切不串工程"），变异 3/3 全红。
 

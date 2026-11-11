@@ -3496,21 +3496,32 @@ class MainWindow(OcrOcvMixin, QMainWindow):
             img_dir = os.path.join(str(project_dir), "images")
             if not os.path.isdir(img_dir):
                 return
-            first = None
+            imgs = []                       # [(文件名, 对应 json 的 mtime)]
+            json_mt = {}
             with os.scandir(img_dir) as it:
                 for e in it:
                     try:
                         if not e.is_file():
                             continue
-                        if os.path.splitext(e.name)[1].lower() not in (
-                                ".bmp", ".png", ".jpg", ".jpeg", ".tif", ".tiff"):
+                        ext = os.path.splitext(e.name)[1].lower()
+                        if ext == ".json":
+                            json_mt[os.path.splitext(e.name)[0]] = e.stat().st_mtime
                             continue
-                        if first is None or e.name < first:
-                            first = e.name
+                        if ext not in (".bmp", ".png", ".jpg", ".jpeg", ".tif", ".tiff"):
+                            continue
+                        imgs.append(e.name)
                     except OSError:
                         continue
-            if not first:
+            if not imgs:
                 return                      # 顶层没图（分类的类别子目录）→ 不猜
+            # ★ 排序必须和列表一致，否则"预览一张、列表选中另一张"，用户会觉得图没变却跳了行。
+            #   默认（未勾「Recent」）：列表是 `sorted(os.listdir())` ⇒ 取字典序最小。
+            #   勾了「Recent」：列表按**标注 JSON 的 mtime 降序**（见 _filter_rows_body_impl），
+            #   mtime 相同的按原顺序（稳定排序）⇒ 取 (mtime 最大, 文件名最小)。
+            if getattr(self, "recent_check", None) is not None and self.recent_check.isChecked():
+                first = sorted(imgs, key=lambda n: (-json_mt.get(os.path.splitext(n)[0], 0.0), n))[0]
+            else:
+                first = min(imgs)
             self.canvas.load_image(os.path.join(img_dir, first))
             self._refresh_img_info()
         except Exception as e:
@@ -3543,26 +3554,14 @@ class MainWindow(OcrOcvMixin, QMainWindow):
             self._mask_png_timer.stop()
         except Exception:
             pass
-        # ② 画布：所有"上一张图"的东西全清（漏一个就会看到旧叠加层/旧预测）
-        c = self.canvas
-        for attr in ("image", "mask", "display_pixmap", "prediction_overlay",
-                     "current_image_path", "_prediction_mask", "_pred_prob",
-                     "_cached_qimage", "_cached_gray", "_cached_overlay_rgba_qimage",
-                     "_heatmap_qimage", "_show_heatmap", "_ocr_overlay",
-                     "_gray_image", "_height_image", "_height_path"):
-            try:
-                setattr(c, attr, None)
-            except Exception:
-                pass
-        for attr, val in (("_overlay_dirty", True), ("_show_heatmap", False)):
-            try:
-                setattr(c, attr, val)
-            except Exception:
-                pass
+        # ② 画布：字段清单**不在这里**（2026-11-11 重构）——
+        #    原来 15 个 setattr 硬编码在本函数里，谁给 canvas 加一个 `_cached_xxx`，
+        #    这里必然漏，而漏了的症状和"看到上一张图"一模一样。
+        #    现在清单在 `AnnotationCanvas.reset_view()`：加字段和清字段在同一个文件。
         try:
-            c.update()
-        except Exception:
-            pass
+            self.canvas.reset_view()
+        except Exception as e:
+            self.log("[切换工程] 清画布失败：%s: %s" % (type(e).__name__, e))
         # ③ 列表：不清的话旧行还在，双击旧行能把旧图又拉回画布
         self._all_images = []
         self._filtered_data = []
