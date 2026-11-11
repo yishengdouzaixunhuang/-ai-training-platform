@@ -36,6 +36,8 @@ lightning_logs/
 # IDE
 .vscode/
 .idea/
+# Obsidian 库配置（2026-11-10 加：用 Obsidian 打开项目根当库时会生成这个目录）
+.obsidian/
 *.swp
 *.swo
 *~
