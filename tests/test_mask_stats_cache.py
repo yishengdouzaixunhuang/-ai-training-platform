@@ -39,28 +39,37 @@ def test_roundtrip():
         "annotations/a_mask.png": (1700000000123456789, 4096, 3, True),
         "annotations/b_mask.png": (1700000000987654321, 1024, 0, False),
     }
-    assert msc.save(d, src) is True
-    got = msc.load(d)
+    assert msc.save(d, src).ok is True
+    got = msc.load(d).value
     assert got == src, f"往返不一致: {got}"
 
 
 def test_missing_file():
     d = tempfile.mkdtemp(prefix="msc_")
-    assert msc.load(d) == {}, "没有缓存文件时应返回空 dict"
+    r = msc.load(d)
+    assert r.value is None, "失败时 value 应为 None（取值请用 unwrap_or）"
+    assert r.unwrap_or({}) == {}, "unwrap_or 应给出空 dict"
+    assert r.code == "not_found", "文件不存在应给 not_found（正常路径，不该报警）：%r" % r.code
+    assert r.benign is True, "not_found 必须算 benign"
 
 
 def test_corrupted_json():
     d = tempfile.mkdtemp(prefix="msc_")
     with open(msc.cache_path(d), "w", encoding="utf-8") as f:
         f.write('{"version": 1, "entries": { oops')
-    assert msc.load(d) == {}, "坏 JSON 必须返回空，不能抛"
+    r = msc.load(d)
+    assert r.unwrap_or({}) == {}, "坏 JSON 必须退化成空，不能抛"
+    assert r.code == "corrupt", "坏 JSON 应给 corrupt：%r" % r.code
+    assert r.benign is False, "corrupt 不该被当成\"本来就没有\""
 
 
 def test_wrong_version():
     d = tempfile.mkdtemp(prefix="msc_")
     with open(msc.cache_path(d), "w", encoding="utf-8") as f:
         json.dump({"version": 999, "entries": {"a": [1, 2, 3, True]}}, f)
-    assert msc.load(d) == {}, "版本不符应整体作废"
+    r = msc.load(d)
+    assert r.unwrap_or({}) == {}, "版本不符应整体作废"
+    assert r.code == "version", "版本不符应给 version：%r" % r.code
 
 
 def test_partial_garbage():
@@ -76,8 +85,10 @@ def test_partial_garbage():
     }
     with open(msc.cache_path(d), "w", encoding="utf-8") as f:
         json.dump(payload, f)
-    got = msc.load(d)
+    r = msc.load(d)
+    got = r.value
     assert list(got) == ["good_mask.png"], f"应只保留好条目，实际 {got}"
+    assert "丢弃" in r.message, "丢了坏条目就该在 message 里说一声：%r" % r.message
     assert got["good_mask.png"] == (1, 2, 3, True)
 
 
@@ -92,7 +103,9 @@ def test_atomic_no_temp_left():
 def test_save_into_missing_dir():
     """工程目录不可写时返回 False，不能抛。"""
     d = os.path.join(tempfile.gettempdir(), "definitely_not_exist_xyz", "proj")
-    assert msc.save(d, {"a": (1, 2, 3, True)}) is False
+    r = msc.save(d, {"a": (1, 2, 3, True)})
+    assert r.ok is False
+    assert r.code == "io", "写盘失败应给 io：%r" % r.code
 
 
 def test_stat_of():

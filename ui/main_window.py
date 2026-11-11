@@ -179,6 +179,8 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         self._cached_classes = ["background"]
         self.trainer = None
         self._stop_flag = False
+        # 裸线程推理各自的停止令牌（见 _infer_stop）；队列任务不走这里
+        self._infer_stops = set()
         self._project_gen = 0
         # 掩膜统计缓存 + "哪个代次已经预热完毕"标记。
         # 未预热完时主线程**只读缓存、绝不自己解码**（否则会和后台预热线程
@@ -4018,7 +4020,14 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         # 只有 mtime_ns + size 都变了（真改过标注）才重新解码。
         try:
             from core.mask_stats_cache import load as _msc_load, save as _msc_save
-            side = _msc_load(project_dir)
+            # ★ 2026-11-11（P0-1 第一个真实调用点）：`load()` 现在返回 Result，
+            #   能分清"还没建过（正常）"和"文件坏了/版本旧了（要告诉用户）"。
+            #   原来这两种都返回空 dict，缓存被丢掉时用户只感觉"这次打开慢了 6 秒"。
+            _cache_res = _msc_load(project_dir)
+            side = _cache_res.unwrap_or({})
+            if not _cache_res.benign:
+                self.log_signal.emit(
+                    "[掩膜缓存] %s —— 本次全量重算" % _cache_res.code_text)
         except Exception:
             _msc_load = _msc_save = None
             side = None                     # 模块不可用 → 退化成全量解码
@@ -4073,7 +4082,10 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         # 这样下次打开工程时缓存一定是齐的。
         if _msc_save is not None and side is not None:
             try:
-                _msc_save(project_dir, side)
+                _save_res = _msc_save(project_dir, side)
+                if not _save_res.ok:
+                    # 写不进去不影响训练/标注，但下次还得全量重算 —— 至少留个痕
+                    self.log_signal.emit("[掩膜缓存] 写盘失败：%s" % _save_res.code_text)
             except Exception:
                 pass
         if reused or filled:
@@ -7657,8 +7669,9 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         import threading
         threading.Thread(target=run, daemon=True).start()
 
-    def _start_cls_batch_inference(self):
+    def _start_cls_batch_inference(self, *, stop=None):
         """Run batch classification inference on all images."""
+        stop = self._infer_stop(stop)   # 本次推理自己的停止判据（见 _infer_stop）
         if not self.current_project:
             return QMessageBox.warning(self, "Warning", "Please open a project first")
         project_dir = str(self.pm.get_project_dir(self.current_project["name"]))
@@ -7688,8 +7701,6 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         tta_on = self.cls_tta_check.isChecked()
         auto_heatmap_on = (hasattr(self, "cls_auto_heatmap")
                            and self.cls_auto_heatmap.isChecked())
-        if getattr(self, "_active_infer_ctx", None) is None:
-            self._stop_flag = False      # 只有老路径（直接点按钮 / 无队列）才用全局标志
         self.cls_infer_progress.setVisible(True)
         self.cls_infer_progress.setMaximum(total)
         self.cls_infer_progress.setValue(0)
@@ -7705,7 +7716,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
                     ct = DualClassificationTrainer(project_dir)
                     ct.load_model(model_file)
                     for i, (gray_path, height_path) in enumerate(images):
-                        if self._active_stop():
+                        if stop():
                             self.log_signal.emit(f"Batch classification stopped at {i}/{total}")
                             break
                         gray_path, height_path = images[i]
@@ -7732,7 +7743,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
                         f"Batch inference: device={ct.device}, TTA={tta_on}, "
                         f"keep_aspect={getattr(ct, '_keep_aspect', False)}, model={model_file}")
                     for i, img_path in enumerate(images):
-                        if self._active_stop():
+                        if stop():
                             self.log_signal.emit(f"Batch classification stopped at {i}/{total}")
                             break
                         base = os.path.splitext(os.path.basename(img_path))[0]
@@ -7782,7 +7793,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
                         hm_total = len(images)
                         hm_done = 0
                         for img_path in images:
-                            if self._active_stop():
+                            if stop():
                                 break
                             base = os.path.splitext(os.path.basename(img_path))[0]
                             hm_file = os.path.join(hm_dir, base + "_heatmap.jpg")
@@ -8542,27 +8553,47 @@ class MainWindow(OcrOcvMixin, QMainWindow):
 
     # ============ Stop Handlers ============
 
-    def _active_stop(self):
-        """当前任务是否被要求停止 —— 队列任务**问它自己的标志**，没有队列才看全局。
+    def _infer_stop(self, stop=None):
+        """返回**本次推理**的停止判据 `() -> bool`。
 
-        ★ 2026-11-11（重构清单 P0-3）：深层的批量推理循环（`BatchRunner`、OCR）
-          拿不到 `ctx`，只能通过这个方法问。它优先取 `_active_infer_ctx`（队列任务的
-          上下文，`_batch_inference._run` 里设的），所以"取消推理任务 B"不会误伤正在
-          跑的训练 A —— 这正是原来 `stop_check=lambda: self._stop_flag` 的病灶。
+        调用方（队列任务）自己传 `lambda: ctx.task.stop_flag`；裸线程推理
+        （分类批量 / 三视图 / 检测批量 / OCR）不传 ⇒ 这里现造一个令牌，
+        `_stop_batch()` / `_stop_inference()` 只会点亮这些令牌。
+
+        ★ 2026-11-11 审核第二轮：这里原来叫 `_active_stop()`，靠单槽 `_active_infer_ctx`
+          **猜"我是哪个任务"** —— 两个毛病：
+          ① 队列里有个 INFER 在跑时，裸线程推理会去问**那个别人任务**的标志，
+             判据变成"别人是否被取消"；
+          ② 没有上下文时退回全局 `_stop_flag`，而 `_stop_training()` 无条件置它 ⇒
+             点「停止训练」会把正在跑的分类批量推理静默停掉（审核实测复现）。
+          现在判据是**显式传下去的对象**，不再猜，也没有全局兜底。
+
+        ⚠️ 令牌**不做释放**：留着的已置位令牌不影响下一次推理（每次现造新的）。
+           刻意不写 `finally: release()` —— "每个出口都要记得复位"正是旧 bug 的根因。
+           数量靠下面这行兜住：超过 32 个就把已置位的清掉。
         """
-        ctx = getattr(self, "_active_infer_ctx", None)
-        if ctx is not None:
+        if stop is not None:
+            return stop
+        import threading
+        if len(self._infer_stops) > 32:
+            self._infer_stops = {ev for ev in self._infer_stops if not ev.is_set()}
+        ev = threading.Event()
+        self._infer_stops.add(ev)
+        return ev.is_set
+
+    def _stop_infer_tokens(self):
+        """把**所有在跑的裸线程推理**标停（它们各自持一个令牌）。"""
+        for ev in list(getattr(self, "_infer_stops", ()) or ()):
             try:
-                return bool(ctx.task.stop_flag)
+                ev.set()
             except Exception:
                 pass
-        return bool(getattr(self, "_stop_flag", False))
 
     def _cancel_running_task(self, kind=None):
         """把队列里**正在跑**的那个任务标成取消（按 kind 过滤，可选）。
 
-        返回是否真的找到了目标。点「停止」按钮走这里；找不到就退回老的全局标志
-        （无队列控件、或任务是老路径直接起线程的时候）。
+        返回是否真的找到了目标。点「停止」按钮走这里；找不到就说明任务不是队列来的
+        （裸线程推理自己持令牌，见 `_infer_stop`）。
         """
         q = getattr(self, "_task_queue", None)
         if q is None:
@@ -8580,18 +8611,20 @@ class MainWindow(OcrOcvMixin, QMainWindow):
 
     def _stop_batch(self):
         from ui.task_queue import TaskKind as _TK
-        self._stop_flag = True                      # 老路径（无队列）仍认这个
+        self._stop_infer_tokens()                   # 裸线程推理：各自令牌
         self._cancel_running_task(_TK.INFER)        # 队列任务：只取消推理那个
         self.log("Stopping inference...")
 
     def _stop_inference(self):
         from ui.task_queue import TaskKind as _TK
-        self._stop_flag = True
+        self._stop_infer_tokens()
         self._cancel_running_task(_TK.INFER)
         self.log("Stopping...")
 
     def _stop_training(self):
         from ui.task_queue import TaskKind as _TK
+        # 只给"没有队列时的训练兜底路径"用（那种训练线程读 lambda: self._stop_flag）。
+        # ⚠️ 推理**不再读它** —— 上一版这里置全局，会把裸线程推理一起停掉（审核实测）。
         self._stop_flag = True
         self._cancel_running_task(_TK.TRAIN)        # 队列任务：只取消训练那个
         if self.trainer is not None:
@@ -8852,8 +8885,6 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         epochs = self.det_epochs_spin.value() if hasattr(self, 'det_epochs_spin') else 200
         batch_size = self.det_batch_spin.value() if hasattr(self, 'det_batch_spin') else 16
         image_size = self.det_img_size_spin.value() if hasattr(self, 'det_img_size_spin') else 640
-        if getattr(self, "_active_infer_ctx", None) is None:
-            self._stop_flag = False      # 只有老路径（直接点按钮 / 无队列）才用全局标志
         self.btn_det_train_stop.setEnabled(True)
         self.det_train_status.setText("Preparing...")
         self.det_train_progress.setVisible(True)
@@ -9014,8 +9045,9 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         except Exception:
             return 256
 
-    def _run_seg_batch_inference_mv(self, project_dir, model_file, out_dir):
+    def _run_seg_batch_inference_mv(self, project_dir, model_file, out_dir, *, stop=None):
         """多视图批处理：**按组遍历**，每组一次 9 通道推理，写出与单图流程同格式的结果。"""
+        stop = self._infer_stop(stop)   # 本次推理自己的停止判据（见 _infer_stop）
         import threading
         from inference.predictor import Predictor
         from flow.frame import Frame
@@ -9037,8 +9069,6 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         if not keys:
             return QMessageBox.warning(self, "Warning", "没有三视图齐全的组")
         total = len(keys)
-        if getattr(self, "_active_infer_ctx", None) is None:
-            self._stop_flag = False      # 只有老路径（直接点按钮 / 无队列）才用全局标志
         self.btn_infer_stop.setEnabled(True)
         self.infer_progress.setVisible(True)
         self.infer_progress.setMaximum(total); self.infer_progress.setValue(0)
@@ -9055,7 +9085,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
                 t = self._mv_tile(project_dir)
                 for i, key in enumerate(keys, 1):
                     _t0 = time.time()
-                    if self._active_stop():
+                    if stop():
                         self.log_signal.emit("已停止（完成 %d/%d 组）" % (done, total)); break
                     try:
                         paths = self._mv_group_paths(project_dir, key)
@@ -9262,9 +9292,12 @@ class MainWindow(OcrOcvMixin, QMainWindow):
             #   排队等着的时候清一次、跑完再清一次 —— 而"正在跑的另一个任务"
             #   正因为这个全局标志被取消，一清就白取消了。任务自己的标志不需要任何人清。
             ctx.phase("inferring")
-            self._active_infer_ctx = ctx     # 深层循环用 _active_stop() 问它自己的标志
+            # `_active_infer_ctx` 现在**只用于进度回灌**（_update_infer_progress），
+            # 不再充当停止判据 —— 判据是下面显式传下去的 `stop`。
+            self._active_infer_ctx = ctx
             try:
-                self._dispatch_batch_inference(project_dir)
+                self._dispatch_batch_inference(
+                    project_dir, stop=lambda: ctx.task.stop_flag)
                 if not ctx.canceled:
                     ctx.progress(max(1, ctx.task.total or 1), ctx.task.total or 1)
             finally:
@@ -9275,17 +9308,18 @@ class MainWindow(OcrOcvMixin, QMainWindow):
                  project=os.path.basename(project_dir), total=0,
                  detail="排队中…", run=_run)
 
-    def _dispatch_batch_inference(self, project_dir):
+    def _dispatch_batch_inference(self, project_dir, stop=None):
         """按当前工程类型分派到对应的批量推理实现（队列只管"排队/取消/进度"）。"""
         if self._cls_mode:
-            return self._start_cls_batch_inference()
+            return self._start_cls_batch_inference(stop=stop)
         if self._ocr_mode:
-            return self._run_ocr_batch()
+            return self._run_ocr_batch(stop=stop)
         if self._detection_mode:
-            return self._start_det_batch_inference()
-        return self._run_seg_batch_inference(project_dir)
+            return self._run_det_batch_inference(project_dir, stop=stop)
+        return self._run_seg_batch_inference(project_dir, stop=stop)
 
-    def _run_seg_batch_inference(self, project_dir):
+    def _run_seg_batch_inference(self, project_dir, *, stop=None):
+        stop = self._infer_stop(stop)   # 本次推理自己的停止判据（见 _infer_stop）
         model_file = self._resolve_model_for_use(self.model_combo.currentText())
         model_path = os.path.join(project_dir, "models", model_file)
         if not os.path.exists(model_path):
@@ -9299,15 +9333,13 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         try:
             from training.multiview_gui import is_multiview_project
             if is_multiview_project(project_dir):
-                return self._run_seg_batch_inference_mv(project_dir, model_file, out_dir)
+                return self._run_seg_batch_inference_mv(project_dir, model_file, out_dir, stop=stop)
         except Exception as e:
             self.log(f"[多视图批处理] 判定失败，退回单图流程: {type(e).__name__}: {e}")
         images = list_images(project_dir)
         if not images:
             return QMessageBox.warning(self, "Warning", "No images found")
         total = len(images)
-        if getattr(self, "_active_infer_ctx", None) is None:
-            self._stop_flag = False      # 只有老路径（直接点按钮 / 无队列）才用全局标志
         self.btn_infer_stop.setEnabled(True)
         self.infer_progress.setVisible(True)
         self.infer_progress.setMaximum(total)
@@ -9370,7 +9402,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
                         except Exception:
                             pass
                     self.infer_progress_signal.emit(i, total)
-                br = BatchRunner(flow, project_dir=project_dir, stop_check=self._active_stop)
+                br = BatchRunner(flow, project_dir=project_dir, stop_check=stop)
                 br.run(images, on_progress=on_progress)
                 self.log_signal.emit("Batch inference complete! Results: %s" % out_dir)
                 ui_call(self.infer_status.setText, "Complete")
@@ -9388,8 +9420,9 @@ class MainWindow(OcrOcvMixin, QMainWindow):
                 ui_call(self.btn_infer_stop.setEnabled, False)
                 ui_call(self.infer_progress.setVisible, False)
         threading.Thread(target=run, daemon=True).start()
-    def _run_det_batch_inference(self, project_dir):
+    def _run_det_batch_inference(self, project_dir, *, stop=None):
         """Batch detection inference on all images."""
+        stop = self._infer_stop(stop)   # 本次推理自己的停止判据（见 _infer_stop）
         model_path = os.path.join(project_dir, "models", "detection", "best.pt")
         if not os.path.exists(model_path):
             return QMessageBox.warning(self, "Error",
@@ -9402,8 +9435,6 @@ class MainWindow(OcrOcvMixin, QMainWindow):
             return QMessageBox.warning(self, "Warning", "No images found")
         classes = getattr(self, "_cached_classes", None) or ["background"]
         total = len(images)
-        if getattr(self, "_active_infer_ctx", None) is None:
-            self._stop_flag = False      # 只有老路径（直接点按钮 / 无队列）才用全局标志
         self.btn_infer_stop.setEnabled(True)
         self.infer_progress.setVisible(True)
         self.infer_progress.setMaximum(total)
@@ -9423,7 +9454,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
                     else:
                         self.log_signal.emit("[%d/%d] %s: FAILED - %s" % (i, total, base, err))
                     self.infer_progress_signal.emit(i, total)
-                br = BatchRunner(flow, project_dir=project_dir, stop_check=self._active_stop)
+                br = BatchRunner(flow, project_dir=project_dir, stop_check=stop)
                 br.run(images, on_progress=on_progress)
                 self.log_signal.emit("Batch detection complete! %d images, results: %s" % (ok_cnt, out_dir))
                 ui_call(self.infer_status.setText, "Complete")

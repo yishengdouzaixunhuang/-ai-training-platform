@@ -294,25 +294,63 @@ def test_stop_buttons_only_hit_matching_kind():
         w._task_queue.clear_finished()
 
 
-def test_active_stop_prefers_task_flag():
-    """深层的批量推理循环通过 `_active_stop()` 问 —— 有 ctx 时绝不能看全局。"""
-    from ui.task_queue import TaskKind, TaskState
+def test_stop_training_does_not_stop_bare_infer():
+    """★ 审核实测的那条：点「停止训练」，不许把**裸线程**批量推理一起停掉。
 
+    分类批量 / 三视图 / 检测批量 / OCR 都不走队列，各自持一个令牌（`_infer_stop`）。
+    改动前它们读全局 `_stop_flag`，而 `_stop_training` 无条件置它 ⇒ 静默误停。
+    """
     w = _window()
-    a, b, gate, seen = _starting_pair(w, TaskKind.INFER, TaskKind.TRAIN)
-    try:
-        ctx = seen["running_ctx"]
-        w._active_infer_ctx = ctx
-        w._stop_flag = True                   # 全局被别的路径置了（比如老训练按钮）
-        assert w._active_stop() is False, "★ 有任务上下文时还在看全局标志"
-        ctx.task.stop_flag = True
-        assert w._active_stop() is True, "任务自己被取消时 _active_stop 必须为真"
-        w._active_infer_ctx = None
-        assert w._active_stop() is True, "没有任务上下文时应退回全局标志"
-    finally:
-        gate.set()
-        wait_until(lambda: a.state is TaskState.DONE, desc="收尾")
-        w._active_infer_ctx = None
+    _drain(w)
+    w._stop_flag = False
+    token = w._infer_stop()               # 模拟一条裸线程推理拿到的判据
+    assert token() is False, "新令牌不该是「已停」"
+
+    w._stop_training()                     # 点「停止训练」
+    assert token() is False, "★ 点「停止训练」把正在跑的非队列推理一起停了"
+
+    w._stop_batch()                        # 点「停止推理」才该停它
+    assert token() is True, "「停止推理」没停到裸线程推理"
+
+
+def test_stop_infer_does_not_touch_training_flag():
+    """反过来也一样：「停止推理」不许动训练的全局标志（那是老路径训练的兜底判据）。"""
+    w = _window()
+    _drain(w)
+    w._stop_flag = False
+    w._stop_batch()
+    assert w._stop_flag is False, "★ 点「停止推理」把训练的全局标志也置了"
+
+
+def test_infer_tokens_are_per_run():
+    """两条推理各持一个令牌：取消第一条，第二条的判据必须还是"没停"。"""
+    w = _window()
+    _drain(w)
+    first = w._infer_stop()
+    second = w._infer_stop()
+    assert first is not second, "两次推理拿到了同一个判据（又变成共享状态）"
+    w._stop_batch()                        # 取消所有在跑的
+    assert first() is True and second() is True, "停止请求应覆盖所有在跑的推理"
+    third = w._infer_stop()                # 下一轮推理是新令牌
+    assert third() is False, "★ 新一轮推理继承了上一轮的停止状态"
+
+
+def test_dispatch_targets_exist():
+    """`_dispatch_batch_inference` 里 `self._xxx(` 调的每个方法都必须真的存在。
+
+    ★ 实际抓到的 bug：它原来调 `self._start_det_batch_inference()` —— 这个方法
+      **全项目不存在**，于是"检测工程的批量推理"一进队列就 AttributeError（任务变 failed）。
+      队列会把异常记成 failed 而不弹窗，用户只看到"跑了一下就说失败了"。
+    """
+    import inspect
+    import re
+    from ui.main_window import MainWindow
+
+    for fn in (MainWindow._dispatch_batch_inference, MainWindow._batch_inference):
+        src = inspect.getsource(fn)
+        names = set(re.findall(r"self\.(_[A-Za-z0-9_]+)\(", src))
+        missing = sorted(n for n in names if not hasattr(MainWindow, n))
+        assert not missing, "%s 里调了不存在的方法：%s" % (fn.__name__, missing)
 
 
 def test_no_reset_needed_anywhere():
@@ -417,7 +455,10 @@ def main():
         ("queue.running", test_running_property),
         ("★ 取消排队项不动全局标志", test_on_task_cancel_does_not_touch_global),
         ("★ 停止按钮只打同类任务", test_stop_buttons_only_hit_matching_kind),
-        ("★ _active_stop 优先看任务标志", test_active_stop_prefers_task_flag),
+        ("★ 停止训练不误伤裸线程推理", test_stop_training_does_not_stop_bare_infer),
+        ("★ 停止推理不动训练的全局标志", test_stop_infer_does_not_touch_training_flag),
+        ("推理令牌各自独立", test_infer_tokens_are_per_run),
+        ("分派目标方法都存在", test_dispatch_targets_exist),
         ("★ 新任务不需要谁复位", test_no_reset_needed_anywhere),
         ("★ 分类训练走队列且标志接对", test_cls_training_goes_through_queue),
     ]

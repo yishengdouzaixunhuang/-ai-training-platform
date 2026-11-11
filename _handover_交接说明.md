@@ -38,7 +38,8 @@
 "C:/aitp_venv/Scripts/python.exe" -u _probe_menu_entry.py # 两个菜单入口能打开（原来必崩）
 "C:/aitp_venv/Scripts/python.exe" _probe_dialogs_shot.py  # 把两个对话框渲染成 PNG 看版面
 "C:/aitp_venv/Scripts/python.exe" tests/test_counts_cache.py  # 类别统计缓存 16 条（该失效时必须失效）
-"C:/aitp_venv/Scripts/python.exe" tests/test_task_isolation.py  # 任务级停止标志 10 条（两个任务同时在队列里）
+"C:/aitp_venv/Scripts/python.exe" tests/test_task_isolation.py  # 任务级停止标志 13 条（两个任务同时在队列里）
+"C:/aitp_venv/Scripts/python.exe" tests/test_result.py           # 统一返回与错误码 11 条（含真实模块已用上）
 "C:/aitp_venv/Scripts/python.exe" -u _probe_counts_ui.py     # 真实窗口 A→B→切回，表格文字必须一致
 ```
 
@@ -382,15 +383,47 @@
     队列任务 `stop_check=lambda: ctx.task.stop_flag`；深层循环（`BatchRunner`/OCR）用
     `self._active_stop()`（有任务上下文就问任务，没有才看全局）；「停止」按钮走
     `_cancel_running_task(kind)`，**只打同类**正在跑的那个。
-    ⚠️ `self._stop_flag` **还在**：无队列的老路径（`_batch_inference` 兜底、分类训练兜底、
-       检测训练）仍用它。**新写的流程别再用它** —— 用 `_active_stop()`，或在 ctx 里问任务。
-       等这些路径全入队后才能删，现在删就是"删了半边"。
+    ★ 2026-11-11 第二轮（审核实测）：「分家」原来**只对队列任务成立**。分类批量 /
+       三视图 / 检测批量 / OCR 都是裸线程，走 `_active_stop()` 的全局兜底 ⇒
+       点「停止训练」会把正在跑的推理静默停掉。现在：
+       - **`_active_stop()` 已删除**（它靠单槽 `_active_infer_ctx` 猜"我是哪个任务"，
+         有第二个任务就必错）。别再把它加回来。
+       - 改成 `_infer_stop(stop=None)`：队列任务传自己的标志，裸线程推理现造一个
+         `threading.Event` 令牌（存在 `self._infer_stops`，`_stop_infer_tokens()` 统一点亮）。
+         五个推理入口都把 `stop` 显式往下传，深层 `BatchRunner(stop_check=stop)`。
+       - 令牌**不写 `finally: release()`** —— "每个出口都要记得复位"就是旧 bug 的根因；
+         已置位的旧令牌不影响下一轮（每次现造），超过 32 个自动瘦身。
+    ⚠️ `self._stop_flag` **还在**，但只剩一个用途：**没有队列控件时的训练兜底线程**。
+       推理一行都不读它了。**新写的流程别再用它** —— 走 ctx 里的任务标志，或 `_infer_stop()`。
+       等所有训练/推理都入队后才能删，现在删就是"删了半边"。
+    ⚠️ 同轮还抓到一个真 bug：`_dispatch_batch_inference` 调的 `_start_det_batch_inference`
+       **全项目不存在**（真名 `_run_det_batch_inference`）⇒ 检测工程批量推理一进队列就
+       AttributeError，队列记成 failed 且不弹窗。已修，并加了"分派方法必须存在"的静态用例。
     ⚠️ 检测训练（YOLO）仍未入队，走它自己的 `_det_trainer.stop()`；要统一得先让它入队。
     ⚠️ **这类 bug 不能拿"跑一遍不崩"当验证**：复现窗口是"A 正在跑、B 还在排队"的那一瞬间。
        `tests/test_task_isolation.py` 就是按这个时序造的（起一个卡住的任务当"正在跑的那个"，
        再塞第二个进去，然后对第二个动手），并且把**旧的缺陷形状**逐条塞回去验证它会红（7/7）。
     ⚠️ 顺手记一条：`new_table()` 那类"看起来像已经算过一次"的辅助函数害人不浅 ——
        本轮又遇到一次（`TaskQueue.running` 之前是私有 `_running`，测试想验"当前任务"就得自己造）。
+
+34. **失败要能判定：`core/result.py` 已落地，迁一个模块算一个**（2026-11-11，清单 P0-1）
+    全局 610 处 `except Exception:`、220 处紧跟 `pass` —— 问题不是难看，是**失败没有语义**：
+    "缓存坏了"和"缓存没建过"返回同一个值，日志里一个字都没有。
+    现在 `core/result.py` 给新代码用（**零侵入**，老代码照旧）：
+    - `Result.success(v)` / `Result.fail(code, msg, where=...)`；`bool(r) == r.ok`
+      ⇒ `if save(...)` 这种老写法不改也能跑，可以一个文件一个文件迁。
+    - `ErrCode` 是**字符串常量**（`"corrupt"`/`"io"`/`"not_found"`…），日志里能直接 grep。
+      `ErrCode.BENIGN = (OK, NOT_FOUND)` 表示"本来就没有"，调用方不该报警。
+    - `ok` 是**属性**不是字段 —— 构造不出 `ok=True` 又 `code=IO` 的矛盾对象；
+      `fail(ErrCode.OK, ...)` 会被当场纠成 `UNKNOWN`。
+    - `@guard(ErrCode.IO, where="...")` 给会抛异常的老函数套一层；
+      函数本来就返回 Result 时**原样透传**，不会包第二层。
+    已迁移的**唯一真实模块**：`core/mask_stats_cache`（load/save），四种静默失败拆成
+    `not_found / corrupt / version / io`；`main_window` 的调用点会在日志里写
+    「[掩膜缓存] corrupt / load: … —— 本次全量重算」（以前只表现为"打开工程慢 6 秒"）。
+    ⚠️ 失败时 `value` 是 `None`，取默认值要 `.unwrap_or({})`，别直接 `.value`。
+    ⚠️ 下一步迁移建议按"失败最该被看见"排序：`ui/task_queue._save_history`（静默吞异常）、
+       `ui/class_table` 的两处 JSON 读取。**别一口气改 610 处** —— 那等于重写整个错误处理。
 
 ## 8. 换电脑 / 换机器维护 SOP
 

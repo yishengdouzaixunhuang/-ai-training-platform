@@ -69,8 +69,13 @@ class OcrOcvMixin:
         import threading
         threading.Thread(target=run, daemon=True).start()
 
-    def _run_ocr_batch(self):
-        """Run batch OCR on all images."""
+    def _run_ocr_batch(self, *, stop=None):
+        """Run batch OCR on all images.
+
+        `stop` 由队列任务传自己的标志；直接点按钮时为 None ⇒ 走 `_infer_stop()`
+        现造的令牌（见那边注释：不能靠猜"我是哪个任务"）。
+        """
+        stop = self._infer_stop(stop)
         if not self.current_project:
             return
         pd = str(self.pm.get_project_dir(self.current_project["name"]))
@@ -98,7 +103,7 @@ class OcrOcvMixin:
                         self.log_signal.emit("[%d/%d] %s: FAILED - %s" % (i, total, fname, err))
                     ui_call(self.ocr_progress.setMaximum, total)
                     ui_call(self.ocr_progress.setValue, i)
-                br = BatchRunner(flow, project_dir=pd, stop_check=self._active_stop)
+                br = BatchRunner(flow, project_dir=pd, stop_check=stop)
                 br.run(images, on_progress=on_progress)
                 # 保存批量推理结果到 ocr_results.json 文件
                 import json as _json
@@ -313,7 +318,7 @@ class OcrOcvMixin:
                     ok_cnt += 1
                 else:
                     ng_cnt += 1
-            br = BatchRunner(flow, project_dir=pd, stop_check=self._active_stop)
+            br = BatchRunner(flow, project_dir=pd, stop_check=stop)
             br.run(images, on_progress=on_progress)
             self.log_signal.emit(f"OCV batch: {ok_cnt} OK, {ng_cnt} NG out of {len(images)}")
             ui_call(self.ocv_status.setText, "Ready")
