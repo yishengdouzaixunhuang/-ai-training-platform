@@ -7,6 +7,9 @@
               `def test_xxx` 会让**前一条用例静默消失**，数量对不上却没人发现，
               症状和类内重名一模一样）
 
+扫描范围包含根目录的 `.py`（`main.py` / `launcher.py` 是程序入口），
+只排除一次性探针 `_probe_*.py`。
+
 ★ 为什么要有这个文件（那两次事故）：
 
   ① 把"切换工程时清画布"的字段清单从 `MainWindow` 搬进 `AnnotationCanvas.reset_view()`，
@@ -38,6 +41,13 @@ SCAN_DIRS = ("ui", "core", "training", "inference", "flow", "annotation",
              "classification", "detection", "ocr", "ocv", "tools", "scripts", "tests")
 SKIP_DIRS = {"__pycache__", "_attic", "vendor", "wheels", "installers", "dist2",
              ".git", ".obsidian", "node_modules"}
+
+# 根目录的 .py 也要扫：`main.py` 是**程序入口**（288 行，全局 QSS + 一堆初始化），
+# `launcher.py` 同理。它们不在任何子目录里，第一版漏掉了 —— 里面若出现同名覆盖，
+# 症状和 `reset_view` 那次一样（后定义的静默赢），但程序连启动都可能是错的。
+# 一次性探针（`_probe_*.py`）排除：它们是临时脚本，不进版本库也不参与运行。
+SCAN_ROOT_FILES = True
+ROOT_SKIP_PREFIX = ("_probe_",)
 
 # 允许同名的装饰器：property 家族的 getter/setter/deleter、typing.overload、
 # functools.singledispatch 的 register —— 这些是**语言特性**，不是覆盖。
@@ -115,7 +125,25 @@ def scan_source(src, filename):
     return bad
 
 
+def root_file_ok(fn):
+    """根目录的这个文件名该不该收。
+
+    抽成纯函数是为了**能直接测规则本身**：`_probe_*.py` 不进版本库，
+    `git archive` 出来的副本里根本没有它们，靠"扫出来的列表里没有 _probe_"
+    去断言等于空转（变异检验时抓到了这一点）。
+    """
+    if not fn.endswith(".py"):
+        return False
+    return not any(fn.startswith(pre) for pre in ROOT_SKIP_PREFIX)
+
+
 def iter_files():
+    if SCAN_ROOT_FILES:
+        for fn in sorted(os.listdir(ROOT)):
+            p = os.path.join(ROOT, fn)
+            if not os.path.isfile(p) or not root_file_ok(fn):
+                continue
+            yield p
     for d in SCAN_DIRS:
         base = os.path.join(ROOT, d)
         if not os.path.isdir(base):
@@ -242,6 +270,31 @@ def test_scanner_ignores_conditional_definitions():
 
 # ---------------------------------------------------------------- 全项目
 
+def test_root_entry_files_are_scanned():
+    """★ 根目录的 `main.py` / `launcher.py` 必须在扫描范围内。
+
+    ★ 审核 2026-11-12 建议：`main.py` 是**程序入口**（全局 QSS + 初始化），
+      它不在任何子目录里，第一版只扫 `SCAN_DIRS` ⇒ 它内部若有同名方法覆盖，
+      这条护栏扫不到，而症状和 `reset_view` 那次一样（后定义的静默赢）。
+      一次性探针 `_probe_*.py` 仍然排除（临时脚本，不进版本库）。
+    """
+    # ① 规则本身（不依赖磁盘上有没有探针文件）
+    for good in ("main.py", "launcher.py", "make_xlsx.py"):
+        assert root_file_ok(good), "根目录 %s 应当被扫描" % good
+    for bad in ("_probe_hang.py", "_probe_switch_canvas.py"):
+        assert not root_file_ok(bad), "一次性探针 %s 不该进扫描范围" % bad
+    assert not root_file_ok("notes.txt"), "非 .py 不该进扫描范围"
+    assert not root_file_ok("README.md"), "非 .py 不该进扫描范围"
+
+    # ② 实际列表（真实仓库里）
+    files = list(iter_files())
+    roots = {os.path.basename(p) for p in files if os.path.dirname(p) == ROOT}
+    for must in ("main.py", "launcher.py"):
+        assert must in roots, "根目录 %s 不在扫描范围内（入口文件的重名扫不到）" % must
+    probes = {n for n in roots if n.startswith("_probe_")}
+    assert not probes, "一次性探针不该进扫描范围：%r" % sorted(probes)
+
+
 def test_tests_dir_is_scanned():
     """★ `tests/` 必须在扫描范围内 —— 否则测试文件里的重名永远查不到。
 
@@ -267,7 +320,7 @@ def test_source_parse_failures_are_zero():
       测试照样绿。
     """
     hits, scanned = _scan_all()
-    assert scanned > 150, "只扫到 %d 个文件，范围异常" % scanned
+    assert scanned >= 190, "只扫到 %d 个文件，范围被改小了？" % scanned
     assert not PARSE_FAILURES, (
         "有 %d 个文件解析不了，扫描结果不可信：\n  " % len(PARSE_FAILURES)
         + "\n  ".join("%s:%s %s" % (f, ln, msg[:70]) for f, ln, msg in PARSE_FAILURES[:10])
@@ -293,6 +346,7 @@ def main():
         ("扫描器自检：抓得到模块级重名", test_scanner_catches_module_duplicate),
         ("扫描器自检：不误报 property/overload", test_scanner_ignores_property_and_overload),
         ("扫描器自检：不误报条件定义", test_scanner_ignores_conditional_definitions),
+        ("根目录入口文件在扫描范围内", test_root_entry_files_are_scanned),
         ("tests/ 在扫描范围内", test_tests_dir_is_scanned),
         ("所有文件都能解析", test_source_parse_failures_are_zero),
         ("全项目无同名覆盖", test_no_real_duplicate_in_project),

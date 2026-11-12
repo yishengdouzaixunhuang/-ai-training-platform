@@ -41,7 +41,7 @@
 "C:/aitp_venv/Scripts/python.exe" tests/test_task_isolation.py  # 任务级停止标志 15 条（两个任务同时在队列里 + OCV 路径）
 "C:/aitp_venv/Scripts/python.exe" tests/test_undefined_names.py  # 未定义名字扫描（改完批量替换必跑）
 "C:/aitp_venv/Scripts/python.exe" tests/test_project_switch_view.py  # 切换工程后视图同步 10 条（含哨兵值）
-"C:/aitp_venv/Scripts/python.exe" tests/test_duplicate_defs.py      # 同名定义扫描 7 条（模块级+类内，搬方法/改名前必跑）
+"C:/aitp_venv/Scripts/python.exe" tests/test_duplicate_defs.py      # 同名定义扫描 8 条（根目录+模块级+类内，搬方法/改名前必跑）
 "C:/aitp_venv/Scripts/python.exe" tests/test_result.py           # 统一返回与错误码 11 条（含真实模块已用上）
 "C:/aitp_venv/Scripts/python.exe" -u _probe_counts_ui.py     # 真实窗口 A→B→切回，表格文字必须一致
 ```
@@ -490,10 +490,16 @@
        （审核 2026-11-11 指出的场景：前一条用例静默消失，条数变少却没人发现）。
        只看**直接子节点**，所以 `if 平台: def f()` / `try-except: def f()` 这类条件定义不误报。
     排除语言允许的情形：`@property` + `@x.setter/getter/deleter`、`typing.overload`、
-    `singledispatch.register`。当前 191 个 `.py` 里 **0 处**真重名（4 处 property 对被正确放过）。
+    `singledispatch.register`。当前 194 个 `.py` 里 **0 处**真重名（4 处 property 对被正确放过）。
+    ★ 扫描范围**含根目录**（`main.py` / `launcher.py` 是程序入口，不在任何子目录里），
+      只排除一次性探针 `_probe_*.py`。判断逻辑抽成纯函数 `root_file_ok(fn)` ——
+      原因见下一条。
     ⚠️ 另一条假绿也堵了：解析不了的文件原来被静默跳过（`except SyntaxError: return []`），
        大半个项目读不进来时结果永远是"0 处"而测试照绿。现在 `test_source_parse_failures_are_zero`
        断言解析失败数**必须为 0**，`test_tests_dir_is_scanned` 断言 `tests/` 真的在范围内。
+    ⚠️ 写这类断言时**别依赖"环境里恰好存在某样东西"**：第一版用"扫出来的列表里没有
+       `_probe_`"来证明前缀过滤生效，而 `git archive` 的副本里根本没有 `_probe_*.py`
+       ⇒ 变异时这条断言没红（空转）。改成断言纯函数 `root_file_ok("_probe_hang.py") is False`。
     ⚠️ 它与 `test_undefined_names.py` 互补：那个查"名字不存在"，这个查"名字存在两份"。
     ⚠️ 读源码给 `ast.parse` 时**传 bytes**，别 `io.open(encoding="utf-8")` ——
        本项目一半文件带 UTF-8 BOM，读成 str 会变成 `U+FEFF` 然后满屏"语法错误"。
