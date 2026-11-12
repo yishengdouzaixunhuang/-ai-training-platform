@@ -294,14 +294,26 @@ def test_save_preserves_unknown_keys():
     assert raw.get("batch_size") == 3, raw
 
 
-def test_save_ignores_unknown_input_keys():
-    """调用方打错字（传了个 schema 没有的键）不该被写进文件。"""
+def test_save_reports_ignored_keys():
+    """★ 调用方打错字：不写进文件，但**必须在返回值里报出来**。
+
+    ★ 审核 2026-11-12 指出的：原来这里静默丢弃 —— 调用方以为保存成功了，
+      下次读出来还是老值，日志一个字都没有。那和 P0-1 要治的"失败没语义"是同一个病。
+      不报错是对的（拼错的键确实不该写），但沉默不对。
+    """
     d = _tmpdir()
     p = os.path.join(d, ".train_settings.json")
-    settings.save("train", {"epoches": 99, "epochs": 5}, p)     # 拼错的 epoches
+    r = settings.save("train", {"epoches": 99, "epochs": 5}, p)     # 拼错的 epoches
+    assert r.ok, "打错键不该让整次保存失败：%s" % r.code_text
     raw = _read(p)
     assert "epoches" not in raw, "拼错的键被写进配置了：%r" % raw
     assert raw.get("epochs") == 5, raw
+
+    rep = r.value
+    assert rep is not None, "save() 应返回 SaveReport"
+    assert rep.ignored == ("epoches",), \
+        "拼错的键必须出现在 ignored 里，实际 %r" % (rep.ignored,)
+    assert "epochs" in rep.written, rep.written
 
 
 def test_save_is_atomic_no_tmp_left():
@@ -440,6 +452,31 @@ def test_panel_save_keeps_unknown_keys():
     assert raw.get("future_flag") == "别丢", "面板保存把未知键抹掉了：%r" % raw
 
 
+def test_panel_save_logs_ignored_keys():
+    """★ 真实调用点：拼错的键要被写进日志，不能沉默。
+
+    怎么造：把 `_collect_panel_train_settings` 换成返回带 typo 的字典 ——
+    面板正常收集不会拼错，不换成它这条分支就永远测不到（写了不验）。
+    """
+    w = window()
+    d = _tmpdir()
+    p = os.path.join(d, ".train_settings.json")
+    w._train_settings_path = lambda: p
+    orig = w._collect_panel_train_settings
+    w._collect_panel_train_settings = lambda: {"epochs": 12, "epohcs": 200}
+    logs = _audit_log(w)
+    try:
+        w._save_panel_train_settings()
+    finally:
+        w._collect_panel_train_settings = orig
+
+    raw = _read(p) if os.path.exists(p) else {}
+    assert raw.get("epochs") == 12, "正常的键没写进去：%r" % raw
+    assert "epohcs" not in raw, "拼错的键被写进文件了：%r" % raw
+    assert any("epohcs" in m for m in logs), \
+        "★ 拼错的键没有被报出来（日志里找不到 epohcs）：%r" % logs
+
+
 def main():
     print("=== 配置统一入口（core/settings.py）回归测试 ===")
     checks = [
@@ -458,7 +495,7 @@ def main():
         ("validate 为每个坏键各报一条", test_validate_names_every_bad_key),
         ("save → load 往返", test_save_roundtrip),
         ("save 保留未知键", test_save_preserves_unknown_keys),
-        ("save 忽略调用方打错的键", test_save_ignores_unknown_input_keys),
+        ("★ save 把打错的键报在 ignored 里", test_save_reports_ignored_keys),
         ("save 原子写、不留临时文件", test_save_is_atomic_no_tmp_left),
         ("★ 面板：合法配置真的灌进去", test_panel_load_applies_valid_config),
         ("★ 面板：坏字段在日志里被点名", test_panel_load_reports_bad_field),
@@ -466,6 +503,7 @@ def main():
         ("面板：配置坏了报一句但不动控件", test_panel_load_reports_corrupt),
         ("★ 面板：保存后能读回来", test_panel_save_roundtrip),
         ("★ 面板：保存不抹未知键", test_panel_save_keeps_unknown_keys),
+        ("★ 面板：拼错的键写进日志", test_panel_save_logs_ignored_keys),
     ]
     for name, fn in checks:
         check(name, fn)
@@ -476,7 +514,7 @@ def main():
         for name, exc in failures:
             print("   - %s: %s" % (name, exc))
         return 1
-    print("✅ 全部通过  %d/%d" % (len(checks), len(checks)))
+    print("✅ 全部通过  %d/%d 项通过" % (len(checks), len(checks)))
     return 0
 
 

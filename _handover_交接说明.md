@@ -42,7 +42,7 @@
 "C:/aitp_venv/Scripts/python.exe" tests/test_undefined_names.py  # 未定义名字扫描（改完批量替换必跑）
 "C:/aitp_venv/Scripts/python.exe" tests/test_project_switch_view.py  # 切换工程后视图同步 10 条（含哨兵值）
 "C:/aitp_venv/Scripts/python.exe" tests/test_duplicate_defs.py      # 同名定义扫描 8 条（根目录+模块级+类内，搬方法/改名前必跑）
-"C:/aitp_venv/Scripts/python.exe" tests/test_settings.py          # 配置统一入口 23 条（含真实调用点）
+"C:/aitp_venv/Scripts/python.exe" tests/test_settings.py          # 配置统一入口 24 条（含真实调用点 + ignored 键）
 "C:/aitp_venv/Scripts/python.exe" tests/test_result.py           # 统一返回与错误码 11 条（含真实模块已用上）
 "C:/aitp_venv/Scripts/python.exe" -u _probe_counts_ui.py     # 真实窗口 A→B→切回，表格文字必须一致
 ```
@@ -530,6 +530,14 @@
     ⚠️ `augment_flags` 只校验最外层是 dict，内层交给 `training.augment_config.merge_flags()`。
     ⚠️ 还剩 6 组配置没迁：`cls_train` / `ui` / `gate` / `task_history` / 自定义工程表 / 其余。
        别在清单上打勾，P0-2 标的是"进行中 1/7"。
+    ★ `save()` 返回 `SaveReport(written, ignored)` —— 调用方给了 schema 没声明的键
+      （多半拼错）**不写进文件，但会报回来**，调用点写日志。别把它改回"返回 True"：
+      `save({"epohcs": 200})` 静默不写，调用方以为存上了，下次读出来还是老值 ——
+      那正是 P0-1 要治的"失败没语义"。
+      往 `Result` 上加 `ignored_keys` 是另一种选择，但 `Result` 是通用容器，没这么做。
+    ⚠️ 为了让"拼错键写日志"这条**测得到**，收集逻辑抽成了
+      `_collect_panel_train_settings()`（测试里替换成返回带 typo 的字典）。
+      面板正常收集不会拼错，不抽出来那条分支永远走不到 = 写了不验。
 
 40. **跑测试会改写用户的 `.train_settings.json`**（2026-11-12 修）
     `closeEvent` 会调 `_save_panel_train_settings()`，而 `test_smoke_startup` /

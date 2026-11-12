@@ -379,10 +379,32 @@ def load(name, path=None):
     return Result.success(data)
 
 
+class SaveReport(object):
+    """写入结果：真写进去的键 + **被忽略的键**。
+
+    ★ `ignored` 存在的理由（2026-11-12 审核提的）：
+      `save({"epohcs": 200})` 这种拼写错误，原来会**静默不写** ——
+      调用方以为保存成功了，下次读出来还是老值，而且日志里一个字都没有。
+      那和 P0-1 要解决的问题（"失败要带语义，不能静默"）是同一个毛病。
+      不报错（拼错的键确实不该写），但必须让调用方**看得到**。
+    """
+
+    __slots__ = ("written", "ignored")
+
+    def __init__(self, written, ignored=()):
+        self.written = tuple(written)
+        self.ignored = tuple(ignored)
+
+    def __repr__(self):
+        return "SaveReport(written=%d, ignored=%r)" % (len(self.written), list(self.ignored))
+
+
 def save(name, values, path=None):
     """合并写入（只覆盖 schema 里声明过的键），原子替换。
 
-    文件里已有的**未知键会保留** —— 新版本写的字段不该被老版本一保存就抹掉。
+    - 文件里已有的**未知键会保留** —— 新版本写的字段不该被老版本一保存就抹掉；
+    - 传进来的**未知键不写**，但会在返回的 `SaveReport.ignored` 里列出来
+      （多半是调用方拼错了键名，静默丢掉最坑人）。
     """
     sc = _scope(name)
     p = path or sc.default_path()
@@ -403,10 +425,14 @@ def save(name, values, path=None):
             existing = {}
 
     payload = dict(existing)
+    written = []
+    ignored = []
     for key, val in values.items():
         if key in sc.fields:
             payload[key] = val
-    # 只写 schema 键 + 原有未知键；传进来的未知键忽略（那是调用方打错字）
+            written.append(key)
+        else:
+            ignored.append(key)          # 调用方打错字：不写，但要报出来
 
     tmp = None
     try:
@@ -420,7 +446,7 @@ def save(name, values, path=None):
             except OSError:
                 pass
         os.replace(tmp, p)
-        return Result.success(True)
+        return Result.success(SaveReport(written, ignored))
     except OSError as e:
         if tmp and os.path.exists(tmp):
             try:

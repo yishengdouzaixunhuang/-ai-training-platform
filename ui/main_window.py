@@ -7296,18 +7296,13 @@ class MainWindow(OcrOcvMixin, QMainWindow):
             # 否则又回到"面板一半新一半旧、没人知道为什么"。
             self.log("[训练参数] 应用到面板时出错：%s: %s" % (type(e).__name__, e))
 
-    def _save_panel_train_settings(self):
-        """把面板上的参数写回 .train_settings.json（关窗 / 开始训练时调用）。
+    def _collect_panel_train_settings(self):
+        """从控件收集训练参数 → dict；控件读不出来时返回 None（调用方放弃本次保存）。
 
-        ★ 2026-11-12（P0-2）：改走 `core.settings.save()` —— 合并写 + 原子替换。
-        改前是 `open(_p, "w")` 直接覆盖，写到一半断电/崩溃就留下半个 JSON，
-        下次启动走 `_load_panel_train_settings` 的异常分支 ⇒ 全部按默认值来，
-        用户所有训练设置一次丢光。原子写不会。
-        「合并」是指：文件里 schema 没声明过的键（新版本写的字段）会原样保留，
-        不会被这个老版本一保存就抹掉。
+        ★ 单独抽出来是为了**能被测试替换**：`save()` 现在会把"调用方给了 schema
+          没声明的键"报回来（多半是拼错了），而面板正常收集不会拼错 ——
+          没有这层，那条日志分支就永远测不到，等于写了不验。
         """
-        from core import settings as _settings
-
         s = {}
         try:
             if hasattr(self, "epochs_spin"):
@@ -7341,11 +7336,34 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         except Exception as e:
             self.log("[训练参数] 收集面板参数时出错，本次不保存：%s: %s"
                      % (type(e).__name__, e))
+            return None
+        return s
+
+    def _save_panel_train_settings(self):
+        """把面板上的参数写回 .train_settings.json（关窗 / 开始训练时调用）。
+
+        ★ 2026-11-12（P0-2）：改走 `core.settings.save()` —— 合并写 + 原子替换。
+        改前是 `open(_p, "w")` 直接覆盖，写到一半断电/崩溃就留下半个 JSON，
+        下次启动走 `_load_panel_train_settings` 的异常分支 ⇒ 全部按默认值来，
+        用户所有训练设置一次丢光。原子写不会。
+        「合并」是指：文件里 schema 没声明过的键（新版本写的字段）会原样保留，
+        不会被这个老版本一保存就抹掉。
+        「被忽略的键」会写进日志 —— 拼错的键名不写是对的，但沉默着不写最坑人。
+        """
+        from core import settings as _settings
+
+        s = self._collect_panel_train_settings()
+        if s is None:
             return
 
         res = _settings.save("train", s, self._train_settings_path())
         if not res.ok:
             self.log("[训练参数] %s" % res.code_text)
+            return
+        rep = res.value
+        if rep is not None and rep.ignored:
+            self.log("[训练参数] 保存时忽略了未声明的键：%s（键名拼错了？）"
+                     % ", ".join(rep.ignored))
 
     def _save_cls_train_settings(self):
         """Save ALL classification training settings to project dir (.cls_train_settings.json)."""
