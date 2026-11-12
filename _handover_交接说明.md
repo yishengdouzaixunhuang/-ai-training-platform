@@ -42,6 +42,7 @@
 "C:/aitp_venv/Scripts/python.exe" tests/test_undefined_names.py  # 未定义名字扫描（改完批量替换必跑）
 "C:/aitp_venv/Scripts/python.exe" tests/test_project_switch_view.py  # 切换工程后视图同步 10 条（含哨兵值）
 "C:/aitp_venv/Scripts/python.exe" tests/test_duplicate_defs.py      # 同名定义扫描 8 条（根目录+模块级+类内，搬方法/改名前必跑）
+"C:/aitp_venv/Scripts/python.exe" tests/test_settings.py          # 配置统一入口 23 条（含真实调用点）
 "C:/aitp_venv/Scripts/python.exe" tests/test_result.py           # 统一返回与错误码 11 条（含真实模块已用上）
 "C:/aitp_venv/Scripts/python.exe" -u _probe_counts_ui.py     # 真实窗口 A→B→切回，表格文字必须一致
 ```
@@ -515,6 +516,33 @@
     （重名方法 / 装饰器包装 / 条件导入都会让你读到的那份不是执行的那份）。
     同理，断言要挑"没有别的路径会顺手修好"的字段：切工程后 `current_image_path`
     会被首图预览覆盖，所以拿它当唯一断言等于没验。
+
+39. **配置读写统一走 `core/settings.py`（P0-2 第一批，1/7）**（2026-11-12）
+    把配置声明成一张表，`load()` 逐字段校验：缺失补默认（**不算错误**）、
+    类型错/超范围报 `invalid` 并指名键、未知键保留、文件坏/不存在各自错误码。
+    `save()` 合并写 + 原子替换（临时文件 + fsync + `os.replace`）。
+    已迁两个真实调用点：`_load_panel_train_settings` / `_save_panel_train_settings`。
+    关键的行为改进：**一个坏字段不再拖垮整份配置** ——
+    改前 `int(s.get("epochs"))` 抛异常被 `except: pass` 吞掉，后面所有字段都不再加载，
+    面板一半旧值一半文件值，日志一个字都没有。
+    ⚠️ `validate()` 是唯一判据，`merge()` 只认它返回的 `Problem`。别在 merge 里另判一套。
+    ⚠️ 超范围是"夹到边界"、类型错才是"退回默认值" —— 前者保住用户意图，后者没意图可保。
+    ⚠️ `augment_flags` 只校验最外层是 dict，内层交给 `training.augment_config.merge_flags()`。
+    ⚠️ 还剩 6 组配置没迁：`cls_train` / `ui` / `gate` / `task_history` / 自定义工程表 / 其余。
+       别在清单上打勾，P0-2 标的是"进行中 1/7"。
+
+40. **跑测试会改写用户的 `.train_settings.json`**（2026-11-12 修）
+    `closeEvent` 会调 `_save_panel_train_settings()`，而 `test_smoke_startup` /
+    `test_load_progress` / `test_close_event` 都会建窗口再 `close()` ⇒
+    **跑一遍测试，用户的 epochs / batch_size / tile_size 就被换成测试窗口里的值**。
+    以前没人发现，是因为没人 diff 这个文件。
+    现在三个测试在关窗之前把 `_train_settings_path` 指到临时文件
+    （与 `.task_history.json` 那套做法一致）。**新写会关窗的测试请照做**：
+    ```python
+    w._train_settings_path = lambda: os.path.join(
+        tempfile.mkdtemp(prefix="aitp_cfg_"), ".train_settings.json")
+    ```
+    验证办法：跑全套前后 `md5sum .train_settings.json .task_history.json`，必须一致。
 
 ## 8. 换电脑 / 换机器维护 SOP
 

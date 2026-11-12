@@ -7232,60 +7232,84 @@ class MainWindow(OcrOcvMixin, QMainWindow):
                             ".train_settings.json")
 
     def _load_panel_train_settings(self):
-        """把 .train_settings.json 的参数灌回面板控件（重启后保留用户设置）。"""
+        """把 .train_settings.json 的参数灌回面板控件（重启后保留用户设置）。
+
+        ★ 2026-11-12（重构清单 P0-2）：改走 `core.settings`。
+        改前是 `int(s.get("epochs", 200))` 硬转 + 末尾一个 `except: pass`：
+        一个字段被手改成 `"epochs": "200 次"`，`int()` 就抛异常 →
+        **后面的字段一个都不再加载**，面板一半旧值一半文件值，日志里一个字都没有。
+        现在逐字段校验：坏的那个退回默认值、其余照常加载，并在日志里点名。
+        默认值只有一份（`core/settings.py` 的 schema），这里不再重复写。
+        """
+        from core import settings as _settings
+
         try:
-            import json as _json
-            _p = self._train_settings_path()
-            if not os.path.exists(_p):
-                return
-            with open(_p, "r", encoding="utf-8") as _f:
-                s = _json.load(_f) or {}
+            res = _settings.load("train", self._train_settings_path())
+        except Exception as e:                       # 声明表被改坏之类，别让窗口起不来
+            self.log("[训练参数] 读取异常：%s: %s" % (type(e).__name__, e))
+            return
+
+        if res.value is None:
+            # 不存在 / JSON 坏了 / 读不了 —— 与改前一致：**一个控件都不动**。
+            # 「不存在」是正常情况（第一次启动），不刷日志；坏了才值得说一句。
+            if not res.benign:
+                self.log("[训练参数] %s —— 面板保持当前值" % res.code_text)
+            return
+        if not res.ok:
+            # ★ 有字段被退回默认值/夹到边界，必须说出来 —— 否则用户以为设置丢了
+            self.log("[训练参数] %s —— 这些字段已退回默认值" % res.code_text)
+
+        s = res.value.values
+        try:
             if hasattr(self, "epochs_spin"):
-                self.epochs_spin.setValue(int(s.get("epochs", 200)))
+                self.epochs_spin.setValue(s["epochs"])
             if hasattr(self, "early_stop_spin"):
-                self.early_stop_spin.setValue(int(s.get("early_stop_patience", 0)))
+                self.early_stop_spin.setValue(s["early_stop_patience"])
             if hasattr(self, "batch_spin"):
-                self.batch_spin.setValue(int(s.get("batch_size", 8)))
+                self.batch_spin.setValue(s["batch_size"])
             if hasattr(self, "kfold_spin"):
-                self.kfold_spin.setValue(int(s.get("k_folds", 1)))
+                self.kfold_spin.setValue(s["k_folds"])
             if hasattr(self, "resume_check"):
-                self.resume_check.setChecked(bool(s.get("resume", False)))
+                self.resume_check.setChecked(s["resume"])
             if hasattr(self, "tr_model_combo"):
-                _m = str(s.get("model", "deeplabv3"))
+                _m = s["model"]
                 if self.tr_model_combo.findText(_m) < 0:
                     self.tr_model_combo.addItem(_m)
                 self.tr_model_combo.setCurrentText(_m)
             if hasattr(self, "tr_size_combo"):
-                self.tr_size_combo.setCurrentText(str(s.get("image_size", 256)))
+                self.tr_size_combo.setCurrentText(str(s["image_size"]))
             if hasattr(self, "tr_loss_combo"):
-                _l = str(s.get("loss", "ce+lovasz"))
+                _l = s["loss"]
                 if self.tr_loss_combo.findText(_l) < 0:
                     self.tr_loss_combo.addItem(_l)
                 self.tr_loss_combo.setCurrentText(_l)
             if hasattr(self, "tr_mode_combo"):
-                self.tr_mode_combo.setCurrentIndex(
-                    0 if str(s.get("infer_mode", "fine")) == "fine" else 1)
+                self.tr_mode_combo.setCurrentIndex(0 if s["infer_mode"] == "fine" else 1)
             if hasattr(self, "tr_tile_check"):
-                self.tr_tile_check.setChecked(bool(s.get("tile", False)))
+                self.tr_tile_check.setChecked(s["tile"])
             if hasattr(self, "tr_tile_spin"):
-                self.tr_tile_spin.setValue(int(s.get("tile_size", 256)))
+                self.tr_tile_spin.setValue(s["tile_size"])
             if hasattr(self, "tr_tile_stride_spin"):
-                self.tr_tile_stride_spin.setValue(int(s.get("tile_stride", 75)))
-        except Exception:
-            pass
+                self.tr_tile_stride_spin.setValue(s["tile_stride"])
+        except Exception as e:
+            # 这里只可能是控件缺失/类型意外。别静默：日志里留一条，
+            # 否则又回到"面板一半新一半旧、没人知道为什么"。
+            self.log("[训练参数] 应用到面板时出错：%s: %s" % (type(e).__name__, e))
 
     def _save_panel_train_settings(self):
-        """把面板上的参数写回 .train_settings.json（关窗 / 开始训练时调用）。"""
+        """把面板上的参数写回 .train_settings.json（关窗 / 开始训练时调用）。
+
+        ★ 2026-11-12（P0-2）：改走 `core.settings.save()` —— 合并写 + 原子替换。
+        改前是 `open(_p, "w")` 直接覆盖，写到一半断电/崩溃就留下半个 JSON，
+        下次启动走 `_load_panel_train_settings` 的异常分支 ⇒ 全部按默认值来，
+        用户所有训练设置一次丢光。原子写不会。
+        「合并」是指：文件里 schema 没声明过的键（新版本写的字段）会原样保留，
+        不会被这个老版本一保存就抹掉。
+        """
+        from core import settings as _settings
+
+        s = {}
         try:
-            import json as _json
-            _p = self._train_settings_path()
-            s = {}
-            if os.path.exists(_p):
-                try:
-                    with open(_p, "r", encoding="utf-8") as _f:
-                        s = _json.load(_f) or {}
-                except Exception:
-                    s = {}
             if hasattr(self, "epochs_spin"):
                 s["epochs"] = int(self.epochs_spin.value())
             if hasattr(self, "early_stop_spin"):
@@ -7314,10 +7338,14 @@ class MainWindow(OcrOcvMixin, QMainWindow):
                 s["tile_size"] = int(self.tr_tile_spin.value())
             if hasattr(self, "tr_tile_stride_spin"):
                 s["tile_stride"] = int(self.tr_tile_stride_spin.value())
-            with open(_p, "w", encoding="utf-8") as _f:
-                _json.dump(s, _f, ensure_ascii=False, indent=2)
-        except Exception:
-            pass
+        except Exception as e:
+            self.log("[训练参数] 收集面板参数时出错，本次不保存：%s: %s"
+                     % (type(e).__name__, e))
+            return
+
+        res = _settings.save("train", s, self._train_settings_path())
+        if not res.ok:
+            self.log("[训练参数] %s" % res.code_text)
 
     def _save_cls_train_settings(self):
         """Save ALL classification training settings to project dir (.cls_train_settings.json)."""

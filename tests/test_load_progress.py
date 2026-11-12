@@ -15,6 +15,7 @@
 """
 import os
 import sys
+import tempfile
 import time
 import traceback
 
@@ -51,7 +52,13 @@ def _make_window():
 
     app = QApplication.instance() or QApplication(sys.argv)
     init_ui_invoker()
-    return app, MainWindow()
+    w = MainWindow()
+    # ★ 关窗时会自动保存训练参数（closeEvent → _save_panel_train_settings）。
+    #   这里是测试窗口，面板值不是用户的设置 —— 指到临时文件，别改写真配置。
+    #   （以前跑一遍测试，用户的 epochs / batch_size / tile_size 就被换成测试值了）
+    w._train_settings_path = lambda: os.path.join(
+        tempfile.mkdtemp(prefix="aitp_cfg_"), ".train_settings.json")
+    return app, w
 
 
 def test_hidden_by_default():

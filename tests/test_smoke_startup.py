@@ -10,6 +10,7 @@
 """
 import os
 import sys
+import tempfile
 import traceback
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -73,6 +74,11 @@ def test_mainwindow_constructs():
     init_ui_invoker()
 
     w = MainWindow()
+    # ★ 关窗时会自动保存训练参数（closeEvent → _save_panel_train_settings）。
+    #   这里是测试窗口，面板值不是用户的设置 —— 指到临时文件，别改写真配置。
+    #   （以前跑一遍测试，用户的 epochs / batch_size / tile_size 就被换成测试值了）
+    w._train_settings_path = lambda: os.path.join(
+        tempfile.mkdtemp(prefix="aitp_cfg_"), ".train_settings.json")
     assert w is not None
     # 关键控件存在性
     for attr in ("log_signal", "progress_signal", "refresh_list_signal"):
