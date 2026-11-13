@@ -88,16 +88,18 @@ def load_augment_flags():
         pass
     return dict(DEFAULT_AUGMENT_FLAGS)
 def save_augment_flags(flags):
+    """把增强开关写回 `.train_settings.json` 的 `augment_flags`。
+
+    ★ 2026-11-13：原来这段是"读-改-写"—— **合并逻辑是对的**（只改一个键，别的键保留），
+      但 `open(path, "w")` 直接覆盖，写到一半断电/崩溃就留下半个 JSON；
+      下次启动 `settings.load` 判 `corrupt`、面板一个控件都不动 ⇒ 整份训练参数按默认走。
+      现在走 `core.settings.save("train", ...)`：合并 + 原子替换。
+      行为不变（仍然只写 `augment_flags`），只是不再可能写坏文件。
+    """
     flags = merge_flags(flags)
-    path = _settings_path()
     try:
-        data = {}
-        if os.path.exists(path):
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-        data["augment_flags"] = flags
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
+        from core import settings as _settings
+        _settings.save("train", {"augment_flags": flags})
     except Exception:
         pass
 def _to_pil(img):

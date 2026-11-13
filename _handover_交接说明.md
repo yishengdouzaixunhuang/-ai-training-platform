@@ -42,7 +42,7 @@
 "C:/aitp_venv/Scripts/python.exe" tests/test_undefined_names.py  # 未定义名字扫描（改完批量替换必跑）
 "C:/aitp_venv/Scripts/python.exe" tests/test_project_switch_view.py  # 切换工程后视图同步 10 条（含哨兵值）
 "C:/aitp_venv/Scripts/python.exe" tests/test_duplicate_defs.py      # 同名定义扫描 8 条（根目录+模块级+类内，搬方法/改名前必跑）
-"C:/aitp_venv/Scripts/python.exe" tests/test_settings.py          # 配置统一入口 24 条（含真实调用点 + ignored 键）
+"C:/aitp_venv/Scripts/python.exe" tests/test_settings.py          # 配置统一入口 28 条（面板+对话框+增强设置三个写入者）
 "C:/aitp_venv/Scripts/python.exe" tests/test_result.py           # 统一返回与错误码 11 条（含真实模块已用上）
 "C:/aitp_venv/Scripts/python.exe" -u _probe_counts_ui.py     # 真实窗口 A→B→切回，表格文字必须一致
 ```
@@ -551,6 +551,42 @@
         tempfile.mkdtemp(prefix="aitp_cfg_"), ".train_settings.json")
     ```
     验证办法：跑全套前后 `md5sum .train_settings.json .task_history.json`，必须一致。
+
+41. **`.train_settings.json` 有 3 个写入者，谁都不能全量覆盖**（2026-11-13）
+    | 写入者 | 状态 | 说明 |
+    |---|---|---|
+    | `main_window._save_panel_train_settings` | 活 | 走 `settings.save`，合并 + 原子 |
+    | `training.augment_config.save_augment_flags` | 活 | 只改 `augment_flags`，合并 + 原子 |
+    | `ui.widgets.TrainSettingsDialog._save_and_accept` | **不可达** | 已修，见下 |
+    ⚠️ 那个对话框**当前没有任何地方构造它**：`main_window.py:8834` 那两行被注释掉了
+       （原注释"不再弹 Training Settings 窗（用户要求）"）。它原来只写 9 个键、
+       而文件有 15 个 —— 一旦有人照注释"回退成弹窗模式"，第一次点「确定」
+       就会静默删掉 `augment_flags / early_stop_patience / infer_mode /
+       tile / tile_size / tile_stride` 这 6 个键。**已改成 `settings.save`**。
+    ⚠️ 对话框**读** `tile`/`tile_size`/`tile_stride` 来初始化控件但**不写**它们
+       （面板那份才是权威）。别"顺手"补上——那会让对话框和面板互相覆盖，
+       这是产品决定，不是 bug 修复。
+    ⚠️ 判断"这个写入者会不会丢键"的最快办法：搜它是不是 `open(path, "w")`，
+       再看它写的键数是不是等于 schema 的键数。不等就会丢。
+
+42. **写变异脚本必须先过语法检查**（2026-11-13，审核建议，已落地）
+    变异把源码改出语法错误时，测试也会"红"—— 但那是 import 失败，什么也证明不了。
+    （2026-11-12 踩过：第 4 条变异把代码替换成了半句，报红是假的。）
+    现在每条变异改完先：
+    ```python
+    def parses(path):
+        try:
+            ast.parse(open(path, "rb").read(), path)   # 传 bytes，别读成 str
+            return True
+        except SyntaxError as e:
+            print("!! 变异把文件改坏（%s:%s %s）—— 判为无效" % (path, e.lineno, e.msg))
+            return False
+    ```
+    不通过就恢复并打印"[无效]"，**不进入跑测试那一步**。
+    ⚠️ 读源码时用 `utf-8-sig` 或直接喂 bytes：`training/augment_config.py` 带 BOM，
+       `utf-8` 解码会留 `U+FEFF`，`ast.parse` 报"非法字符"（本项目第二次栽在 BOM 上）。
+    ⚠️ 替换整个函数别用长字符串锚点（会被转义搞坏），用 `ast` 拿 `lineno/end_lineno`
+       切行更稳。
 
 ## 8. 换电脑 / 换机器维护 SOP
 

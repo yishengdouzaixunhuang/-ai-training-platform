@@ -25,6 +25,7 @@ from PyQt5.QtWidgets import (
     QDialogButtonBox,
     QFormLayout,
     QLabel,
+    QMessageBox,
     QSizePolicy,
     QSpinBox,
     QStackedWidget,
@@ -324,6 +325,26 @@ class TrainSettingsDialog(QDialog):
         }
 
     def _save_and_accept(self):
+        """把对话框上的值写回 `.train_settings.json`（**合并写 + 原子替换**）。
+
+        ★ 2026-11-13：改前是 `open(self.SETTINGS_FILE, "w")` **全量覆盖**，
+          而且只写 9 个键。文件里实际有 15 个键 ⇒ 点一次「确定」就抹掉 6 个：
+
+              augment_flags / early_stop_patience / infer_mode /
+              tile / tile_size / tile_stride
+
+          用户在对话框里只改一个 `batch_size`，分块训练设置、早停耐心值、
+          推理档位、增强参数全部被删掉（下次启动按默认值来），日志里一个字都没有。
+          现在走 `core.settings.save("train", ...)`：只覆盖本对话框负责的键，
+          其余原样保留，写入是原子的。
+
+        ⚠️ 这个对话框**当前没有被打开**：`main_window` 里构造它的两行被注释掉了
+           （注释原文"不再弹 Training Settings 窗（用户要求）"，改成直接读面板），
+           类本身留着是为了"回退成弹窗模式"。
+           正因如此这条路径**没人跑过**，烂在里面更不容易被发现 —— 所以照样修。
+        """
+        from core import settings as _settings
+
         data = {
             "epochs": self.epochs_spin.value(),
             "batch_size": self.batch_spin.value(),
@@ -337,8 +358,16 @@ class TrainSettingsDialog(QDialog):
         }
         try:
             os.makedirs(os.path.dirname(self.SETTINGS_FILE), exist_ok=True)
-            with open(self.SETTINGS_FILE, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2)
-        except Exception:
-            pass
+        except OSError:
+            pass                    # 目录建不出来时让 save() 去报，别在这里静默掉
+
+        res = _settings.save("train", data, self.SETTINGS_FILE)
+        if not res.ok:
+            # 对话框没有日志栏，交给父窗口；再没有就弹一句 —— 总之不能静默
+            msg = "[训练参数] %s" % res.code_text
+            parent = self.parent()
+            if parent is not None and hasattr(parent, "log"):
+                parent.log(msg)
+            else:
+                QMessageBox.warning(self, "训练参数未保存", msg)
         self.accept()

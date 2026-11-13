@@ -477,6 +477,163 @@ def test_panel_save_logs_ignored_keys():
         "★ 拼错的键没有被报出来（日志里找不到 epohcs）：%r" % logs
 
 
+# ---------------------------------------------------------------- 另外两个写入者
+
+#: 训练参数对话框只负责这 9 个键（其余由面板 / 增强设置各自维护）
+_DIALOG_KEYS = ("epochs", "batch_size", "model", "image_size", "k_folds",
+                "loss", "resume", "unet_base", "unet_depth")
+
+#: 对话框**不写**、但以前会被它抹掉的 6 个键
+_DIALOG_MUST_KEEP = ("augment_flags", "early_stop_patience", "infer_mode",
+                     "tile", "tile_size", "tile_stride")
+
+
+def _full_config():
+    """一份"满配"的配置：15 个键全给上非默认值，方便看谁被抹掉。"""
+    return {
+        "epochs": 200, "batch_size": 16, "model": "unet", "image_size": 256,
+        "k_folds": 1, "loss": "ce+lovasz", "resume": True,
+        "unet_base": 16, "unet_depth": 4,
+        "augment_flags": {"enabled": True, "flip": False},
+        "early_stop_patience": 30, "infer_mode": "fine",
+        "tile": True, "tile_size": 1024, "tile_stride": 75,
+    }
+
+
+def test_dialog_save_preserves_other_keys():
+    """★ `TrainSettingsDialog._save_and_accept()` 不许抹掉自己不负责的键。
+
+    改前它是 `open(path,"w")` 全量覆盖、只写 9 个键 —— 文件有 15 个，
+    点一次「确定」就删掉 6 个：augment_flags / early_stop_patience / infer_mode /
+    tile / tile_size / tile_stride。用户只改一个 batch_size，
+    分块训练设置、早停耐心、推理档位、增强参数全部回到默认，日志一个字没有。
+
+    ⚠️ 这个对话框目前**没有被打开**（main_window 里构造它的两行被注释掉了，
+       改成直接读面板），所以这是"埋着的雷"而不是正在丢数据 ——
+       但它保留的意义就是"回退成弹窗模式"，一回退就会踩到。
+    """
+    from ui.widgets import TrainSettingsDialog
+
+    w = window()
+    d = _tmpdir()
+    p = os.path.join(d, ".train_settings.json")
+    _write(p, _full_config())
+
+    orig_file = TrainSettingsDialog.SETTINGS_FILE
+    TrainSettingsDialog.SETTINGS_FILE = p
+    _audit_log(w)
+    try:
+        dlg = TrainSettingsDialog(w)
+        # 只改一个键，模拟"用户进来只想改 batch_size"
+        dlg.batch_spin.setValue(7)
+        dlg._save_and_accept()
+    finally:
+        TrainSettingsDialog.SETTINGS_FILE = orig_file
+
+    raw = _read(p)
+    assert raw.get("batch_size") == 7, "对话框改的值没写进去：%r" % raw.get("batch_size")
+    lost = [k for k in _DIALOG_MUST_KEEP if k not in raw]
+    assert not lost, "★ 对话框把不属于它的键抹掉了：%s" % lost
+    assert raw["tile_size"] == 1024, "分块尺寸被改了：%r" % raw.get("tile_size")
+    assert raw["augment_flags"] == {"enabled": True, "flip": False}, \
+        "增强参数被改了：%r" % (raw.get("augment_flags"),)
+
+
+def test_dialog_save_is_atomic():
+    """对话框也必须走 `os.replace` —— 不能又回到 `open(w)` 直接覆盖。"""
+    from ui.widgets import TrainSettingsDialog
+
+    w = window()
+    d = _tmpdir()
+    p = os.path.join(d, ".train_settings.json")
+    _write(p, _full_config())
+
+    calls = []
+    orig_replace = os.replace
+
+    def spy(src, dst):
+        calls.append(dst)
+        return orig_replace(src, dst)
+
+    orig_file = TrainSettingsDialog.SETTINGS_FILE
+    TrainSettingsDialog.SETTINGS_FILE = p
+    os.replace = spy
+    try:
+        dlg = TrainSettingsDialog(w)
+        dlg._save_and_accept()
+    finally:
+        os.replace = orig_replace
+        TrainSettingsDialog.SETTINGS_FILE = orig_file
+
+    assert calls, "★ 对话框没走 os.replace —— 不是原子写"
+    assert not [f for f in os.listdir(d) if f.endswith(".tmp")], "留了临时文件"
+
+
+def test_dialog_save_reports_failure():
+    """写不进去时要报出来（交给父窗口的日志），不能静默。
+
+    造一个必然失败的目标：把 SETTINGS_FILE 的父目录指到一个**普通文件**上，
+    `mkstemp` 会 NotADirectoryError → save 返回 io。
+    """
+    from ui.widgets import TrainSettingsDialog
+
+    w = window()
+    d = _tmpdir()
+    blocker = os.path.join(d, "not_a_dir")
+    _write(blocker, {"x": 1})                       # 这是个文件，不能当目录用
+    bad_path = os.path.join(blocker, ".train_settings.json")
+
+    orig_file = TrainSettingsDialog.SETTINGS_FILE
+    TrainSettingsDialog.SETTINGS_FILE = bad_path
+    logs = _audit_log(w)
+    try:
+        dlg = TrainSettingsDialog(w)
+        dlg._save_and_accept()
+    finally:
+        TrainSettingsDialog.SETTINGS_FILE = orig_file
+
+    assert any("训练参数" in m for m in logs), \
+        "★ 保存失败却没有任何提示：%r" % logs
+
+
+def test_augment_save_keeps_other_keys_and_is_atomic():
+    """`training.augment_config.save_augment_flags()` 只改 augment_flags，且必须原子。
+
+    它原来的"读-改-写"合并逻辑是对的（不丢键），但 `open(w)` 直接覆盖：
+    写一半崩溃就留半个 JSON，下次启动 `settings.load` 判 corrupt、面板不动
+    ⇒ 整份训练参数按默认走。
+    """
+    import training.augment_config as ac
+
+    d = _tmpdir()
+    p = os.path.join(d, ".train_settings.json")
+    _write(p, _full_config())
+
+    scope = settings.SCOPES["train"]
+    orig_root = scope.root
+    scope.root = d                      # 让默认路径指到临时目录
+    calls = []
+    orig_replace = os.replace
+
+    def spy(src, dst):
+        calls.append(dst)
+        return orig_replace(src, dst)
+
+    os.replace = spy
+    try:
+        ac.save_augment_flags({"flip": True, "noise": True})
+    finally:
+        os.replace = orig_replace
+        scope.root = orig_root
+
+    raw = _read(p)
+    assert raw["augment_flags"].get("noise") is True, "增强开关没写进去：%r" % raw["augment_flags"]
+    assert raw["epochs"] == 200 and raw["tile_size"] == 1024, \
+        "★ 增强设置把别的键改了：%r" % raw
+    assert len(raw) == 15, "键数从 15 变成 %d：%r" % (len(raw), sorted(raw))
+    assert calls, "★ 增强设置没走 os.replace —— 不是原子写"
+
+
 def main():
     print("=== 配置统一入口（core/settings.py）回归测试 ===")
     checks = [
@@ -504,6 +661,10 @@ def main():
         ("★ 面板：保存后能读回来", test_panel_save_roundtrip),
         ("★ 面板：保存不抹未知键", test_panel_save_keeps_unknown_keys),
         ("★ 面板：拼错的键写进日志", test_panel_save_logs_ignored_keys),
+        ("★ 对话框：保存不抹别的键", test_dialog_save_preserves_other_keys),
+        ("★ 对话框：走原子写", test_dialog_save_is_atomic),
+        ("★ 对话框：写失败要报出来", test_dialog_save_reports_failure),
+        ("★ 增强设置：只改自己的键 + 原子", test_augment_save_keeps_other_keys_and_is_atomic),
     ]
     for name, fn in checks:
         check(name, fn)
