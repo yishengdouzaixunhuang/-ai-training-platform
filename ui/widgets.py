@@ -276,6 +276,22 @@ class TrainSettingsDialog(QDialog):
         self.tile_mode_combo.setToolTip("滑窗遍历：友商口径，覆盖无死角但 98% 是背景块\n"
                                         "缺陷居中+负样本：只抽缺陷居中块+定量背景块，省约 10 倍算力")
         layout.addRow("取样方式:", self.tile_mode_combo)
+
+        # ★ 2026-11-13：这四个控件的值来自文件，但 `_save_and_accept()` **不写回它们**
+        #   （分块设置的权威在主面板上；写回去会和面板互相覆盖，见那个方法的注释）。
+        #   以前它们看着可以改、改了点「确定」却什么都没发生 —— **UI 在撒谎**：
+        #   用户把 1024 改成 512，下次打开还是 1024，只会来问"我改的分块怎么没了"。
+        #   所以置灰 + 明写去哪儿改（和上面 Augment 那行同一个处理方式）。
+        self.tile_hint = QLabel("分块 / 滑窗大小 / 步长 / 取样方式：请到主界面「分块」设置，"
+                                "这里只显示当前值")
+        self.tile_hint.setWordWrap(True)
+        self.tile_hint.setStyleSheet("color: #8A93A6;")
+        layout.addRow("Tiling:", self.tile_hint)
+        _tile_ro_tip = "以主界面「分块」设置为准；这里只显示当前值，改了不会保存"
+        for _w_ro in (self.tile_check, self.tile_spin,
+                      self.stride_spin, self.tile_mode_combo):
+            _w_ro.setEnabled(False)
+            _w_ro.setToolTip(_tile_ro_tip)
         self.kfold_spin = QSpinBox(); self.kfold_spin.setRange(1, 10); self.kfold_spin.setValue(saved.get("k_folds", 1))
         self.kfold_spin.setToolTip("1=no cross-validation, 5=5-fold CV")
         layout.addRow("K-Fold CV:", self.kfold_spin)

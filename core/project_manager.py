@@ -2,6 +2,7 @@
 """????"""
 import os
 import json
+import tempfile
 from datetime import datetime
 from pathlib import Path
 
@@ -29,8 +30,34 @@ class ProjectManager:
         return {}
 
     def _save_custom_dirs(self):
-        with open(self._custom_registry_path(), "w", encoding="utf-8") as f:
-            json.dump(self._custom_dirs, f, indent=2, ensure_ascii=False)
+        """原子写外部工程注册表（`.custom_projects.json`）。
+
+        ★ 2026-11-13：改前是 `open(w)` 直接覆盖。这份文件登记的是**所有外部工程**
+          的路径，写坏之后 `_load_custom_dirs()` 静默返回 {} —— 用户在「工程管理」里
+          看到的是"我的一堆外部工程全没了"（文件还在磁盘上，但平台不认）。
+          改成临时文件 + os.replace，写一半崩了也只是这次没写成。
+        """
+        path = self._custom_registry_path()
+        tmp = None
+        try:
+            d = os.path.dirname(os.path.abspath(path))
+            if d:
+                os.makedirs(d, exist_ok=True)
+            fd, tmp = tempfile.mkstemp(prefix=".custom_projects.", suffix=".tmp", dir=d)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(self._custom_dirs, f, indent=2, ensure_ascii=False)
+                f.flush()
+                try:
+                    os.fsync(f.fileno())
+                except OSError:
+                    pass
+            os.replace(tmp, path)
+        except OSError:
+            if tmp and os.path.exists(tmp):
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
 
     def _resolve_project_dir(self, name):
         """Return the actual project directory, checking custom dirs first."""

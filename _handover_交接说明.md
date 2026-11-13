@@ -43,6 +43,7 @@
 "C:/aitp_venv/Scripts/python.exe" tests/test_project_switch_view.py  # 切换工程后视图同步 10 条（含哨兵值）
 "C:/aitp_venv/Scripts/python.exe" tests/test_duplicate_defs.py      # 同名定义扫描 8 条（根目录+模块级+类内，搬方法/改名前必跑）
 "C:/aitp_venv/Scripts/python.exe" tests/test_settings.py          # 配置统一入口 28 条（面板+对话框+增强设置三个写入者）
+"C:/aitp_venv/Scripts/python.exe" tests/test_config_files.py      # 配置写入者 8 条（含"坏配置下平台仍能启动"）
 "C:/aitp_venv/Scripts/python.exe" tests/test_result.py           # 统一返回与错误码 11 条（含真实模块已用上）
 "C:/aitp_venv/Scripts/python.exe" -u _probe_counts_ui.py     # 真实窗口 A→B→切回，表格文字必须一致
 ```
@@ -587,6 +588,34 @@
        `utf-8` 解码会留 `U+FEFF`，`ast.parse` 报"非法字符"（本项目第二次栽在 BOM 上）。
     ⚠️ 替换整个函数别用长字符串锚点（会被转义搞坏），用 `ast` 拿 `lineno/end_lineno`
        切行更稳。
+
+43. **配置文件 × 写入者 有一张总表，改配置前先看一眼**（2026-11-13）
+    见 `docs/配置写入者清点.md`。三个要点：
+    ⚠️ **`core/config.load_config()` 是平台启动的第一步**（`main_window.__init__:176`
+       直接 `self.config = load_config()`，外面没有 try）。它原来是裸 `json.load`，
+       而 `save_config` 是非原子写 —— 保存时崩一次，下次**双击图标毫无反应**
+       （实测抛 JSONDecodeError）。现在读容错（坏文件改名 `*.bad` 留档 + 与
+       `DEFAULT_CONFIG` 合并）、写原子。别把 try 拿掉。
+    ⚠️ **`.custom_projects.json` 登记所有外部工程的路径**，写坏后
+       `_load_custom_dirs()` 静默返回 `{}` ⇒ 「工程管理」里外部工程全消失
+       （文件还在磁盘上）。已改原子写。
+    ⚠️ 判断一个新的写入者危不危险，三步：搜 `open(..., "w")` / `json.dump(` →
+       看它写的键数是否等于这份文件的全部键（等于=全量覆盖，小于=合并）→
+       看有没有 `os.replace`（没有就是非原子，半截文件 = 读侧整份作废）。
+    ★ 已知但**本轮没修**的（都在清点文档 P2/P3）：
+       `_save_linked_models` / `train_test_split.json` 两个写入者 /
+       `class_labels.json` 两个写入者 / `project.json` 两个活写入者 —— 全是"合并对、
+       但非原子"；`project_manager.save_project_meta` 是**没有调用方的全量覆盖**；
+       `main_window._save_ui_setting()` **根本不落盘**（只进内存，重启就丢，
+       主题除外——`ui/themes.py` 自己写文件）。
+
+44. **对话框里"只读但照实显示"的控件**（2026-11-13）
+    `TrainSettingsDialog` 的 `tile_check` / `tile_spin` / `stride_spin` /
+    `tile_mode_combo` 现在**置灰**，并有一行 `tile_hint` 指向"主界面「分块」设置"。
+    原因：这四个键的权威在主面板，对话框写了会和面板互相覆盖；而以前它们可以改、
+    点「确定」却不保存 —— **UI 在撒谎**。
+    ⚠️ 别"顺手"把 `setEnabled(False)` 去掉，除非同时让 `_save_and_accept()` 写这些键
+       并想清楚谁赢。
 
 ## 8. 换电脑 / 换机器维护 SOP
 
