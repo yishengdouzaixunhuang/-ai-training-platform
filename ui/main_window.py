@@ -27,7 +27,7 @@ from core.imgio import resize_mask_u, pil_from_array, ensure_uint8
 from ui.qt_thread import ui_call, run_bg, ui_call_sync
 from ui.widgets import ElideLabel, ShrinkStack, LossCurveWindow, TrainSettingsDialog
 from ui.ocr_ocv_mixin import OcrOcvMixin
-from core.project_manager import ProjectManager
+from core.project_manager import ProjectManager, read_task_type
 from core import marks as marks_mod
 from core.filter_expr import FilterExpr
 from ui.mark_panel import MarkToolbar, MarkStatsPanel
@@ -3608,21 +3608,13 @@ class MainWindow(OcrOcvMixin, QMainWindow):
             # Auto-detect task type BEFORE async image scan
             # (prevents race condition where scan completes before _mixed_cls_mode is set)
             self._load_classes()
-            task_map = {"语义分割":"segmentation","目标检测":"detection","图像分类":"classification","混合分类":"mixed_classification","OCR文字识别":"ocr","OCV字符质检":"ocv",
-                        # 兼容旧版英文 task_type
-                        "semantic_segmentation":"segmentation","object_detection":"detection",
-                        "image_classification":"classification","mixed_classification":"mixed_classification",
-                        "ocr_recognition":"ocr","ocv":"ocv"}
-            config_path = os.path.join(self._project_dir, "project.json")
-            if os.path.exists(config_path):
-                try:
-                    with open(config_path, "r", encoding="utf-8") as f:
-                        meta = json.load(f)
-                    task_type = meta.get("task_type", "语义分割")
-                    internal = task_map.get(task_type, "segmentation")
-                    self._set_task(internal)
-                except Exception:
-                    pass
+            # ★ 2026-11-16：这张中英映射表和读取原来都内联在这儿，且 `internal`
+            #   只在 try 成功时才被赋值 —— 工程缺 project.json / JSON 坏了，
+            #   紧接着的 `internal in ("classification", ...)` 就是 NameError
+            #   （test_undefined_names 查不出这种"可能未绑定"）。映射表已收到
+            #   core.project_manager.read_task_type，缺文件按语义分割兜底。
+            internal = read_task_type(self._project_dir)
+            self._set_task(internal)
 
             # Restore classification training settings (Pre-Scale, etc.)
             if internal in ("classification", "mixed_classification"):
@@ -6692,8 +6684,78 @@ class MainWindow(OcrOcvMixin, QMainWindow):
                 self._load_classes()
             except Exception as e:
                 self.log(f"[Class] 导入后补类别失败: {type(e).__name__}: {e}")
-            self._rebuild_masks_for_imported(targets)
+            # ★ 2026-11-16：**目标检测工程要的是 `_det.json`**，不是掩膜 PNG。
+            #   原来不分任务类型一律只生成掩膜 ⇒ 用户"导入图片 + 导入标注"做完，
+            #   以为可以训练了，训练却报 "No detection annotations found"
+            #   （训练只认 images/<base>_det.json，见 detection/dataset.py）。
+            #   检测工程走 labelme 矩形 → _det.json；其余仍按分割生成掩膜。
+            if self._is_detection_project():
+                self._rebuild_det_for_imported(targets)
+            else:
+                self._rebuild_masks_for_imported(targets)
         self._refresh_after_annotation_import()
+
+    def _is_detection_project(self):
+        """当前工程是不是目标检测（读 project.json，不看 Ctrl+D 的临时开关）。"""
+        try:
+            return read_task_type(getattr(self, "_project_dir", None)) == "detection"
+        except Exception:
+            return bool(getattr(self, "_detection_mode", False))
+
+    def _rebuild_det_for_imported(self, bases):
+        """导入 labelme JSON 后，把矩形框补成平台检测标注 `_det.json`。
+
+        平台的目标检测训练与画布读的都是 `images/<base>_det.json`；labelme JSON
+        里只有 `shapes[].shape_type == "rectangle"`。没有这一步，"导图片 + 导标注"
+        之后训练仍然扫不到任何标注。
+
+        转换实现只有一份：`detection/labelme_rect.py`（命令行工具用的是同一份）。
+        """
+        try:
+            from detection.labelme_rect import categories_of, convert_one, find_image
+            img_dir = os.path.join(self._project_dir, "images")
+            pairs, missing_img = [], []
+            for base in bases:
+                jp = os.path.join(img_dir, base + ".json")
+                if not os.path.exists(jp):
+                    continue                    # 这次没真导进来的（视图/缺文件）
+                ip = find_image(img_dir, base)
+                if not ip:
+                    missing_img.append(base)
+                    continue
+                pairs.append((jp, ip))
+            if not pairs:
+                self.log("检测标注转换：没有可转换的 JSON/图片对")
+                return
+            # 一批共用一份类别表（按名字排序）⇒ 同一批 _det.json 的 category_id 稳定，
+            # 且与训练侧 build_yolo_dataset 的 sorted(class_names) 对齐。
+            cats = categories_of([jp for jp, _ip in pairs])
+            written = boxes = 0
+            other = {}
+            skipped = []
+            for jp, ip in pairs:
+                rep = convert_one(jp, ip, categories=cats)
+                for k, v in (rep.get("other") or {}).items():
+                    other[k] = other.get(k, 0) + v
+                if rep["written"]:
+                    written += 1
+                    boxes += rep["boxes"]
+                else:
+                    skipped.append((os.path.basename(jp), rep["skipped"]))
+            self.log("检测标注 _det.json：写出 %d 个 / %d 个框，类别 %d 个"
+                     % (written, boxes, len(cats)))
+            if other:
+                self.log("  ⚠️ 非矩形 shape 被跳过 %s —— 多边形/圆形框请先改成矩形" % other)
+            if missing_img:
+                self.log("  ⚠️ 找不到原图，跳过 %d 个：%s"
+                         % (len(missing_img), "、".join(missing_img[:5])))
+            if skipped:
+                self.log("  ⚠️ 没写出 %d 个：%s"
+                         % (len(skipped), "; ".join("%s(%s)" % (b, w)
+                                                    for b, w in skipped[:5])))
+        except Exception as e:
+            self.log("检测标注转换失败（JSON 已导入，不影响手工画框）: %s: %s"
+                     % (type(e).__name__, e))
 
     def _rebuild_masks_for_imported(self, bases):
         """导入 JSON 后顺手把掩膜 PNG 生成出来。

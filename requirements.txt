@@ -1,6 +1,10 @@
 ﻿PyQt5>=5.15.9
 torch>=2.0.0
 torchvision>=0.15.0
+# 目标检测训练（detection/trainer.py 的 YOLOv8/OBB）。**之前这份清单漏了它** ——
+# 于是装了 torch 也训不了目标检测，一点训练就 ImportError: ultralytics。
+# 注意：ultralytics 会自带 requests/polars/httpx 等十几个小包，但它不会动 torch。
+ultralytics>=8.4.0
 opencv-python>=4.8.0
 numpy>=1.24.0
 Pillow>=10.0.0

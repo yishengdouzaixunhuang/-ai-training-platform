@@ -187,3 +187,42 @@ class ProjectManager:
 
     def get_project_dir(self, name):
         return self._resolve_project_dir(name)
+
+
+# 工程里的 task_type 有中文（新建时写）和英文（旧版/外部导入）两套写法。
+# 界面原来在 `_open_project` 里内联了一张同样的表，还在 try 里赋值 —— 读不到
+# project.json 时 `internal` 直接未绑定，紧接着的分支就 NameError。收到这里一份，
+# 谁要判断工程类型就调用它，别再各抄一张表。
+TASK_TYPE_ALIASES = {
+    "语义分割": "segmentation",
+    "目标检测": "detection",
+    "图像分类": "classification",
+    "混合分类": "mixed_classification",
+    "OCR文字识别": "ocr",
+    "OCV字符质检": "ocv",
+    # 兼容旧版英文 task_type
+    "semantic_segmentation": "segmentation",
+    "object_detection": "detection",
+    "image_classification": "classification",
+    "mixed_classification": "mixed_classification",
+    "ocr_recognition": "ocr",
+    "ocv": "ocv",
+}
+
+
+def read_task_type(project_dir, default="segmentation"):
+    """读工程 project.json 的 task_type，统一转成内部英文键。
+
+    读不到文件 / 字段不认识 → 返回 default（**不抛异常**，也不返回 None：
+    调用方拿它去分支，None 会变成"哪种都不是"的静默错）。
+    """
+    if not project_dir:
+        return default
+    try:
+        with open(os.path.join(str(project_dir), "project.json"),
+                  "r", encoding="utf-8") as f:
+            meta = json.load(f)
+    except Exception:
+        return default
+    raw = meta.get("task_type") or ""
+    return TASK_TYPE_ALIASES.get(raw, default)

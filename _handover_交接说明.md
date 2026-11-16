@@ -617,6 +617,35 @@
     ⚠️ 别"顺手"把 `setEnabled(False)` 去掉，除非同时让 `_save_and_accept()` 写这些键
        并想清楚谁赢。
 
+45. **目标检测：「导入图片 + 导入标注」之后能直接训练**（2026-11-16）
+    用户的验收口径就是这两步做完能设参数开训。以前不行，根因两条：
+    ① 训练只认 `images/<base>_det.json`（`detection/dataset.py`）；
+    ② 界面导入 JSON 后不分任务类型，只生成**分割掩膜** `_mask.png`，
+       一个 `_det.json` 都不产出 ⇒ 训练报 `No detection annotations found`。
+    现在 `_import_json_for_selected()` 按 `_is_detection_project()` 分流：
+    检测 → `_rebuild_det_for_imported()`（labelme 矩形 → `_det.json`）；
+    其余 → 老路生成掩膜。转换实现**只有一份**：`detection/labelme_rect.py`，
+    命令行 `tools/labelme_rect_to_det.py` 也调它。
+    ⚠️ 别在 UI 里再抄一份转换逻辑；也别用"有没有 `_mask.png`"判断分支 ——
+       画布预览首图时会自己写一张掩膜，那个判断必然误判（测试第一版就栽了）。
+
+46. **顺带修的两条（同批，都是真缺陷）**
+    ① `_open_project()` 里 `internal` 只在 `try` 成功时赋值，工程缺 `project.json`
+       或 JSON 损坏时下一行 `internal in (...)` 直接 NameError。映射表已收到
+       `core.project_manager.read_task_type()`（中英两套 task_type 的唯一出口）。
+       ⚠️ `test_undefined_names` 抓不到这种"可能未绑定"，别以为静态扫描过了就没事。
+    ② `detection/__init__.py` 硬导入 `box_overlay`，于是 `import detection.dataset`
+       会顺带把 PyQt5 拉进来 —— 无显示环境直接 ImportError，且 PyQt5 先于 torch
+       导入会触发 WinError 1114（地雷 #2）。`DetectionOverlay` 改成 PEP 562 懒加载。
+
+47. **一条自查纪律（这次变异测试实拍）**
+    新写的 UI 测试**必须走用户真实入口**（`_import_json_for_selected`），
+    不许直接调私有的 `_rebuild_det_for_imported` —— 后者会让
+    "把 `if self._is_detection_project():` 改成 `if False:`" 的变异照样全绿。
+    同理，验证"类别顺序"的用例，数据里的顺序**不能刚好等于字典序**，
+    否则实现偷懒重排一遍也测不出来。
+
+
 ## 8. 换电脑 / 换机器维护 SOP
 
 ### 8.1 东西都在哪
