@@ -6201,11 +6201,21 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         if path and os.path.exists(path) and self.canvas.image is not None:
             self._box_manager.set_image_size(*self.canvas.image.size)
             self._box_manager.load(path)
+            # 标注文件坏了：按 0 个框显示 + 日志说清楚，别让原始 JSON 异常冒到
+            # "打开工程"的兜底 except（那会把工程留在半开状态，见 box_manager.load 的注释）
+            _err = (getattr(self._box_manager, "load_errors", None) or {}).get("annot")
+            if _err:
+                self.log("⚠️ 该图标注文件损坏，已按 0 个框显示：%s（%s）"
+                         % (os.path.basename(path), _err))
             # Auto-load batch inference predictions from outputs/ directory
             if self.current_project:
                 outputs_dir = os.path.join(
                     str(self.pm.get_project_dir(self.current_project["name"])), "outputs")
                 self._box_manager.load_predictions(outputs_dir)
+                _perr = (getattr(self._box_manager, "load_errors", None) or {}).get("pred")
+                if _perr:
+                    self.log("⚠️ 推理结果文件损坏，已按 0 个预测显示：%s（%s）"
+                             % (os.path.basename(path), _perr))
             self.canvas.update()
 
     # ============ Image Loading ============

@@ -23,6 +23,13 @@ class BoxManager:
         self._image_height = 0
         self._bbox_type = "hbb"   # "hbb" or "obb"
         self._dirty = False
+        #: 上次 load / load_predictions 的失败原因（有值 = 那个文件坏了/读不动）。
+        #: ★ 2026-11-16：以前 `_det.json` 损坏时 JSONDecodeError 会一路冒到
+        #:   `_open_project_by_name` 的兜底 except，用户看到的是
+        #:   "Expecting property name enclosed in double quotes: line 1 column 3"，
+        #:   而且工程处于**半开**状态（有预览图、列表空）。现在吞在加载点，
+        #:   按 0 个框显示并留下原因，由界面打一行日志。
+        self.load_errors = {}
 
     # ---- Properties ----
 
@@ -57,10 +64,20 @@ class BoxManager:
     # ---- Load / Save ----
 
     def load(self, image_path):
-        """Load boxes from detection JSON file (if exists)."""
+        """Load boxes from detection JSON file (if exists).
+
+        ⚠️ 文件坏了**不抛**：按 0 个框显示，把原因记进 `self.load_errors["annot"]`。
+           抛出去会一路冒到打开工程的兜底 except（用户看到原始 JSON 异常，
+           且工程半开）。空/坏文件的语义是"这张图没有框"。
+        """
         self._image_path = image_path
         json_path = get_det_json_path(image_path)
-        bboxes, info = load_coco_json(json_path)
+        self.load_errors.pop("annot", None)
+        try:
+            bboxes, info = load_coco_json(json_path)
+        except Exception as e:                       # noqa: BLE001
+            self.load_errors["annot"] = "%s: %s" % (type(e).__name__, e)
+            bboxes, info = None, None
         if bboxes is not None:
             self._boxes = bboxes
             self._next_id = max((b.get("id", 0) for b in bboxes), default=0) + 1
@@ -97,10 +114,15 @@ class BoxManager:
             return
         base = os.path.splitext(os.path.basename(self._image_path))[0]
         pred_json = os.path.join(outputs_dir, base + "_det.json")
+        self.load_errors.pop("pred", None)
         if not os.path.exists(pred_json):
             self._pred_boxes = []
             return
-        bboxes, _ = load_coco_json(pred_json)
+        try:                                   # 坏文件同理：按"没有预测"处理，别抛
+            bboxes, _ = load_coco_json(pred_json)
+        except Exception as e:                 # noqa: BLE001
+            self.load_errors["pred"] = "%s: %s" % (type(e).__name__, e)
+            bboxes = None
         if bboxes is not None:
             self._pred_boxes = bboxes
         else:

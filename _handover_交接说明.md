@@ -715,6 +715,18 @@
        ⇒ **单图推理会把该图的标注整体替换成预测**。批量是写 `outputs/`，两者口径不一致。
        要动之前先想清楚预测该进哪个层（`_det_overlay` 的预测层）。
 
+53. **坏 `_det.json` 不许顶掉「打开工程」**（2026-11-16）
+    以前 `JSONDecodeError` 从 `BoxManager.load()` 冒到 `_open_project_by_name` 的兜底
+    except：用户看到原始 JSON 异常，且工程**半开**（有预览图、`current_project` 已设、列表空）。
+    现在 `load()` / `load_predictions()` 都吞住，按 0 个框/0 个预测处理，原因记
+    `self.load_errors["annot"/"pred"]`，界面上 `_load_det_annotations()` 打一行
+    "⚠️ 该图标注文件损坏，已按 0 个框显示：xxx（JSONDecodeError: ...）"。
+    ⚠️ 语义与空 `_det.json` 一致：**坏文件 = 这张图没框**，不退回 labelme。
+    ⚠️ offscreen 下 `QMessageBox.warning` 会 **segfault**（空窗口也一样），
+       那是环境问题；测试里把它换成记录器，别拿这个现象去改产品。
+    ⚠️ 变异脚本锚点用**单行子串**：`box_manager.py` 的两处 `except` 行内间距不同，
+       跨行拼多行锚点很容易匹配不上（复盘：多行版报"无效"）。
+
 
 
 ## 8. 换电脑 / 换机器维护 SOP
