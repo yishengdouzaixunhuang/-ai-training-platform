@@ -701,6 +701,20 @@
        labelme 那一支被跳过，此时 bug 看不见；等 `_on_mask_stats_ready` 补刷才翻倍。
        `tests/test_ann_count_source.py` 的 `open_project(wait_warm=True)` 就是干这个的。
 
+52. **批量检测推理后「分数 / 耗时」不回填**（2026-11-16）
+    两条独立根因：① 分数读 `_img_conf`，而**检测分支从来没算过**（只有分割的
+    `_prob.png` 有）；② 耗时只活在内 `_infer_times`，检测批量连内存都没写、
+    输出 JSON 也没时间字段 ⇒ 重启必空。
+    现在：`DetInfer` 记 `frame.meta["infer_ms"]`（只包 predict，纯推理口径）→
+    `DetResultWriter` 写进 `_det.json` 的 `meta`（`save_coco_json(meta=...)`，
+    **只写不读**，`load_coco_json` 不看它）→ `_load_output_stats_async` 读回来，
+    并用 `setdefault` 只补内存里没有的（本会话的值更可信）。
+    ⚠️ 老 outputs 没有 `meta`：分数能自动补，**耗时只能重跑一次推理**才有，别以为是 bug。
+    ⚠️ 顺手发现（**未改**）：`_run_det_inference_single()` 先 `delete_all()` 再
+       `add_box()`，而 `add_box` 里直接 `save()` → 写的是 `images/<base>_det.json`
+       ⇒ **单图推理会把该图的标注整体替换成预测**。批量是写 `outputs/`，两者口径不一致。
+       要动之前先想清楚预测该进哪个层（`_det_overlay` 的预测层）。
+
 
 
 ## 8. 换电脑 / 换机器维护 SOP

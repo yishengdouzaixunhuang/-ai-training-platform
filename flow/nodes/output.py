@@ -155,7 +155,12 @@ class DetResultWriter(Node):
                 pass
         from detection.coco_io import save_coco_json
         json_path = os.path.join(out_dir, frame.base + "_det.json")
-        save_coco_json(json_path, frame.path or frame.base, img_w, img_h, boxes, classes, bbox_type="hbb")
+        # 把本图的**纯推理耗时**一起落盘（上游 DetInfer 写的 meta.infer_ms）。
+        # 不落盘的话，列表「耗时ms」只活在内存里，重启平台整列空白（用户实拍）。
+        _meta = getattr(frame, "meta", None) or {}
+        save_coco_json(json_path, frame.path or frame.base, img_w, img_h, boxes, classes,
+                       bbox_type="hbb",
+                       meta={"infer_ms": _meta.get("infer_ms")})
         return frame
 
 

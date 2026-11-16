@@ -56,7 +56,7 @@ def load_coco_json(json_path):
 
 
 def save_coco_json(json_path, image_path, image_width, image_height, 
-                   bboxes, categories, bbox_type="hbb"):
+                   bboxes, categories, bbox_type="hbb", meta=None):
     """Save detection annotations to COCO JSON format.
     
     Args:
@@ -67,6 +67,12 @@ def save_coco_json(json_path, image_path, image_width, image_height,
                 For OBB: bbox: [cx, cy, w, h, angle_deg]
         categories: list of category name strings
         bbox_type: "hbb" (horizontal) or "obb" (rotated)
+        meta: 可选，附加在顶层 `"meta"` 下的杂项（如批量推理的 `infer_ms`）。
+              **只写不读**：`load_coco_json()` 完全忽略它，所以老文件/新文件互通。
+
+              ★ 2026-11-16：批量推理的每张耗时以前**只存在内存里**
+                （`self._infer_times`），重启平台后列表「耗时ms」整列空白 ——
+                用户实拍"推理完分数和耗时都没回填"。现在顺手落盘，重启也能读回来。
     """
     os.makedirs(os.path.dirname(json_path), exist_ok=True)
     
@@ -93,6 +99,8 @@ def save_coco_json(json_path, image_path, image_width, image_height,
         "categories": [{"id": i, "name": name} for i, name in enumerate(categories)],
         "annotations": annotations,
     }
+    if meta:
+        data["meta"] = {k: v for k, v in dict(meta).items() if v is not None}
     
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)

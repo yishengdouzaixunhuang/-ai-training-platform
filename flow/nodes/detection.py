@@ -61,7 +61,12 @@ class DetInfer(Node):
         if not path:
             raise ValueError("DetInfer: 输入无图像路径")
         try:
+            # ★ 2026-11-16：记**纯推理**耗时（不含读图/存盘），与分割批量、单图推理同一口径。
+            #   以前检测这里不计时，列表「耗时ms」只能靠内存里的近似值，重启就没。
+            import time as _time
+            _t0 = _time.time()
             boxes = trainer.predict(path, weights=model_path, conf=conf, iou=iou)
+            _infer_ms = round((_time.time() - _t0) * 1000.0, 1)
         finally:
             if tmp:
                 try:
@@ -72,4 +77,5 @@ class DetInfer(Node):
             "boxes": boxes,
             "count": len(boxes),
         })
+        nf.meta["infer_ms"] = _infer_ms
         return nf

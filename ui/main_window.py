@@ -4333,6 +4333,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
             pred_count = {}
             img_scores = {}
             img_conf = {}          # base -> 平均置信度（0~1），来自 <base>_prob.png
+            img_times = {}         # base -> 落盘的纯推理耗时（ms），来自 _det.json 的 meta
             for f in os.listdir(out_dir):
                 # Segmentation: _pred.png masks
                 if f.endswith("_pred.png"):
@@ -4388,16 +4389,37 @@ class MainWindow(OcrOcvMixin, QMainWindow):
                 # Detection: _det.json boxes
                 elif f.endswith("_det.json"):
                     base = f.replace("_det.json", "")
+                    fp = os.path.join(out_dir, f)
                     try:
-                        det_boxes, _ = load_coco_json(os.path.join(out_dir, f))
+                        det_boxes, _ = load_coco_json(fp)
                         if det_boxes:
                             pred_count[base] = len(det_boxes)
+                            # ★ 2026-11-16：「分数」= 该图所有检出框的**平均置信度**
+                            #   （与 Result 表同一口径）。检测这一支原来**从来没算过**
+                            #   `img_conf`（只有分割的 `_prob.png` 有），于是批量推理完
+                            #   「分数」整列空白 —— 用户实拍"推理完分数和耗时都没回填"。
+                            _sc = [float(b["score"]) for b in det_boxes
+                                   if b.get("score") is not None]
+                            if _sc:
+                                img_conf[base] = round(sum(_sc) / len(_sc), 4)
+                        # 耗时：读落盘的纯推理耗时（见 output.py 的 meta.infer_ms）
+                        with open(fp, "r", encoding="utf-8") as _jf:
+                            _m = (json.load(_jf) or {}).get("meta") or {}
+                        if _m.get("infer_ms") is not None:
+                            img_times[base] = float(_m["infer_ms"])
                     except Exception:
                         pass
             # Update on main thread
             self._pred_count = pred_count
             self._img_scores = img_scores
             self._img_conf = img_conf
+            # 耗时只补**内存里没有的**：本会话刚跑完的纯推理时间更可信，
+            # 别被上一轮落盘的旧值盖掉（同一张图重训前后会不一样）。
+            if img_times:
+                if not getattr(self, "_infer_times", None):
+                    self._infer_times = {}
+                for _b, _ms in img_times.items():
+                    self._infer_times.setdefault(_b, _ms)
             self._pred_count_cache_key = project_dir
             self.refresh_list_signal.emit()
         except Exception:
@@ -9765,6 +9787,14 @@ class MainWindow(OcrOcvMixin, QMainWindow):
                     base = os.path.splitext(os.path.basename(path))[0]
                     if err is None:
                         ok_cnt += 1
+                        # ★ 本会话的「耗时ms」用**纯推理**（DetInfer 写进 meta 的那个），
+                        #   与分割批量/单图同一口径；同时上面 output.py 会把它落盘，
+                        #   重启后由 _load_output_stats_async 读回来。
+                        _pure = (getattr(frame, "meta", None) or {}).get("infer_ms")
+                        if _pure is not None:
+                            if not getattr(self, "_infer_times", None):
+                                self._infer_times = {}
+                            self._infer_times[base] = round(float(_pure), 1)
                         self.log_signal.emit("[%d/%d] %s: %d boxes" % (i, total, base, frame.result.get("count", 0)))
                     else:
                         self.log_signal.emit("[%d/%d] %s: FAILED - %s" % (i, total, base, err))
