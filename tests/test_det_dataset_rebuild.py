@@ -75,11 +75,11 @@ def add_image(pd, base, boxes=(("1", [4, 4, 20, 20]),), w=64, h=32):
                    ["1", "A"])
 
 
-def make_project(tmp, n=10):
-    pd = os.path.join(tmp, "proj")
+def make_project(tmp, n=10, name="proj"):
+    pd = os.path.join(tmp, name)
     os.makedirs(os.path.join(pd, "images"), exist_ok=True)
     with open(os.path.join(pd, "project.json"), "w", encoding="utf-8") as f:
-        json.dump({"name": "proj", "task_type": "目标检测"}, f)
+        json.dump({"name": name, "task_type": "目标检测"}, f)
     for i in range(n):
         add_image(pd, "img%02d" % i)
     return pd
@@ -255,6 +255,10 @@ def _expect_value_error(fn, must_contain):
     raise AssertionError("★ 没拦住")
 
 
+OUTSIDE = "必须在工程目录内"      # 不变式：数据集目录必须在工程里面
+NOT_DATASET = "不像构建出来的数据集"
+
+
 def test_refuse_project_root():
     """output_dir 传成工程根：必须拒绝，且源图一张不少。"""
     tmp = tempfile.mkdtemp()
@@ -263,7 +267,7 @@ def test_refuse_project_root():
         n_before = len(os.listdir(os.path.join(pd, "images")))
         _expect_value_error(
             lambda: ds_mod.build_yolo_dataset(pd, output_dir=pd, val_split=0.5),
-            "根目录")
+            OUTSIDE)
         n_after = len(os.listdir(os.path.join(pd, "images")))
         assert n_before == n_after == 8, "源图被动了：%d → %d" % (n_before, n_after)
     finally:
@@ -271,36 +275,93 @@ def test_refuse_project_root():
 
 
 def test_refuse_parent_dir():
-    """output_dir 传成工程的**上级**目录：必须拒绝（这条能一口气删掉整个工程）。
-
-    断言信息里含"上级目录"：别的护栏也可能拦住它，只认这条才算测到。
-    """
+    """output_dir 传成工程的**上级**目录：必须拒绝（能一口气删掉整个工程）。"""
     tmp = tempfile.mkdtemp()
     try:
         pd = make_project(tmp, 4)
         n_before = len(os.listdir(os.path.join(pd, "images")))
         _expect_value_error(
             lambda: ds_mod.build_yolo_dataset(pd, output_dir=tmp, val_split=0.5),
-            "上级目录")
+            OUTSIDE)
         assert os.path.exists(os.path.join(pd, "project.json")), "★ 工程被删了"
         assert len(os.listdir(os.path.join(pd, "images"))) == n_before, "源图被删了"
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-def test_refuse_non_dataset_dir():
-    """output_dir 指向一个不像数据集的非空目录：必须拒绝，且不删人家东西。"""
+def test_refuse_other_project():
+    """★ 用户复核指出的缺口：output_dir 误传成**另一个工程根**。
+
+    另一个工程也有 `images/`，按"三个标记任一存在"的旧判据会被当成数据集整个删掉。
+    不变式（必须在本工程内）一条就挡住了，而且**不许动人家一张图**。
+    """
+    tmp = tempfile.mkdtemp()
+    try:
+        pd = make_project(tmp, 4, name="proj")            # 本工程
+        other = make_project(tmp, 3, name="neighbour")    # 隔壁工程
+        other_images = os.path.join(other, "images")
+        n_before = len(os.listdir(other_images))
+        assert n_before == 6, "前提：隔壁工程要有图片 + _det.json"
+
+        _expect_value_error(
+            lambda: ds_mod.build_yolo_dataset(pd, output_dir=other, val_split=0.5),
+            OUTSIDE)
+        assert os.path.isdir(other_images), "★ 隔壁工程的 images/ 被删了"
+        assert len(os.listdir(other_images)) == n_before, "★ 隔壁工程的图被删了"
+        assert os.path.exists(os.path.join(other, "project.json")), "★ 隔壁工程被删了"
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_refuse_own_images_dir():
+    """工程**内**的误传：output_dir = proj/images。有图但不像数据集 → 不许删。"""
     tmp = tempfile.mkdtemp()
     try:
         pd = make_project(tmp, 4)
-        other = os.path.join(tmp, "my_precious")
+        imgs = os.path.join(pd, "images")
+        n_before = len(os.listdir(imgs))
+        _expect_value_error(
+            lambda: ds_mod.build_yolo_dataset(pd, output_dir=imgs, val_split=0.5),
+            NOT_DATASET)
+        assert len(os.listdir(imgs)) == n_before == 8, "★ 工程的源图被删了"
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_refuse_dir_with_only_images_subdir():
+    """★ 钉住判据的严格度：有 `images/` 子目录、但没有 `labels/` 和 `data.yaml` 的不算数据集。
+
+    这条防的是把判据退回 `any(...)` —— 那样**任何带 images/ 的目录**都会被当成
+    数据集删掉（另一个工程根正是这个形状）。
+    """
+    tmp = tempfile.mkdtemp()
+    try:
+        pd = make_project(tmp, 4)
+        fake = os.path.join(pd, "exports")               # 工程内、不在 proj.parents 之外
+        os.makedirs(os.path.join(fake, "images"))
+        keep = os.path.join(fake, "images", "a.png")
+        _png(keep)
+        _expect_value_error(
+            lambda: ds_mod.build_yolo_dataset(pd, output_dir=fake, val_split=0.5),
+            NOT_DATASET)
+        assert os.path.exists(keep), "★ 只有 images/ 的目录被当成数据集删了"
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_refuse_non_dataset_dir():
+    """工程内一个随手建的目录（非空、无标记）：必须拒绝，且不删人家东西。"""
+    tmp = tempfile.mkdtemp()
+    try:
+        pd = make_project(tmp, 4)
+        other = os.path.join(pd, "my_precious")
         os.makedirs(other)
         keep = os.path.join(other, "报告.txt")
         with open(keep, "w", encoding="utf-8") as f:
             f.write("别删我")
         _expect_value_error(
             lambda: ds_mod.build_yolo_dataset(pd, output_dir=other, val_split=0.5),
-            "不像构建出来的数据集")
+            NOT_DATASET)
         assert os.path.exists(keep), "★ 用户目录里的文件被删了"
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
@@ -315,7 +376,10 @@ def main():
         ("★ 清理失败必须抛错，不许静默", test_wipe_failure_raises_not_silent),
         ("护栏：输出目录 = 工程根 → 拒绝", test_refuse_project_root),
         ("护栏：输出目录 = 工程上级目录 → 拒绝", test_refuse_parent_dir),
-        ("护栏：输出目录不像数据集 → 拒绝", test_refuse_non_dataset_dir),
+        ("★ 护栏：输出目录 = 另一个工程 → 拒绝（不动人家源图）", test_refuse_other_project),
+        ("★ 护栏：输出目录 = 工程自己的 images/ → 拒绝", test_refuse_own_images_dir),
+        ("★ 护栏：只有 images/ 子目录的目录 → 不算数据集", test_refuse_dir_with_only_images_subdir),
+        ("护栏：工程内无关的非空目录 → 拒绝", test_refuse_non_dataset_dir),
     ]
     for name, fn in checks:
         check(name, fn)

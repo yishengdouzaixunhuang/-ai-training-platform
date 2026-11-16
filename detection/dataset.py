@@ -7,9 +7,22 @@ YOLO-format label files for training with ultralytics YOLO.
 import os, json, shutil, random
 from pathlib import Path
 
-#: 判定"这个目录像不像我们生成的数据集"。清理前用它挡一下，防止把用户的
-#: 图片目录/搞错路径的目录整个删掉。
-_DATASET_MARKERS = ("images", "labels", "data.yaml")
+#: 构建出来的数据集长这样：`data.yaml` + `images/` + `labels/`。
+#: 用它判断"这个目录像不像我们自己生成的"，清理前挡一下。
+_DATASET_FILE = "data.yaml"
+_DATASET_DIRS = ("images", "labels")
+
+
+def _looks_like_dataset(path):
+    """`data.yaml` 在 → 是数据集；否则要 `images/` 与 `labels/` **同时**在。
+
+    ⚠️ 别退回 `any(...)`（三个有一个就算）：那样**任何带 `images/` 子目录的非空目录**
+       都会被认为是数据集 —— 而"另一个工程根"正好长这样，会被整个删掉。
+       放宽到"images + labels 同时有"是为了容忍"建到一半、还没写 data.yaml"的旧目录。
+    """
+    if (path / _DATASET_FILE).exists():
+        return True
+    return all((path / d).is_dir() for d in _DATASET_DIRS)
 
 
 def _wipe_previous_dataset(output_dir, project_dir):
@@ -35,27 +48,36 @@ def _wipe_previous_dataset(output_dir, project_dir):
     此时若 `ignore_errors=True` 继续重建，结果是"看着重建了、其实还是旧的"，
     比不清理更难查。所以这里转换成带说明的 RuntimeError，让界面上真的报错。
 
-    ## 不删什么
+    ## 不删什么（两道防护，第一条是**不变式**）
 
-    `project_dir` 本身、它的上级目录、以及看起来不像数据集的非空目录 —— 一律拒绝，
-    抛 ValueError。这条是防手滑：`output_dir` 传错一个参数就把源图删了。
+    1. **数据集目录必须在工程目录里面** —— 判定条件 `proj in out.parents`。
+       一条规则同时盖住三种误传，不用逐个列举：
+         · `out == proj`（工程根）
+         · `out` 是工程的上级目录
+         · `out` 是**另一个工程**（★ 原来漏的就是这条：它同样有 `images/`，
+           会被"像不像数据集"的弱标记判成数据集，然后整个删掉）
+       反过来，`proj/yolo_dataset`、`proj/yolo_dataset_fold0` 都天然通过。
+    2. 目录非空、但**不像数据集** → 拒绝。挡的是工程内的误传，最典型是
+       `output_dir=proj/images`（有图片，但没有 `images/labels` 子目录）。
+    3. 目录不存在 → 直接返回，没什么可清。
     """
     out = Path(output_dir).resolve()
     proj = Path(project_dir).resolve()
 
-    if out == proj:
-        raise ValueError("数据集输出目录不能是工程根目录：%s" % out)
-    if out in proj.parents:
-        raise ValueError("数据集输出目录不能是工程的上级目录：%s" % out)
+    # ① 不变式：必须在工程内。⚠️ 别写成 `out in proj.parents`（那是"不能是上级"），
+    #    方向反了 —— 要的是"out 的祖先里有 proj"。
+    if proj not in out.parents:
+        raise ValueError(
+            "数据集输出目录必须在工程目录内：%s（工程：%s）" % (out, proj))
+
     if not out.exists():
         return 0
 
-    looks_like_dataset = any((out / m).exists() for m in _DATASET_MARKERS)
-    has_content = any(out.iterdir())
-    if has_content and not looks_like_dataset:
+    # ② 工程内也要看长相：`proj/images` 这种误传不能删
+    if any(out.iterdir()) and not _looks_like_dataset(out):
         raise ValueError(
-            "拒绝清空 %s：里面没有 images/labels/data.yaml，不像构建出来的数据集。"
-            "确认 output_dir 是否传错。" % out)
+            "拒绝清空 %s：里面没有 data.yaml，也没有 images/ + labels/，"
+            "不像构建出来的数据集。确认 output_dir 是否传错。" % out)
 
     n = sum(1 for _ in out.rglob("*"))
     try:
