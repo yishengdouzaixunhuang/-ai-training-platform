@@ -5130,12 +5130,26 @@ class MainWindow(OcrOcvMixin, QMainWindow):
                 name_text = '\n'.join(data['view_fnames'])     # 多视图：N 行文件名
             else:
                 name_text = data['fname']
+            # 「标注」列：检测/分割显示**块数**。
+            # ★ 2026-11-16：有标注文件但 0 个框时显示 **"0"**，不是空白。
+            #   空 `_det.json` 的语义是"人已经过目、确认这张没有缺陷"（良品图本来就这样），
+            #   属于**已标注**；以前这里留空白，看起来跟"根本没标"一模一样，
+            #   而 `Annotated Only` 又把它算作已标注 —— 两处矛盾（用户会问
+            #   "为什么筛出来一堆没标注的图"）。真正没标的才留空。
+            if self._cls_mode:
+                _shape_text = ", ".join(data['shape_labels'])
+            elif data['shape_count'] > 0:
+                _shape_text = str(data['shape_count'])
+            elif data.get('has_ann'):
+                _shape_text = "0"
+            else:
+                _shape_text = ""
             items_data = [
                 (str(global_idx + 1), True),
                 (name_text, False),
                 (f"{data['img_w']}x{data['img_h']}" if data['img_w'] else "", True),
                 (data['split_status'].replace("[", "").replace("]", "").strip(), True),
-                (", ".join(data['shape_labels']) if self._cls_mode else (str(data['shape_count']) if data['shape_count'] > 0 else ""), True),
+                (_shape_text, True),
                 (data['cls_text'] if self._cls_mode else (data['ocr_text'] if self._ocr_mode else (str(data['pred_cnt']) if data['pred_cnt'] > 0 else "")), True),
                 (data['ocr_score'] if self._ocr_mode else data['score_str'], True),
                 (data['ocr_time'] if self._ocr_mode else (str(data['infer_ms']) if data['infer_ms'] else ""), True),
@@ -5148,6 +5162,8 @@ class MainWindow(OcrOcvMixin, QMainWindow):
                 item = QTableWidgetItem(val)
                 if center:
                     item.setTextAlignment(Qt.AlignCenter)
+                if col == 4 and val == "0":
+                    item.setToolTip("空标注：标注文件在、0 个框（通常表示「已确认无缺陷」）")
                 self.image_list_widget.setItem(row, col, item)
             # Store path in first column
             self.image_list_widget.item(row, 0).setData(Qt.UserRole, data['path'])

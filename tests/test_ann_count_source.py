@@ -114,8 +114,11 @@ def _labelme(n, img_name, w=64, h=32):
             "imageWidth": w, "imageHeight": h}
 
 
-def make_project(task="目标检测", n_images=2, labelme_n=3, det_n=3):
-    """建工程：每张图可分别带 labelme JSON 和 _det.json（数量可不同，用来测优先级）。"""
+def make_project(task="目标检测", n_images=2, labelme_n=3, det_n=3, det_empty=False):
+    """建工程：每张图可分别带 labelme JSON 和 _det.json（数量可不同，用来测优先级）。
+
+    det_empty=True：写一个**合法但 0 个框**的 `_det.json`（良品图的形态）。
+    """
     w = window()
     name = "_anncnt_%d" % (len(_MADE) + 1)
     w.pm.create_project(name, task_type=task, parent_dir=_TMP)
@@ -128,7 +131,9 @@ def make_project(task="目标检测", n_images=2, labelme_n=3, det_n=3):
         if labelme_n:
             with open(os.path.join(pd, "images", base + ".json"), "w", encoding="utf-8") as f:
                 json.dump(_labelme(labelme_n, base + ".png"), f)
-        if det_n:
+        if det_empty:
+            save_coco_json(os.path.join(pd, "images", base + "_det.json"), img, 64, 32, [], ["0"])
+        elif det_n:
             save_coco_json(
                 os.path.join(pd, "images", base + "_det.json"), img, 64, 32,
                 [{"category": "0", "bbox": [2 + j * 4, 4, 4, 16]} for j in range(det_n)],
@@ -214,6 +219,37 @@ def test_det_wins_over_labelme():
     assert blocks_in_status() == 3, "底栏 Blocks 应为 3，实际 %d" % blocks_in_status()
 
 
+def test_empty_det_shows_zero_and_does_not_fall_back():
+    """★ 空 `_det.json`（0 个框、合法）：算**已标注**，列表显式写 "0"，不退回 labelme。
+
+    这是产品定过的语义（2026-11-16）：
+    · 空 = 人已经过目、确认这张没有缺陷（良品图），所以是"已标注"；
+    · 但以前列表留**空白**，看着和"根本没标"一样，而 Annotated Only 又算它已标注
+      ⇒ 两处矛盾。现在显式写 0（带 tooltip）。
+    · labelme 里就算还有 3 个形状，也**不许**退回去 —— 那会把用户删掉的框复现。
+    """
+    name, _pd = make_project("目标检测", n_images=1, labelme_n=3, det_n=0, det_empty=True)
+    w = open_project(name)
+    rec = (w._filtered_data or [{}])[0]
+    assert rec.get("shape_count") == 0, "★ 空 _det.json 不该退回 labelme：%r" % rec.get("shape_count")
+    assert rec.get("has_ann") is True, "★ 空标注仍算「已标注」（产品口径）"
+    cell = w.image_list_widget.item(0, ANN_COL)
+    assert cell is not None and cell.text() == "0", \
+        "★ 空标注应显式写 0，实际 %r（空白会让人以为没标）" % (cell.text() if cell else None)
+    assert "空标注" in (cell.toolTip() or ""), "★ 0 没有提示说明：%r" % cell.toolTip()
+
+
+def test_no_annotation_at_all_is_blank():
+    """真·没标注（既无 _det.json 也无 labelme）→ 「标注」列留空，别显示 0。"""
+    name, pd = make_project("目标检测", n_images=1, labelme_n=0, det_n=0)
+    w = open_project(name)
+    rec = (w._filtered_data or [{}])[0]
+    assert rec.get("has_ann") is False, "前提：这张图不该算已标注"
+    cell = w.image_list_widget.item(0, ANN_COL)
+    assert cell is not None and cell.text() == "", \
+        "★ 没标注的图不该显示 0：%r" % (cell.text() if cell else None)
+
+
 def cleanup():
     w = _WIN
     if w is not None:
@@ -233,6 +269,8 @@ def main():
         ("只有 _det.json", test_det_only),
         ("只有 labelme JSON（分割）", test_labelme_only),
         ("★ _det.json 优先于 labelme", test_det_wins_over_labelme),
+        ("★ 空 _det.json：显示 0、算已标注、不退回 labelme", test_empty_det_shows_zero_and_does_not_fall_back),
+        ("真没标注的图留空（不显示 0）", test_no_annotation_at_all_is_blank),
     ]
     try:
         for name, fn in checks:
