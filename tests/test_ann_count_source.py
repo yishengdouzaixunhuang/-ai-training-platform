@@ -28,6 +28,7 @@ if _json_exists: shape_count += len(json_labels)      # 再 +10
 
 运行：C:\\aitp_venv\\Scripts\\python.exe tests\\test_ann_count_source.py
 """
+import _testenv  # noqa: F401  无显示器 + 配置目录隔离（见 tests/_testenv.py）
 import json
 import os
 import shutil

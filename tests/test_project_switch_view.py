@@ -19,6 +19,7 @@
 运行：
     C:\\aitp_venv\\Scripts\\python.exe tests\\test_project_switch_view.py
 """
+import _testenv  # noqa: F401  无显示器 + 配置目录隔离（见 tests/_testenv.py）
 import os
 import sys
 import tempfile

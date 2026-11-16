@@ -14,6 +14,7 @@
     set QT_QPA_PLATFORM=offscreen
     python tests/test_close_event.py
 """
+import _testenv  # noqa: F401  无显示器 + 配置目录隔离（见 tests/_testenv.py）
 import json
 import os
 import sys

@@ -180,9 +180,42 @@ class BoxManager:
             self._undo_stack.pop(0)
         self._redo_stack.clear()
 
+    def add_boxes(self, items):
+        """批量加框：**一次快照、一次写盘**（撤销一次回到批量之前）。
+
+        items: `[{"bbox": [...], "category": "...", "score": ...}, ...]`
+
+        ★ 2026-11-16：`add_box` 原来每个框一次 `save()`（6 个框 = 6 次写盘），
+          而"把预测整体转成标注"动辄几十个框。批量入口保证：
+          · 只写一次盘（写到一半中断不会留下半个标注）；
+          · 撤销栈**只压一次** —— 一次 Ctrl+Z 整体回退，而不是按框回退 30 次。
+        """
+        items = [it for it in (items or []) if it and it.get("bbox")]
+        if not items:
+            return []
+        self._snapshot()
+        added = []
+        for it in items:
+            bbox = it["bbox"]
+            category = it.get("category") or "object"
+            box = {
+                "id": self._next_id,
+                "category": category,
+                "category_id": self._get_category_id(category),
+                "bbox": list(bbox),
+                "area": self._compute_area(bbox),
+                "score": it.get("score"),
+            }
+            self._boxes.append(box)
+            self._next_id += 1
+            added.append(box)
+        self._dirty = True
+        self.save()
+        return added
+
     def add_box(self, bbox, category="object", score=None):
         """Add a new bounding box.
-        
+
         Args:
             bbox: [x, y, w, h] for HBB or [cx, cy, w, h, angle] for OBB
             category: class name string
@@ -190,20 +223,8 @@ class BoxManager:
         Returns:
             box dict with id
         """
-        self._snapshot()
-        box = {
-            "id": self._next_id,
-            "category": category,
-            "category_id": self._get_category_id(category),
-            "bbox": list(bbox),
-            "area": self._compute_area(bbox),
-            "score": score,
-        }
-        self._boxes.append(box)
-        self._next_id += 1
-        self._dirty = True
-        self.save()
-        return box
+        added = self.add_boxes([{"bbox": bbox, "category": category, "score": score}])
+        return added[0] if added else None
 
     def update_box(self, box_id, bbox=None, category=None):
         """Update an existing box's geometry or category."""

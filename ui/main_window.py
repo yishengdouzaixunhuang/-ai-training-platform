@@ -1158,6 +1158,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         self.det_toolbar.cancel_requested.connect(self._det_cancel)
         self.det_toolbar.undo_requested.connect(self._det_undo)
         self.det_toolbar.redo_requested.connect(self._det_redo)
+        self.det_toolbar.adopt_requested.connect(self._det_adopt_predictions)
         self.det_toolbar.tools_toggled.connect(self._on_toolbar_collapsed)
         self.canvas.det_selection_changed.connect(self._sync_det_toolbar)
         cl.addWidget(self.det_toolbar)
@@ -5141,6 +5142,13 @@ class MainWindow(OcrOcvMixin, QMainWindow):
             elif data['shape_count'] > 0:
                 _shape_text = str(data['shape_count'])
             elif data.get('has_ann'):
+                # ⚠️ 「预热期不会误显 0」**不是这里保证的**：`has_ann` 在
+                #    `_filter_images` 里被 `if shape_count == 0 and not _det_exists:
+                #    has_ann = _mask_has_content` 那条收紧拉回 False（掩膜统计还没跑完时
+                #    `_mask_has_content` 为 False），所以预热期这里走的是下面的空分支。
+                #    谁动那条收紧，这里就会在首屏刷出一排 "0"（实测过：分割工程首屏
+                #    从 ('','') 变 ('3','') 全靠它）。改动前先跑
+                #    `tests/test_ann_count_source.py` 的"真没标注"用例。
                 _shape_text = "0"
             else:
                 _shape_text = ""
@@ -7410,8 +7418,9 @@ class MainWindow(OcrOcvMixin, QMainWindow):
 
     # ---------- 训练参数持久化（面板 <-> .train_settings.json）----------
     def _train_settings_path(self):
-        return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                            ".train_settings.json")
+        # 走 `core.settings.cfg_path`：测试设 AITP_TEST_CFG_DIR 后不会写仓库根
+        from core.settings import cfg_path
+        return cfg_path(".train_settings.json")
 
     def _load_panel_train_settings(self):
         """把 .train_settings.json 的参数灌回面板控件（重启后保留用户设置）。
@@ -9263,6 +9272,15 @@ class MainWindow(OcrOcvMixin, QMainWindow):
                 self.log_signal.emit(
                     f"Dataset: {ds_info['train_images']} train + {ds_info['val_images']} val, "
                     f"{ds_info['num_classes']} classes: {', '.join(ds_info['class_names'])}")
+                # ★ 坏的 `_det.json` 会被跳过（训练继续），但必须**指名道姓**：
+                #   300 张里坏一张，用户只看到 "line 1 column 3" 是没法处理的。
+                _bad = ds_info.get("skipped_corrupt") or []
+                if _bad:
+                    self.log_signal.emit(
+                        "⚠️ %d 个标注文件损坏，已跳过（不参与训练）：%s"
+                        % (len(_bad), "、".join(_bad[:10]))
+                        + ("…" if len(_bad) > 10 else "")
+                        + "　—— 修好后重训，或从 images/*_det.json.bad-* 恢复")
                 # Step 2: Train
                 self.log_signal.emit(
                     f"Training: {model_name}, {epochs} epochs, batch={batch_size}, imgsz={image_size}")
@@ -10154,6 +10172,73 @@ class MainWindow(OcrOcvMixin, QMainWindow):
             self.canvas._det_overlay.delete_active_box()
             self.canvas.update()
             self.canvas.det_boxes_changed.emit()
+
+    def _det_adopt_predictions(self):
+        """把本图的**预测框**追加为标注 —— "先粗后精"的一步入口。
+
+        ★ 2026-11-16：单图推理改成"预测只进预测层"（不碰标注）之后，
+          这里补回固化入口，否则"跑一遍模型再微调"从 1 步变成 3 步。
+
+        ⚠️ 为什么**不**用 `annotation.convert.convert_result_to_annotation`：
+           它直接重写 `_det.json`，既没有 `.versions/` 快照（那套存的是 labelme 的
+           `<base>.json`，不是 `_det.json`），也不进 BoxManager 的撤销栈 ——
+           点错了只能手动改回去。这里走 `BoxManager.add_boxes()`：
+           一次快照 + 一次写盘，**一次 Ctrl+Z 整体回退**。
+           批量（按标记）那条路仍用 convert，不动。
+
+        幂等：与已有标注 IoU ≥ DEFAULT_TAU 的预测会被跳过，重复点不会翻倍。
+        """
+        if not self._detection_mode or self._box_manager is None:
+            return
+        preds = list(getattr(self._box_manager, "pred_boxes", None) or [])
+        if not preds:
+            self.log("没有可采纳的预测框（先跑一次推理）")
+            return
+
+        from annotation.convert import DEFAULT_TAU, box_iou
+        existing = list(self._box_manager.boxes or [])
+        # 与已有标注比，也要和**本次已收下的预测**比（避免两个预测互相重叠各加一次）
+        baseline = [b["bbox"] for b in existing]
+        new, skipped = [], 0
+        for p in preds:
+            bb = p.get("bbox")
+            if not bb or len(bb) < 4:
+                continue
+            if any(box_iou(bb, e) >= DEFAULT_TAU for e in baseline):
+                skipped += 1
+                continue
+            new.append({"bbox": bb,
+                        "category": p.get("category") or "object",
+                        "score": p.get("score")})
+            baseline.append(bb)
+
+        if not new:
+            self.log("预测框都已有对应标注，无需新增（跳过 %d 个）" % skipped)
+            return
+
+        reply = QMessageBox.question(
+            self, "预测转标注",
+            "把本图 %d 个预测框追加为标注？\n\n已有 %d 个框不受影响；"
+            "重复位置的 %d 个会跳过。\n（转完可按 Ctrl+Z 整体撤销）"
+            % (len(new), len(existing), skipped),
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+        if reply != QMessageBox.Yes:
+            return
+
+        added = self._box_manager.add_boxes(new)
+        # 采纳后把预测层关掉：否则预测和标注完全重叠，看不出"已经变成标注了"
+        try:
+            self.canvas._show_pred_boxes = False
+        except Exception:  # noqa: BLE001
+            pass
+        self.canvas.update()
+        self.canvas.det_boxes_changed.emit()
+        self.log("已把 %d 个预测框转为标注（跳过已有 %d 个）；Ctrl+Z 可整体撤销"
+                 % (len(added), skipped))
+        try:
+            self._filter_images(self.search_input.text())      # 刷新「标注」列
+        except Exception as e:  # noqa: BLE001
+            self.log(f"[预测转标注] 刷新列表失败: {type(e).__name__}: {e}")
 
     def _det_clear_all(self):
         """Delete all detection boxes."""

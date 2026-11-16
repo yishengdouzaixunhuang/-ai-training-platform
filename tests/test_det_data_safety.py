@@ -32,6 +32,7 @@ for b in boxes:
 运行：
     C:\\aitp_venv\\Scripts\\python.exe tests\\test_det_data_safety.py
 """
+import _testenv  # noqa: F401  无显示器 + 配置目录隔离（见 tests/_testenv.py）
 import hashlib
 import json
 import os
@@ -375,6 +376,73 @@ def test_archive_failure_does_not_block_load():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def _adopt(w, yes=True):
+    """走真实入口 `_det_adopt_predictions()`，把确认框固定成 Yes/No。"""
+    import ui.main_window as mw
+    real = mw.QMessageBox
+
+    class _MB2:
+        Yes, No = real.Yes, real.No
+
+        @staticmethod
+        def question(*a, **k):
+            return real.Yes if yes else real.No
+
+        @staticmethod
+        def warning(*a, **k):
+            raise AssertionError("不该弹错误框：%r" % (a[:3],))
+
+        @staticmethod
+        def information(*a, **k):
+            raise AssertionError("不该弹信息框：%r" % (a[:3],))
+
+        @staticmethod
+        def critical(*a, **k):
+            raise AssertionError("不该弹错误框：%r" % (a[:3],))
+
+    mw.QMessageBox = _MB2
+    try:
+        w._det_adopt_predictions()
+    finally:
+        mw.QMessageBox = real
+
+
+def test_adopt_predictions_appends():
+    """★ 预测转标注：追加 2 个、跳过重复，且**一次撤销整体回退**。"""
+    name, pd, img = make_det_project(n_boxes=3)
+    w = open_det(name, pd)
+    det = os.path.join(pd, "images", "img1_det.json")
+    assert w._box_manager.count == 3, "前提：起点 3 个标注"
+
+    _run_single(w, pd)                       # 预测层 2 个框
+    _adopt(w)
+    assert w._box_manager.count == 5, "★ 预测没被追加成标注：%r" % w._box_manager.count
+    with open(det, "r", encoding="utf-8") as f:
+        assert len(json.load(f)["annotations"]) == 5, "★ 没落盘"
+
+    # 幂等：再点一次，两个预测都已有同位置标注 ⇒ 一个都不加
+    _adopt(w)
+    assert w._box_manager.count == 5, "★ 重复点翻倍了：%r" % w._box_manager.count
+
+    # ★ 批量快照：一次撤销回到追加之前（按框快照的话这里会是 4）
+    assert w._box_manager.undo() is True
+    assert w._box_manager.count == 3, \
+        "★ add_boxes 没做成「一次快照」（撤销后剩 %r 个，应为 3）" % w._box_manager.count
+    with open(det, "r", encoding="utf-8") as f:
+        assert len(json.load(f)["annotations"]) == 3, "★ 撤销没写回文件"
+
+
+def test_adopt_without_predictions_does_nothing():
+    """没有预测时点「转标注」：不许改标注文件，也不许弹错误框。"""
+    name, pd, img = make_det_project(n_boxes=3)
+    w = open_det(name, pd)
+    det = os.path.join(pd, "images", "img1_det.json")
+    sha = _sha(det)
+    _adopt(w)
+    assert w._box_manager.count == 3, w._box_manager.count
+    assert _sha(det) == sha, "★ 没预测也把标注文件改了"
+
+
 def cleanup():
     w = _WIN
     if w is not None:
@@ -396,6 +464,8 @@ def main():
         ("留档后写新文件不覆盖留档", test_write_after_corrupt_keeps_archive),
         ("正常文件不留档", test_valid_file_not_archived),
         ("留档失败也不挡加载", test_archive_failure_does_not_block_load),
+        ("★ 预测转标注：追加 + 幂等 + 一次撤销", test_adopt_predictions_appends),
+        ("无预测时转标注不动文件", test_adopt_without_predictions_does_nothing),
     ]
     try:
         for name, fn in checks:

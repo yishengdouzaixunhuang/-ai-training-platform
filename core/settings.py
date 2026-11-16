@@ -217,6 +217,30 @@ class Dict_(Field):
 
 # ---------------------------------------------------------------- 作用域声明
 
+#: 仓库根（源码目录）。
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+#: 测试用：把配置目录整体挪走。设了它就**不写仓库根**，一次堵死"跑测试把
+#: `.train_settings.json` 写脏"这类污染（已经发生过三次，靠逐个测试 stub 不可靠）。
+#: 只影响 `Scope.default_path()` 和 `cfg_path()`；显式传了 path 的调用方不受影响。
+ENV_CFG_DIR = "AITP_TEST_CFG_DIR"
+
+
+def cfg_dir():
+    """配置目录：默认仓库根，`AITP_TEST_CFG_DIR` 设了就用它。"""
+    d = os.environ.get(ENV_CFG_DIR)
+    return d or ROOT_DIR
+
+
+def cfg_path(filename):
+    """仓库根配置文件的绝对路径（如 `.train_settings.json`）。
+
+    ⚠️ 新的配置写入方请走这里，别再自己拼 `os.path.dirname(__file__)` ——
+       那样会绕过测试隔离，测试一跑就把用户的真实配置改掉。
+    """
+    return os.path.join(cfg_dir(), filename)
+
+
 class Scope(object):
     """一份配置文件 = 一个作用域。"""
 
@@ -228,8 +252,7 @@ class Scope(object):
     def default_path(self):
         if self.root:
             return os.path.join(self.root, self.filename)
-        return os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), self.filename)
+        return cfg_path(self.filename)
 
     def defaults(self):
         return {k: copy.deepcopy(f.default) for k, f in self.fields.items()}

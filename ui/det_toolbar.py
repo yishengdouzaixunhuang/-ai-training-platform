@@ -44,6 +44,8 @@ class DetToolbar(QWidget):
     cancel_requested = pyqtSignal()
     undo_requested = pyqtSignal()
     redo_requested = pyqtSignal()
+    #: 把本图的**预测框**追加成标注（一次性、可撤销）
+    adopt_requested = pyqtSignal()
     # 工具行展开/折叠（与分割工具栏同步，2026-10-15）
     tools_toggled = pyqtSignal(bool)
 
@@ -128,6 +130,20 @@ class DetToolbar(QWidget):
             lay.addWidget(btn)
 
         lay.addStretch()
+
+        # ---- 预测转标注（"先粗后精"工作流的一步入口）----
+        # ★ 2026-11-16：单图推理改成"预测只进预测层"之后，这里补回固化入口。
+        #   只**追加**（已有同位置标注会跳过），走 BoxManager 所以 Ctrl+Z 能撤销。
+        lay.addWidget(_separator())
+        self.btn_adopt = QToolButton()
+        self.btn_adopt.setToolTip("把本图预测框追加为标注（已有框保留，可撤销）")
+        self.btn_adopt.setIcon(icons.make_icon("adopt"))
+        self.btn_adopt.setIconSize(QSize(24, 24))
+        self.btn_adopt.setFixedSize(30, 30)
+        self.btn_adopt.setCursor(Qt.PointingHandCursor)
+        self.btn_adopt.clicked.connect(lambda *a: self.adopt_requested.emit())
+        lay.addWidget(self.btn_adopt)
+
         outer.addWidget(self.tools_box)
         self.tools_box.setVisible(False)             # 默认折叠
 

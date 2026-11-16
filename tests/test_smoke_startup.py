@@ -8,6 +8,7 @@
     set QT_QPA_PLATFORM=offscreen
     python tests/test_smoke_startup.py
 """
+import _testenv  # noqa: F401  无显示器 + 配置目录隔离（见 tests/_testenv.py）
 import os
 import sys
 import tempfile

@@ -22,6 +22,7 @@ QMessageBox.warning(self, "Error", "Expecting property name enclosed in double q
 
 运行：C:\\aitp_venv\\Scripts\\python.exe tests\\test_corrupt_det_json.py
 """
+import _testenv  # noqa: F401  无显示器 + 配置目录隔离（见 tests/_testenv.py）
 import json
 import os
 import shutil

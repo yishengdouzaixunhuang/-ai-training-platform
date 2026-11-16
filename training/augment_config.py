@@ -35,7 +35,9 @@ DEFAULT_AUGMENT_FLAGS = {
     "flip": True,
 }
 def _settings_path():
-    return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".train_settings.json")
+    # 走统一入口：测试设 `AITP_TEST_CFG_DIR` 后就不会写到仓库根（曾三次污染真实配置）
+    from core.settings import cfg_path
+    return cfg_path(".train_settings.json")
 def merge_flags(flags):
     merged = dict(DEFAULT_AUGMENT_FLAGS)
     if isinstance(flags, dict):

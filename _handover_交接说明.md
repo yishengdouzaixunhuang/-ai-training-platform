@@ -764,6 +764,38 @@
        `assert bm.count == 3` 之前，否则变异"正常文件也留档"报的是"框数 0"，
        说的不是你要守的那件事（本轮实拍）。
 
+57. **训练数据集也要吃坏标注**（2026-11-16，P1：容错只补了 UI 读路径）
+    `build_yolo_dataset()` 的扫描阶段原来 `except: pass`，坏 JSON 能走过去；
+    到 `convert_pair` 的 `json.load` 才炸，异常里**没有文件名**：
+    300 张坏一张 ⇒ "开始训练"直接失败，报 `line 1 column 3`。
+    现在**扫描阶段就判定**：坏文件进 `corrupt`，**不进 `annotated`**
+    （既不划分也不拷进 `yolo_dataset/` —— 只有图没有 label 会被 YOLO 当负样本），
+    训练继续，返回 `skipped_corrupt`，界面日志指名文件。
+    全坏时抛 `RuntimeError`，消息带文件名；`convert_pair` 外面再包一层，
+    把"图片本身坏了 / 写盘失败"也转成带文件名的 `RuntimeError`。
+    ⚠️ `.bad-*` 后缀既不是图片扩展名、也不等于 `stem + "_det.json"`，不污染训练集。
+
+58. **「预测转标注」：别以为 `.versions/` 能救 `_det.json`**（2026-11-16）
+    `.versions/<base>_v<ts>.json` 快照的是 **labelme 的 `<base>.json`**
+    （`version_manager.save_version` → `labelme_io.get_json_path`），
+    **不是** `<base>_det.json`。所以 `convert_result_to_annotation()` 对检测标注
+    **没有**版本快照、也不进 BoxManager 撤销栈。
+    单图"预测转标注"因此走 `BoxManager.add_boxes()`（一次快照 + 一次写盘），
+    Ctrl+Z 整体回退；批量（按标记）仍走 `convert_by_mark`。
+    ⚠️ `add_box()` 已改为 `add_boxes()` 的单项特例，别再各写一份 append+save。
+
+59. **测试不许写真实的 `.train_settings.json`**（2026-11-16，第三次）
+    `closeEvent → _save_panel_train_settings()` 会把仓库根的真实配置改成测试面板状态。
+    现在走机制而不是逐个 stub：
+    `core.settings.cfg_path()` / `Scope.default_path()` 认 `AITP_TEST_CFG_DIR`；
+    `tests/_testenv.py` 把它指到临时目录；`ui/main_window._train_settings_path()` 与
+    `training/augment_config._settings_path()` 都走 `cfg_path()`。
+    `tests/test_test_isolation.py` 静态检查"所有建 MainWindow 的测试都 `import _testenv`"，
+    并检查真窗口的 `_train_settings_path()` 落在隔离目录。
+    ⚠️ 新写建窗测试：docstring 后加 `import _testenv`，否则静态检查会红。
+    ⚠️ 变异脚本判据也要可信：`退出码非零 and 有 FAIL 行` 会把"崩在断言外"
+       误报成"漏了"（本轮实拍）。现在只看退出码，并把"没有 FAIL 行"标出来。
+
 
 
 ## 8. 换电脑 / 换机器维护 SOP

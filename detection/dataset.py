@@ -115,24 +115,35 @@ def build_yolo_dataset(project_dir, output_dir=None, val_split=0.2, seed=42):
     # Collect class names from all det JSONs
     all_categories = set()
     annotated = []
+    #: 解析失败的 `_det.json`：[(文件名, 原因)]。**不参与训练**，也别静默 ——
+    #: 300 张图里坏一张，用户点"开始训练"只看到 "line 1 column 3"，不知道是哪张。
+    #: ★ 2026-11-16：以前这个循环有 `except: pass`，坏 JSON 能走过扫描阶段，
+    #:   直到 `convert_pair` 里的 `json.load` 才炸，异常里没有文件名。
+    corrupt = []
     for f in sorted(img_dir.iterdir()):
         if f.suffix.lower() not in (".bmp", ".png", ".jpg", ".jpeg"):
             continue
         det_json = f.parent / (f.stem + "_det.json")
         if det_json.exists():
-            annotated.append((f, det_json))
             try:
                 with open(det_json, "r", encoding="utf-8") as jf:
                     data = json.load(jf)
-                for cat in data.get("categories", []):
-                    name = cat.get("name", "")
-                    if name and name.lower() != "background":
-                        all_categories.add(name)
-            except Exception:
-                pass
-    
+            except Exception as e:                    # noqa: BLE001
+                corrupt.append((det_json.name, "%s: %s" % (type(e).__name__, e)))
+                continue                              # ★ 坏的不进训练集
+            annotated.append((f, det_json))
+            for cat in data.get("categories", []):
+                name = cat.get("name", "")
+                if name and name.lower() != "background":
+                    all_categories.add(name)
+
     if not annotated:
-        raise RuntimeError("No annotated images with _det.json found")
+        msg = "No annotated images with _det.json found"
+        if corrupt:
+            msg += ("；其中 %d 个标注文件损坏（%s）—— 修好或删掉后重试，"
+                    "或从 images/*_det.json.bad-* 恢复"
+                    % (len(corrupt), "、".join(n for n, _ in corrupt[:5])))
+        raise RuntimeError(msg)
     
     # Sort categories for consistent class IDs
     class_names = sorted(all_categories)
@@ -215,10 +226,16 @@ def build_yolo_dataset(project_dir, output_dir=None, val_split=0.2, seed=42):
         with open(label_path, "w", encoding="utf-8") as f:
             f.write("\n".join(labels))
     
-    for img_path, det_path in train_pairs:
-        convert_pair(img_path, det_path, "train")
-    for img_path, det_path in val_pairs:
-        convert_pair(img_path, det_path, "val")
+    for subset, pairs in (("train", train_pairs), ("val", val_pairs)):
+        for img_path, det_path in pairs:
+            try:
+                convert_pair(img_path, det_path, subset)
+            except Exception as e:                    # noqa: BLE001
+                # 扫描阶段已经验过 JSON 能解析，走到这里多半是图片本身坏了 / 写盘失败。
+                # 不管哪种，异常里**必须带文件名** —— 否则现场只能一张张去试。
+                raise RuntimeError(
+                    "构建数据集失败：%s（%s: %s）。该图或其标注可能损坏，"
+                    "修好/删掉后重试。" % (det_path.name, type(e).__name__, e)) from e
     
     # Write data.yaml
     data_yaml = output_dir / "data.yaml"
@@ -244,6 +261,9 @@ names: {json.dumps(class_names)}
         "class_names": class_names,
         "output_dir": str(output_dir),
         "removed_files": removed,      # 重建前清掉的旧副本数（界面上顺手报一句）
+        #: 因解析失败被跳过的 `_det.json` 文件名（训练**继续**，但必须让用户看见）。
+        "skipped_corrupt": [n for n, _ in corrupt],
+        "skipped_corrupt_detail": corrupt,
     }
 
 

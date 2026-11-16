@@ -367,6 +367,74 @@ def test_refuse_non_dataset_dir():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def _corrupt_json(path):
+    """写一个**非法** `_det.json`（截断，与现场 `line 1 column 3` 同形态）。"""
+    with open(path, "w", encoding="utf-8") as f:
+        f.write('{ "annotations": [ {"id": 1')
+
+
+def test_corrupt_det_json_skipped_and_named():
+    """★ 坏标注：**跳过并指名**，训练继续（300 张坏一张不该全废）。
+
+    用户实拍：`convert_pair` 里的 `json.load` 没有 try，300 张坏一张就抛
+    `JSONDecodeError: line 1 column 3 (char 2)`，异常里**没有文件名**，
+    现场只能一张张去试。
+    """
+    tmp = tempfile.mkdtemp()
+    try:
+        pd = make_project(tmp, 4)
+        _corrupt_json(os.path.join(pd, "images", "img02_det.json"))
+        rep = ds_mod.build_yolo_dataset(pd, val_split=0.5)
+
+        assert rep["train_images"] + rep["val_images"] == 3, rep
+        assert rep.get("skipped_corrupt") == ["img02_det.json"], \
+            "★ 没报告是哪张文件坏了：%r" % (rep.get("skipped_corrupt"),)
+        # 坏的那张连图都不许拷进数据集 —— 只有图没有 label 会被 YOLO 当负样本
+        assert "img02" not in (_bases(pd, "train") | _bases(pd, "val")), \
+            "★ 坏标注的图进了数据集（YOLO 会当成无目标的负样本）"
+        _assert_counts_match(pd, rep)
+        _assert_no_overlap(pd)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_all_corrupt_error_names_files():
+    """★ 全部坏掉时抛错，但错误信息里必须有文件名（不是裸 JSONDecodeError）。"""
+    tmp = tempfile.mkdtemp()
+    try:
+        pd = make_project(tmp, 2)
+        for b in ("img00", "img01"):
+            _corrupt_json(os.path.join(pd, "images", b + "_det.json"))
+        raised = None
+        try:
+            ds_mod.build_yolo_dataset(pd, val_split=0.5)
+        except RuntimeError as e:
+            raised = e
+        assert raised is not None, "★ 一个标注都建不出来却没说"
+        assert "img00_det.json" in str(raised), "★ 错误信息没指名文件：%s" % raised
+        assert "损坏" in str(raised), "★ 没说明是文件损坏：%s" % raised
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_convert_failure_names_file():
+    """图片本身坏了（不是图）：构建失败时也要报**文件名**。"""
+    tmp = tempfile.mkdtemp()
+    try:
+        pd = make_project(tmp, 3)
+        with open(os.path.join(pd, "images", "img01.png"), "wb") as f:
+            f.write(b"not a png at all")
+        raised = None
+        try:
+            ds_mod.build_yolo_dataset(pd, val_split=0.34)
+        except RuntimeError as e:
+            raised = e
+        assert raised is not None, "★ 图片坏了却静默通过（会训出一个坏数据集）"
+        assert "img01_det.json" in str(raised), "★ 没指名是哪张图：%s" % raised
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def main():
     checks = [
         ("★ 首次构建：文件数 == 报告数", test_counts_match_report_first_build),
@@ -380,6 +448,9 @@ def main():
         ("★ 护栏：输出目录 = 工程自己的 images/ → 拒绝", test_refuse_own_images_dir),
         ("★ 护栏：只有 images/ 子目录的目录 → 不算数据集", test_refuse_dir_with_only_images_subdir),
         ("护栏：工程内无关的非空目录 → 拒绝", test_refuse_non_dataset_dir),
+        ("★ 坏标注：跳过并指名，训练不停", test_corrupt_det_json_skipped_and_named),
+        ("★ 全坏时抛错要带文件名", test_all_corrupt_error_names_files),
+        ("★ 图片坏了也要带文件名", test_convert_failure_names_file),
     ]
     for name, fn in checks:
         check(name, fn)
