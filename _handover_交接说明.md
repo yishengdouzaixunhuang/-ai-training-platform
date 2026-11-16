@@ -675,6 +675,21 @@
     结束（`_on_det_training_done`）/ 线程没起来时都复位。
     ⚠️ 如果以后把检测训练也挪进任务队列，这个标志要一起删，别留两套并发控制。
 
+50. **Space / Ctrl+Space：全局兜底必须带焦点守卫**（2026-11-16）
+    修了四条：① 空格只在画布有焦点时有效（检测模式没进全局兜底）；② 检测模式下
+    Ctrl+Space 关了框、状态行还显示 `Annot:ON`；③ 键盘入口不发 `view_changed`
+    （多视图参考窗不刷新）；④ 两个空格分支都没判 `isAutoRepeat`。
+    ⚠️ **① 的坑**：`QApplication.installEventFilter(self)` 装在**全应用**上。
+       老版本只判 `_cls_mode`、不看焦点 ⇒ 分类工程开着时，新建工程对话框里
+       `'NG part'` 变 `'NGpart'`，还顺手切了热力图。所以 `_space_should_be_ours()`
+       必须先排除：autoRepeat / 焦点在输入控件（QLineEdit、QTextEdit、
+       QPlainTextEdit、QAbstractSpinBox、可编辑 QComboBox）/ 有模态对话框。
+       顺带：纯空格要按 `mods == Qt.NoModifier` 判，否则 Ctrl+Space 也被吃掉。
+    ⚠️ `status_info_text()` 的 Annot 字段**检测/分割读的不是同一个标志**
+       （`_show_annotation_boxes` vs `_show_annotation`），别再一刀切。
+    ⚠️ 写"守卫"用例时，先断言**前提**（比如"焦点确实不在输入框上"），否则另一条
+       守卫会替它挡枪 —— 模态守卫那条变异第一版就是这么漏掉的。
+
 
 
 ## 8. 换电脑 / 换机器维护 SOP

@@ -5285,15 +5285,77 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         self._update_selection_count()
 
 
-    def eventFilter(self, obj, event):
-        """Catch Space key in classification mode before child widgets consume it."""
-        from PyQt5.QtCore import QEvent
-        if (event.type() == QEvent.KeyPress 
-                and event.key() == Qt.Key_Space 
-                and not event.isAutoRepeat()
-                and getattr(self, "_cls_mode", False)):
-            self._toggle_heatmap()
+    def _focus_is_text_input(self):
+        """焦点在不在"需要吃空格"的输入控件上。
+
+        这个判断是全局按键过滤器的安全阀：装了 `QApplication.installEventFilter`
+        就等于接管全应用的按键，抢错了就会让用户**打不出空格**。
+        """
+        from PyQt5.QtWidgets import (QApplication, QLineEdit, QTextEdit,
+                                     QPlainTextEdit, QAbstractSpinBox, QComboBox)
+        fw = QApplication.focusWidget()
+        if fw is None:
+            return False
+        if isinstance(fw, (QLineEdit, QTextEdit, QPlainTextEdit, QAbstractSpinBox)):
             return True
+        # 可编辑下拉框内部也是个 QLineEdit，但保险起见单独认一次
+        if isinstance(fw, QComboBox) and fw.isEditable():
+            return True
+        return False
+
+    def _space_should_be_ours(self, event):
+        """全局的 Space / Ctrl+Space 要不要接过来（False = 让原控件照常处理）。"""
+        from PyQt5.QtWidgets import QApplication
+        if event.isAutoRepeat():
+            return False                     # 按住不放：交给各分支自己防抖
+        if self._focus_is_text_input():
+            return False                     # 正在打字，别抢空格
+        if QApplication.activeModalWidget() is not None:
+            return False                     # 模态对话框里也别抢
+        return True
+
+    def eventFilter(self, obj, event):
+        """Space / Ctrl+Space 的**全局**兜底（画布没焦点时也能用）。
+
+        ⚠️ 这个过滤器装在 `QApplication` 上，等于接管全应用的按键，所以必须先
+           确认焦点不在需要空格的控件上。
+
+           2026-11-16 之前的版本**没有这层判断**，而且只判 `_cls_mode`：
+           · 分类工程开着时，新建工程对话框里连「测试 工程」的空格都打不出来
+             （实测 `'NG part'` → `'NGpart'`），还会顺手把背后的热力图切一刀；
+           · 检测模式完全没接，于是"点完图片列表按空格没反应"。
+           两件事一起修：加 `_space_should_be_ours()`，并把检测模式接进来。
+
+        为什么接全局而不是"只让画布响应"：空格是"看"的操作，用户在列表里点完图
+        接着按空格是最自然的手势；要求他先点回画布属于让用户迁就实现。
+        但**只接纯空格与 Ctrl+Space**，其它组合一律放行。
+        """
+        from PyQt5.QtCore import QEvent
+        if event.type() != QEvent.KeyPress or event.key() != Qt.Key_Space:
+            return super().eventFilter(obj, event)
+        if not self._space_should_be_ours(event):
+            return super().eventFilter(obj, event)
+
+        # 去掉小键盘修饰位再比较：NumLock 开着时它也会出现在 modifiers 里
+        mods = event.modifiers() & ~Qt.KeypadModifier
+        canvas = getattr(self, "canvas", None)
+
+        if mods == Qt.NoModifier:
+            if getattr(self, "_cls_mode", False):
+                self._toggle_heatmap()
+                return True
+            if getattr(self, "_detection_mode", False) and canvas is not None:
+                canvas.toggle_prediction_visibility()
+                return True
+            return super().eventFilter(obj, event)      # 分割模式仍只认画布内
+
+        if mods == Qt.ControlModifier:
+            # ⚠️ 分类模式的纯空格分支原来把 Ctrl+Space 一起吃了（切热力图）。
+            #    这里按修饰键分流，Ctrl+Space 只切标注框，且与画布内走同一个方法。
+            if getattr(self, "_detection_mode", False) and canvas is not None:
+                canvas.toggle_annotation_visibility()
+                return True
+
         return super().eventFilter(obj, event)
 
     def _toggle_heatmap(self):

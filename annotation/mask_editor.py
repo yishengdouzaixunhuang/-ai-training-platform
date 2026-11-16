@@ -972,7 +972,16 @@ class AnnotationCanvas(QWidget):
                       self.MODE_POLYGON: "Polygon", self.MODE_LINE: "Line",
                       self.MODE_RECT: "Rect", self.MODE_CIRCLE: "Circle", self.MODE_ELLIPSE: "Ellipse",
                       self.MODE_PAN: "Pan", self.MODE_SAM: "SAM"}
-        ann_status = "Annot:ON" if self._show_annotation else "Annot:OFF"
+        # ⚠️ 检测模式与分割模式用的**不是同一个**标志：检测画框看 `_show_annotation_boxes`
+        #    （见 paintEvent 里 det_overlay.paint(show_annotations=...)），分割看
+        #    `_show_annotation`。这里原来一刀切读 `_show_annotation`，于是检测模式下
+        #    按 Ctrl+Space 框关掉了、状态行还亮着 `Annot:ON`（永远不动的假显示）。
+        #    同一函数下面的 pred_status 早就分了支，这里漏了。
+        if self._det_overlay is not None:
+            anno_on = bool(getattr(self, "_show_annotation_boxes", True))
+        else:
+            anno_on = bool(self._show_annotation)
+        ann_status = "Annot:ON" if anno_on else "Annot:OFF"
         ign_status = "Ignore:ON" if getattr(self, "_show_ignore", True) else "Ignore:OFF"
         if self._det_overlay is not None:
             pred_status = "Pred:ON" if self._show_pred_boxes else "Pred:OFF"
@@ -1722,26 +1731,25 @@ class AnnotationCanvas(QWidget):
                 self.update()
                 self.status_message.emit("Removed point, %d remaining" % len(self._polygon_points))
         elif event.key() == Qt.Key_Space and event.modifiers() == Qt.ControlModifier:
-            self.toggle_annotation_visibility()
+            # 按住 Ctrl+Space 不放时系统会按重复率连发 KeyPress ⇒ 连续翻转。
+            # 同文件的 `_is_ctrl_alt_toggle()` 与分类模式的 eventFilter 都判了
+            # autoRepeat，这两个空格分支原来都没判（这个、还有下面那个）。
+            if not event.isAutoRepeat():
+                self.toggle_annotation_visibility()
             event.accept()
         elif self._is_ctrl_alt_toggle(event):
             # Ctrl+Alt（只按修饰键，不配字母）：单独开关忽略区
             self.toggle_ignore_visibility()
             event.accept()
         elif event.key() == Qt.Key_Space:
-            if self._det_overlay is not None:
-                # Detection mode: Space -> toggle prediction boxes
-                self._show_pred_boxes = not self._show_pred_boxes
-                self.status_message.emit("Prediction boxes: %s" % ("ON" if self._show_pred_boxes else "OFF"))
-            elif getattr(self, "_cls_mode", False):
-                # Classification mode: Space -> toggle Grad-CAM heatmap
-                self._show_heatmap = not self._show_heatmap
-                self.status_message.emit("Heatmap: %s" % ("ON" if self._show_heatmap else "OFF"))
-            else:
-                # Segmentation mode: toggle prediction overlay
-                self._show_prediction = not self._show_prediction
-                self.status_message.emit("Prediction: %s" % ("ON" if self._show_prediction else "OFF"))
-            self.update()
+            # ★ 2026-11-16：两处修正 ——
+            #   ① 防抖：按住空格会连发 KeyPress（同上）；
+            #   ② **不要再在这里抄一份三模式的逻辑**。原先是内联副本，末尾只有
+            #      `self.update()`，漏了 `view_changed.emit()` ⇒ 多视图参考窗不跟着刷，
+            #      就是"窗口 2/3 慢一拍"。按钮入口 `toggle_prediction_visibility()`
+            #      的注释自己写着"两处入口必须都走同一个方法"，这里正好违反了。
+            if not event.isAutoRepeat():
+                self.toggle_prediction_visibility()
             event.accept()
 
     def _is_ctrl_alt_toggle(self, event):
