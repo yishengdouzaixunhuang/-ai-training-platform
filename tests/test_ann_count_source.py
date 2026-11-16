@@ -239,6 +239,39 @@ def test_empty_det_shows_zero_and_does_not_fall_back():
     assert "空标注" in (cell.toolTip() or ""), "★ 0 没有提示说明：%r" % cell.toolTip()
 
 
+def test_cls_class_named_zero_has_no_empty_tooltip():
+    """★ 分类工程里类别名就叫 "0"：那一格是**类别**，不是"空标注 0 个框"。
+
+    P3（用户复核）：tooltip 原来的判据是渲染出来的文字 `val == "0"` ——
+    而字符分类工程的类别名正是 "0"/"1"，那一行会被误挂"空标注"提示。
+    现在判 `has_ann and shape_count == 0`（语义），别看字符串。
+    """
+    name, pd = make_project("图像分类", n_images=1, labelme_n=0, det_n=0)
+    pj = os.path.join(pd, "project.json")
+    with open(pj, "r", encoding="utf-8") as f:
+        meta = json.load(f)
+    meta["classes"] = ["0", "1"]
+    with open(pj, "w", encoding="utf-8") as f:
+        json.dump(meta, f, ensure_ascii=False)
+    os.makedirs(os.path.join(pd, "annotations"), exist_ok=True)
+    with open(os.path.join(pd, "annotations", "class_labels.json"), "w",
+              encoding="utf-8") as f:
+        json.dump({"labels": ["0", "1"], "mapping": {"images/img1.png": 0}}, f)
+
+    # ⚠️ 分类模式的底栏没有 `Blocks:`（是 "Ann / Classes / Selected"），
+    #    不能走 open_project() 的等待条件，这里直接等列表渲染出行。
+    w = window()
+    w._open_project_by_name(name)
+    wait_until(lambda: w._project_dir == pd and w.image_list_widget.rowCount() > 0,
+               desc="分类工程列表就绪")
+    _APP.processEvents()
+    cell = w.image_list_widget.item(0, ANN_COL)
+    assert cell is not None, "前提：列表没渲染出来"
+    assert cell.text() == "0", "前提：这一格应是类别名 0，实际 %r" % cell.text()
+    assert not (cell.toolTip() or ""), \
+        "★ 分类类别名被误挂「空标注」提示：%r" % cell.toolTip()
+
+
 def test_no_annotation_at_all_is_blank():
     """真·没标注（既无 _det.json 也无 labelme）→ 「标注」列留空，别显示 0。"""
     name, pd = make_project("目标检测", n_images=1, labelme_n=0, det_n=0)
@@ -271,6 +304,7 @@ def main():
         ("★ _det.json 优先于 labelme", test_det_wins_over_labelme),
         ("★ 空 _det.json：显示 0、算已标注、不退回 labelme", test_empty_det_shows_zero_and_does_not_fall_back),
         ("真没标注的图留空（不显示 0）", test_no_annotation_at_all_is_blank),
+        ("★ 分类类别名 \"0\" 不挂「空标注」提示", test_cls_class_named_zero_has_no_empty_tooltip),
     ]
     try:
         for name, fn in checks:

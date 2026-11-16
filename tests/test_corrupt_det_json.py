@@ -188,14 +188,20 @@ def test_load_predictions_corrupt_does_not_raise():
 # ------------------------------------------------------------------ 界面层
 
 def test_open_project_with_corrupt_det_json():
-    """★ 带坏标注的工程要能正常打开：列表有行、不弹原始 JSON 异常。"""
+    """★ 带坏标注的工程要能正常打开：列表有行、不弹原始 JSON 异常、原文件留档。
+
+    ⚠️ 2026-11-16 语义变化：坏文件不再**留在原地**按 0 个框显示 ——
+       第一次加载就把它改名 `img1_det.json.bad-<时间戳>`（否则用户随手加一个框
+       就把原文覆盖了）。所以"再加载一次还能看到错误原因"这条不再成立
+       （文件已经不在那儿了）；现在钉的是：不弹原始异常 + 工程不半开 + 原文进了 .bad。
+    """
     w = window()
     name, pd, _img = make_project(corrupt_det=True)
+    msgs = []
+    w.log_signal.connect(lambda m: msgs.append(m))     # 打开时那次加载的日志也要接住
 
     # 吞掉所有弹窗并记录：这条用例就是"别再弹原始异常"
     popped = []
-    from ui import main_window as mw
-    orig_warn, orig_crit, orig_info = mw.QMessageBox, None, None
     orig_gw = QMessageBox.warning
 
     def spy(*a, **k):
@@ -213,16 +219,20 @@ def test_open_project_with_corrupt_det_json():
     bad_pop = [msg for msg in popped if "Expecting" in str(msg) or "JSON" in str(msg)]
     assert not bad_pop, "★ 仍然把原始 JSON 异常弹给用户了：%r" % bad_pop[:2]
 
-    # 加载点：坏文件按 0 个框，且记下原因
     wait_until(lambda: getattr(w.canvas, "current_image_path", None), desc="首图已显示")
-    msgs = []
-    w.log_signal.connect(lambda m: msgs.append(m))
-    w._load_det_annotations()
+    w._load_det_annotations()          # 再加载一次：文件已不在，应该安静地 0 个框
     assert w._box_manager is not None, "检测模式的 BoxManager 没建起来"
     assert w._box_manager.count == 0, "坏文件应该是 0 个框：%r" % w._box_manager.count
-    assert (w._box_manager.load_errors or {}).get("annot"), "★ 没有记录坏文件原因"
+
+    imgs = os.listdir(os.path.join(pd, "images"))
+    bad = [f for f in imgs if ".bad-" in f]
+    assert bad, "★ 坏文件没留档（加一个框就会覆盖原文）：%r" % imgs
+    assert not os.path.exists(os.path.join(pd, "images", "img1_det.json")), \
+        "★ 坏文件还留在原地"
     assert any("标注文件损坏" in str(m) for m in msgs), \
         "★ 日志里没说清楚（用户只会看到「框没了」）：%r" % msgs[-3:]
+    assert any("留档" in str(m) for m in msgs), \
+        "★ 日志没说原文去哪了（用户没法找回）：%r" % msgs[-3:]
 
 
 def test_open_project_with_good_det_json():

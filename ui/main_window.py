@@ -5162,7 +5162,11 @@ class MainWindow(OcrOcvMixin, QMainWindow):
                 item = QTableWidgetItem(val)
                 if center:
                     item.setTextAlignment(Qt.AlignCenter)
-                if col == 4 and val == "0":
+                if col == 4 and data.get('has_ann') and data.get('shape_count') == 0:
+                    # ⚠️ 判据用**语义**（有标注文件但 0 个框），别用 val == "0" ——
+                    #    分类模式这一格是类别名（', '.join(shape_labels)），
+                    #    而字符分类工程的类别名就叫 "0"/"1"，那一行会被挂上
+                    #    "空标注"提示，实际它是有类别的。
                     item.setToolTip("空标注：标注文件在、0 个框（通常表示「已确认无缺陷」）")
                 self.image_list_widget.setItem(row, col, item)
             # Store path in first column
@@ -9603,7 +9607,31 @@ class MainWindow(OcrOcvMixin, QMainWindow):
             self.log(f"[推理参数] 过滤失败，已按原结果输出: {type(e).__name__}: {e}")
             return pred, {}
     def _run_det_inference_single(self, project_dir):
-        """Run detection inference on current image and display boxes."""
+        """单图检测推理：预测只进 `outputs/` 与画布**预测层**，绝不碰标注文件。
+
+        ★ 2026-11-16（用户复核提出，优先级高于 P0-2）
+
+        以前是 `delete_all()` + 逐框 `add_box()`，而 `add_box()` 里直接 `save()`：
+
+        ```
+        delete_all() → save() → images/<base>_det.json 立刻被写成 []
+        add_box() × N → 每加一个 save() 一次（6 个框 = 6 次写盘）
+        ```
+
+        两个后果，都是"点一下丢数据"：
+
+        1. 人的 10 个 GT 框在**第一次** save 时就落盘没了。撤销栈救不回来 ——
+           undo 只是把内存列表写回去，前提是文件没被覆盖过。
+        2. 写的是 `images/<base>_det.json`，也就是**标注的权威文件**；
+           而批量推理写的是 `outputs/`。两条路口径不一致。
+
+        用户的心理是"我标完了，跑一下模型看看效果"，不会预期标注被换成预测。
+        坏标注文件留档（`BoxManager._quarantine`）之后更容易踩：显示 0 个框时
+        用户心想"反正空的，跑个推理看看"，一跑连 `.bad` 都来不及救。
+
+        现在与批量同一口径：预测写 `outputs/<base>_det.json`（含 `meta.infer_ms`），
+        再 `load_predictions()` 读进预测层显示。`_det.json` 只在**用户手动改框**时写。
+        """
         model_path = os.path.join(project_dir, "models", "detection", "best.pt")
         if not os.path.exists(model_path):
             return QMessageBox.warning(self, "Error",
@@ -9612,17 +9640,53 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         try:
             from detection.trainer import DetectionTrainer
             dt = DetectionTrainer(project_dir)
-            boxes = dt.predict(self.canvas.current_image_path)
-            if boxes:
-                self._box_manager.delete_all()
+            path = self.canvas.current_image_path
+            _t0 = time.time()
+            boxes = dt.predict(path)
+            infer_ms = round((time.time() - _t0) * 1000.0, 1)
+            base = os.path.splitext(os.path.basename(path))[0]
+
+            out_dir = os.path.join(project_dir, "outputs")
+            try:
+                from detection.coco_io import save_coco_json
+                # 类别按**出现顺序**收集，与 DetWriter 节点一致（两路口径相同）
+                classes = []
                 for b in boxes:
-                    self._box_manager.add_box(
-                        bbox=b["bbox"],
-                        category=b.get("category", "object"),
-                        score=b.get("confidence"),
-                    )
-                self.canvas.update()
-            self.log(f"Detection complete: {len(boxes)} objects found")
+                    cat = b.get("category", "unknown")
+                    if cat not in classes:
+                        classes.append(cat)
+                classes = classes or ["background"]
+                for b in boxes:
+                    b["category_id"] = classes.index(b.get("category", "unknown"))
+                    b["score"] = b.get("score", b.get("confidence"))
+                img = self.canvas.image
+                save_coco_json(os.path.join(out_dir, base + "_det.json"), path,
+                               img.size[0], img.size[1], boxes, classes,
+                               bbox_type="hbb", meta={"infer_ms": infer_ms})
+                self._box_manager.load_predictions(out_dir)
+            except Exception as e:            # noqa: BLE001
+                # 落盘失败不该让"看得见预测"也失败：退回只更新内存预测层
+                self.log(f"[单图推理] 预测落盘失败（本次结果仍显示）: {type(e).__name__}: {e}")
+                self._box_manager.set_pred_boxes(boxes)
+
+            self.canvas.update()
+            self.log(f"Detection complete: {len(boxes)} objects found"
+                     f"（预测 → outputs/，标注未改动）")
+
+            # 列表「结果/耗时」跟着刷新（与批量的口径相同）
+            try:
+                # 这两个 dict 不在 __init__ 里建（由输出统计加载时才有），
+                # 与批量那条路一样先补上，否则第一次单图推理会 AttributeError
+                if not getattr(self, "_pred_count", None):
+                    self._pred_count = {}
+                if not getattr(self, "_infer_times", None):
+                    self._infer_times = {}
+                self._pred_count[base] = len(boxes)
+                self._infer_times[base] = infer_ms
+                self._pred_count_cache_key = None
+                self._filter_images(self.search_input.text())
+            except Exception as e:            # noqa: BLE001
+                self.log(f"[单图推理] 刷新列表失败: {type(e).__name__}: {e}")
         except Exception as e:
             import traceback
             self.log(traceback.format_exc())

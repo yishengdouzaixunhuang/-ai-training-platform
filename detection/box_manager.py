@@ -3,7 +3,7 @@
 Stores boxes in memory, supports undo, and auto-saves to COCO JSON.
 Designed to be used alongside (not inside) the existing segmentation annotation system.
 """
-import os, json, copy
+import os, json, copy, time
 import numpy as np
 from detection.coco_io import load_coco_json, save_coco_json, get_det_json_path
 
@@ -78,6 +78,13 @@ class BoxManager:
         except Exception as e:                       # noqa: BLE001
             self.load_errors["annot"] = "%s: %s" % (type(e).__name__, e)
             bboxes, info = None, None
+            # ★ 2026-11-16：坏文件**先改名留档**再允许后续写。
+            #   容错让"打不开工程"变成"打得开、显示 0 个框"，而 save() 写的就是
+            #   self._boxes —— 用户看到 0 个框、随手加一个框，原文件就被 1 个框整体替换。
+            #   哪怕原文只是被截断 2 个字节、还能手工救回 9 个框，也没了。
+            archived = self._quarantine(json_path)
+            if archived:
+                self.load_errors["annot"] += "；原文件已留档: %s" % os.path.basename(archived)
         if bboxes is not None:
             self._boxes = bboxes
             self._next_id = max((b.get("id", 0) for b in bboxes), default=0) + 1
@@ -91,6 +98,29 @@ class BoxManager:
         self._undo_stack.clear()
         self._redo_stack.clear()
         self._dirty = False
+
+    def _quarantine(self, json_path):
+        """把读不动的标注文件改名留档，返回新路径（失败返回 None，绝不抛）。
+
+        `x_det.json` → `x_det.json.bad-20261116T170500`（重名再加 `-1`、`-2`）。
+
+        改名失败（文件被别的进程占着）也**不挡**"按 0 个框显示"，但要把原因记进
+        `load_errors` —— 否则用户会以为原文件还在、内容也还在，其实一编辑就被覆盖。
+        """
+        if not os.path.exists(json_path):
+            return None
+        stamp = time.strftime("%Y%m%dT%H%M%S")
+        dst = "%s.bad-%s" % (json_path, stamp)
+        n = 1
+        while os.path.exists(dst):
+            dst = "%s.bad-%s-%d" % (json_path, stamp, n)
+            n += 1
+        try:
+            os.replace(json_path, dst)
+        except OSError as e:
+            self.load_errors["annot"] += "；留档失败: %s: %s" % (type(e).__name__, e)
+            return None
+        return dst
 
     def save(self):
         """Save boxes to detection JSON file."""
@@ -127,6 +157,15 @@ class BoxManager:
             self._pred_boxes = bboxes
         else:
             self._pred_boxes = []
+
+    def set_pred_boxes(self, boxes):
+        """直接替换**预测层**（单图推理用）。只影响显示，不落盘、不碰标注。
+
+        ★ 2026-11-16：单图推理以前走 `delete_all()` + `add_box()`，而 `add_box`
+          里直接 `save()` —— 写的是 `images/<base>_det.json`（人的标注）。
+          "标完了跑一下模型看看效果"会把标注整体换成预测。现在预测只进这一层。
+        """
+        self._pred_boxes = list(boxes or [])
 
     def set_image_size(self, width, height):
         self._image_width = width
