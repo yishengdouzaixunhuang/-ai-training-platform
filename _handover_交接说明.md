@@ -796,6 +796,19 @@
     ⚠️ 变异脚本判据也要可信：`退出码非零 and 有 FAIL 行` 会把"崩在断言外"
        误报成"漏了"（本轮实拍）。现在只看退出码，并把"没有 FAIL 行"标出来。
 
+60. **右键「推理选中的图像」**（2026-11-16，用户照友商提的需求）
+    只跑选中的图：**复用批量流水线，只换图片清单**，别逐张调单图推理（那条是同步的，
+    选 50 张卡界面 50 次、没进度没取消）。
+    链：`_infer_selected_images(rows)` → `_enqueue_inference(paths)` →
+    `_dispatch_batch_inference(..., only=...)` → det/seg 的批量实现 → `BatchRunner.run(images)`。
+    ⚠️ `_batch_inference()` 的签名和 `clicked.connect(self._batch_inference)` **没动**，
+       函数体挪进 `_enqueue_inference(only=None)`；加参数要这样加，别给 `_batch_inference`
+       加位置参数（Qt 的 `checked=False` 会顶进去）。
+    ⚠️ 分类/OCR（按目录遍历）和多视图分割（按组喂 9 通道）**不支持子集**，
+       明确提示而不是假装跑了。
+    ⚠️ 测试要走到**流水线那一层**：只测"入口收到了 only" 抓不到"分派时把 only 丢了"
+       （变异实拍：直接调 `_run_det_batch_inference` 的那条用例绕过了分派层）。
+
 
 
 ## 8. 换电脑 / 换机器维护 SOP

@@ -6366,6 +6366,11 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         a_conv.setToolTip("过杀→扣成背景（负样本）；漏杀→重建掩膜（正样本）；正常→固化 AI 检出")
         a_conv.triggered.connect(self._run_convert_by_mark)
         menu.addSeparator()
+        # ── 推理选中（2026-11-16，友商同款）：只跑勾选的这些图 ──
+        a_inf_sel = menu.addAction("推理选中的图像")
+        a_inf_sel.setToolTip("只对选中的图片跑一遍推理（结果写 outputs/，不改标注；进任务队列可取消）")
+        a_inf_sel.triggered.connect(lambda: self._infer_selected_images(selected_rows, project_dir))
+        menu.addSeparator()
         for label, key in [("Set as Train", "train"), ("Set as Val", "val"), ("Set as Test", "test")]:
             action = menu.addAction(label)
             action.triggered.connect(lambda checked, k=key: self._set_selected_split(selected_rows, k, project_dir, split_map))
@@ -6420,6 +6425,63 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         act_undo.setToolTip("把最近一次删除的文件与索引还原回去" if n_bak else "没有可撤销的删除记录")
         act_undo.triggered.connect(lambda: self._undo_last_delete(project_dir))
         menu.exec_(self.image_list_widget.viewport().mapToGlobal(pos))
+
+    # ---------- 推理选中 ----------
+
+    #: 「推理选中的图像」认的图片扩展名（与 `flow.batch.list_images` 保持一致）
+    _INFER_SEL_EXTS = (".bmp", ".png", ".jpg", ".jpeg", ".tif", ".tiff")
+
+    def _infer_selected_images(self, selected_rows, project_dir):
+        """右键「推理选中的图像」：只跑这些图，走**与批量同一条**流水线。
+
+        为什么不做成"逐张调单图推理"：`_run_det_inference_single` 是**同步**的，
+        选 50 张就卡界面 50 次，而且没有进度、没法取消。这里复用批量流水线
+        （`BatchRunner` + 任务队列），只把图片清单换成选中的这些 ——
+        进度条、任务队列里那一行、×取消、结果写 `outputs/`，全都和批量一致。
+
+        范围（刻意保守）：
+        · 检测 / 单视图分割 —— 支持；
+        · 分类 / OCR —— 批处理按目录遍历，传子集会被忽略 ⇒ 直接提示，别假装跑了；
+        · 多视图分割 —— 按"组"喂 9 通道，单张挑出来会崩 ⇒ 同样提示。
+        """
+        paths = []
+        for r in sorted(selected_rows):
+            item = self.image_list_widget.item(r, 0)
+            p = item.data(Qt.UserRole) if item else None
+            if p and os.path.splitext(p)[1].lower() in self._INFER_SEL_EXTS:
+                paths.append(p)
+        paths = list(dict.fromkeys(paths))          # 去重但保留用户行的顺序
+        if not paths:
+            return QMessageBox.information(
+                self, "推理选中的图像", "选中的行里没有可推理的图片。")
+
+        missing = [p for p in paths if not os.path.exists(p)]
+        paths = [p for p in paths if os.path.exists(p)]
+        if not paths:
+            return QMessageBox.information(
+                self, "推理选中的图像",
+                "选中的 %d 张图片都不存在（可能已被删除或移动）。" % len(missing))
+
+        if self._cls_mode or self._ocr_mode:
+            return QMessageBox.information(
+                self, "推理选中的图像",
+                "当前工程类型暂不支持「只推理选中」（分类 / OCR 的批处理是按目录遍历的）。\n"
+                "请用「开始推理」跑全部。")
+        if not self._detection_mode:
+            try:
+                from training.multiview_gui import is_multiview_project
+                if is_multiview_project(project_dir):
+                    return QMessageBox.information(
+                        self, "推理选中的图像",
+                        "多视图工程按「组」推理（三视图合成 9 通道），暂不支持只跑选中的几张。\n"
+                        "请用「开始推理」跑全部组。")
+            except Exception as e:  # noqa: BLE001
+                self.log(f"[推理选中] 多视图判定失败，按单视图处理: {type(e).__name__}: {e}")
+
+        if missing:
+            self.log("⚠️ 推理选中：%d 张文件不存在，已跳过" % len(missing))
+        self.log("推理选中：%d 张（结果写 outputs/，不改标注）" % len(paths))
+        self._enqueue_inference(paths)
 
     # ---------- 删除 / 撤销（见 core/file_ops.py） ----------
 
@@ -9711,7 +9773,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
             QMessageBox.warning(self, "Error", f"Detection inference failed: {e}")
 
     def _batch_inference(self):
-        """批量推理入口：**先在任务队列登记一行**，再由队列串行执行真正的推理。
+        """批量推理入口（全部图片）：**先在任务队列登记一行**，再由队列串行执行。
 
         为什么要登记而不是直接跑：批量推理动辄几十秒~几分钟，原来只有一个全局进度条，
         连跑两次就互相覆盖，也**没法单独取消**某一次。
@@ -9721,12 +9783,22 @@ class MainWindow(OcrOcvMixin, QMainWindow):
            而是在既有的 `_update_infer_progress` 槽里顺手推给队列 —— 一个数字两处用，
            不各算一套（否则进度条与队列行会对不上）。
         """
+        self._enqueue_inference(None)
+
+    def _enqueue_inference(self, only=None):
+        """把一次推理任务登记进队列。
+
+        Args:
+            only: None = 全部图片；否则只跑这些**图片绝对路径**（右键「推理选中的图像」）。
+                  只认检测/分割两路 —— 分类/OCR/多视图的批处理是按目录/成组遍历的，
+                  传子集会在那些实现里被忽略，所以入口处就拦住（见 `_infer_selected_images`）。
+        """
         if not self.current_project:
             return QMessageBox.warning(self, "Warning", "Please open a project first")
         project_dir = str(self.pm.get_project_dir(self.current_project["name"]))
         q = getattr(self, "_task_queue", None)
         if q is None:                       # 没有队列控件时按老路走（保持能用）
-            return self._dispatch_batch_inference(project_dir)
+            return self._dispatch_batch_inference(project_dir, only=only)
 
         from ui.task_queue import TaskKind as _TK
         kindname = ("分类" if self._cls_mode else "OCR" if self._ocr_mode
@@ -9742,28 +9814,35 @@ class MainWindow(OcrOcvMixin, QMainWindow):
             self._active_infer_ctx = ctx
             try:
                 self._dispatch_batch_inference(
-                    project_dir, stop=lambda: ctx.task.stop_flag)
+                    project_dir, stop=lambda: ctx.task.stop_flag, only=only)
                 if not ctx.canceled:
                     ctx.progress(max(1, ctx.task.total or 1), ctx.task.total or 1)
             finally:
                 self._active_infer_ctx = None
 
-        q.submit(_TK.INFER,
-                 "批量推理·%s [%s]" % (kindname, time.strftime("%H%M%S")),
+        if only:
+            _title = "推理选中·%s [%s]（%d 张）" % (
+                kindname, time.strftime("%H%M%S"), len(only))
+        else:
+            _title = "批量推理·%s [%s]" % (kindname, time.strftime("%H%M%S"))
+        q.submit(_TK.INFER, _title,
                  project=os.path.basename(project_dir), total=0,
                  detail="排队中…", run=_run)
 
-    def _dispatch_batch_inference(self, project_dir, stop=None):
-        """按当前工程类型分派到对应的批量推理实现（队列只管"排队/取消/进度"）。"""
+    def _dispatch_batch_inference(self, project_dir, stop=None, only=None):
+        """按当前工程类型分派到对应的批量推理实现（队列只管"排队/取消/进度"）。
+
+        `only` 只有检测/分割两路认（见 `_enqueue_inference` 的说明）。
+        """
         if self._cls_mode:
             return self._start_cls_batch_inference(stop=stop)
         if self._ocr_mode:
             return self._run_ocr_batch(stop=stop)
         if self._detection_mode:
-            return self._run_det_batch_inference(project_dir, stop=stop)
-        return self._run_seg_batch_inference(project_dir, stop=stop)
+            return self._run_det_batch_inference(project_dir, stop=stop, only=only)
+        return self._run_seg_batch_inference(project_dir, stop=stop, only=only)
 
-    def _run_seg_batch_inference(self, project_dir, *, stop=None):
+    def _run_seg_batch_inference(self, project_dir, *, stop=None, only=None):
         stop = self._infer_stop(stop)   # 本次推理自己的停止判据（见 _infer_stop）
         model_file = self._resolve_model_for_use(self.model_combo.currentText())
         model_path = os.path.join(project_dir, "models", model_file)
@@ -9778,10 +9857,16 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         try:
             from training.multiview_gui import is_multiview_project
             if is_multiview_project(project_dir):
+                if only:
+                    # 三视图要按"组"喂 9 通道，单张挑出来喂进去必崩 —— 入口处已拦，双保险
+                    return QMessageBox.information(
+                        self, "推理选中",
+                        "多视图工程按组推理，暂不支持只跑选中的几张。\n"
+                        "请用「开始推理」跑全部组。")
                 return self._run_seg_batch_inference_mv(project_dir, model_file, out_dir, stop=stop)
         except Exception as e:
             self.log(f"[多视图批处理] 判定失败，退回单图流程: {type(e).__name__}: {e}")
-        images = list_images(project_dir)
+        images = [p for p in only if os.path.exists(p)] if only else list_images(project_dir)
         if not images:
             return QMessageBox.warning(self, "Warning", "No images found")
         total = len(images)
@@ -9865,8 +9950,8 @@ class MainWindow(OcrOcvMixin, QMainWindow):
                 ui_call(self.btn_infer_stop.setEnabled, False)
                 ui_call(self.infer_progress.setVisible, False)
         threading.Thread(target=run, daemon=True).start()
-    def _run_det_batch_inference(self, project_dir, *, stop=None):
-        """Batch detection inference on all images."""
+    def _run_det_batch_inference(self, project_dir, *, stop=None, only=None):
+        """检测批量推理。`only` = 只跑这些图片路径（右键「推理选中的图像」）。"""
         stop = self._infer_stop(stop)   # 本次推理自己的停止判据（见 _infer_stop）
         model_path = os.path.join(project_dir, "models", "detection", "best.pt")
         if not os.path.exists(model_path):
@@ -9875,7 +9960,9 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         out_dir = os.path.join(project_dir, "outputs")
         os.makedirs(out_dir, exist_ok=True)
         from flow.batch import BatchRunner, build_det_flow, list_images
-        images = list_images(project_dir)
+        # ⚠️ 子集也要按 list_images 的同一套扩展名过滤：右键菜单那边虽然已经筛过，
+        #    但这里再筛一次更保险（万一以后有别的调用方传进来）。顺序保持用户行的顺序。
+        images = ([p for p in only if os.path.exists(p)] if only else list_images(project_dir))
         if not images:
             return QMessageBox.warning(self, "Warning", "No images found")
         classes = getattr(self, "_cached_classes", None) or ["background"]
