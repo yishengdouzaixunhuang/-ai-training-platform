@@ -4738,6 +4738,12 @@ class MainWindow(OcrOcvMixin, QMainWindow):
                     labels = getattr(self, "_cached_classes", []) or []
                     if int(cls_id) < len(labels):
                         shape_labels.append(labels[int(cls_id)])
+            # ★★ 2026-11-16：**同一批标注只认一个来源**。
+            #   检测工程的 `images/<base>_det.json` 是从 labelme 的 `<base>.json` 转出来的
+            #   —— 两份文件描述的是同一批框（导入标注时 .json 会留在 images/ 里）。
+            #   这里原来两份都累加，用户看到"这张图就 10 个字符，列表写 20"，
+            #   底栏 Blocks 也是 2 倍（实测 300 个框报 600），"标注块数"筛选一起错。
+            #   优先级：_det.json（检测侧的权威）> labelme JSON（分割/未转换态）> 掩膜类别数。
             if _det_exists:
                 try:
                     from detection.coco_io import load_coco_json
@@ -4750,7 +4756,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
                                 shape_labels.append(cat)
                 except Exception:
                     pass
-            if _json_exists:
+            elif _json_exists:
                 # 预热未完成时也跳过：这批 JSON 合计上 GB，主线程扫一遍就是几秒冻结。
                 # shape_labels 只在预热期间为空，等补刷时全部回来（搜索/标注名筛选随之生效）。
                 if _allow_decode:

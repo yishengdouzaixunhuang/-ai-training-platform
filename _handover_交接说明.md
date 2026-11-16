@@ -690,6 +690,17 @@
     ⚠️ 写"守卫"用例时，先断言**前提**（比如"焦点确实不在输入框上"），否则另一条
        守卫会替它挡枪 —— 模态守卫那条变异第一版就是这么漏掉的。
 
+51. **列表「标注」数翻倍：同一批标注算了两遍**（2026-11-16，用户问"10 个字符为啥显示 20"）
+    检测工程的 `images/<base>.json`（labelme 原件）和 `<base>_det.json`（转出来的）
+    描述的是**同一批框**。`_filter_images` 原来两份都累加 ⇒ 10 变 20，
+    底栏 `Blocks` 300 变 600（真实工程实测），「标注块数」筛选跟着错。
+    现在按 `_det.json` > labelme JSON > 掩膜 **只取一个来源**（`if/elif` 串起来，
+    顺带修掉原来 `elif _mask_has_content` 会覆盖检测框数的隐患）。
+    ⚠️ 训练侧不受影响（`build_yolo_dataset` 只读 `_det.json`），别去动它。
+    ⚠️ 写这类统计用例要**等预热补刷**：首轮建表时 `_allow_decode` 还是 False，
+       labelme 那一支被跳过，此时 bug 看不见；等 `_on_mask_stats_ready` 补刷才翻倍。
+       `tests/test_ann_count_source.py` 的 `open_project(wait_warm=True)` 就是干这个的。
+
 
 
 ## 8. 换电脑 / 换机器维护 SOP
