@@ -7,6 +7,65 @@ YOLO-format label files for training with ultralytics YOLO.
 import os, json, shutil, random
 from pathlib import Path
 
+#: 判定"这个目录像不像我们生成的数据集"。清理前用它挡一下，防止把用户的
+#: 图片目录/搞错路径的目录整个删掉。
+_DATASET_MARKERS = ("images", "labels", "data.yaml")
+
+
+def _wipe_previous_dataset(output_dir, project_dir):
+    """把上一轮生成的 `yolo_dataset/` **整个**删掉，返回删掉的文件数。
+
+    ## 为什么必须清
+
+    图片按 base 名落在 `images/train|val/` 下，而拷贝是
+    `if not dst_img.exists(): copy2`。于是：
+
+    - 补图/删图后列表长度变了 → `random.seed(42)` 的 shuffle 结果**整体改变**
+      （列表长度固定时才恰好每次一样），某张图这次被分到 val，
+      上一轮留在 `images/train/` 的那一份永远不会被删；
+    - 结果：同一张图**同时出现在 train 和 val**。模型训练时见过它、验证时又考它，
+      mAP 虚高，而界面上完全看不出来 —— 比"划分不生效"危险得多。
+
+    删图方向同样会残留：工程里删掉的图，旧副本还在训练集里继续被训练。
+    `data.yaml` 之类生成物也一起清，避免新旧口径混着用。
+
+    ## 为什么失败必须抛
+
+    上一次训练的 DataLoader 可能还占着文件（Windows 上是 `PermissionError`）。
+    此时若 `ignore_errors=True` 继续重建，结果是"看着重建了、其实还是旧的"，
+    比不清理更难查。所以这里转换成带说明的 RuntimeError，让界面上真的报错。
+
+    ## 不删什么
+
+    `project_dir` 本身、它的上级目录、以及看起来不像数据集的非空目录 —— 一律拒绝，
+    抛 ValueError。这条是防手滑：`output_dir` 传错一个参数就把源图删了。
+    """
+    out = Path(output_dir).resolve()
+    proj = Path(project_dir).resolve()
+
+    if out == proj:
+        raise ValueError("数据集输出目录不能是工程根目录：%s" % out)
+    if out in proj.parents:
+        raise ValueError("数据集输出目录不能是工程的上级目录：%s" % out)
+    if not out.exists():
+        return 0
+
+    looks_like_dataset = any((out / m).exists() for m in _DATASET_MARKERS)
+    has_content = any(out.iterdir())
+    if has_content and not looks_like_dataset:
+        raise ValueError(
+            "拒绝清空 %s：里面没有 images/labels/data.yaml，不像构建出来的数据集。"
+            "确认 output_dir 是否传错。" % out)
+
+    n = sum(1 for _ in out.rglob("*"))
+    try:
+        shutil.rmtree(str(out))
+    except OSError as e:
+        raise RuntimeError(
+            "清理旧数据集失败：%s（%s）。多半是上一次训练还在跑、文件被占用 —— "
+            "等它结束再重试，别用忽略错误的方式硬上。" % (out, e)) from e
+    return n
+
 def build_yolo_dataset(project_dir, output_dir=None, val_split=0.2, seed=42):
     """Build YOLO-format dataset from project detection annotations.
     
@@ -65,7 +124,10 @@ def build_yolo_dataset(project_dir, output_dir=None, val_split=0.2, seed=42):
     split_idx = int(len(annotated_sorted) * (1 - val_split))
     train_pairs = annotated_sorted[:split_idx]
     val_pairs = annotated_sorted[split_idx:]
-    
+
+    # ★ 重建前把上一轮的数据集整个删掉（见 _wipe_previous_dataset 的说明）
+    removed = _wipe_previous_dataset(output_dir, project_dir)
+
     # Create directory structure
     for subset, pairs in [("train", train_pairs), ("val", val_pairs)]:
         (output_dir / "images" / subset).mkdir(parents=True, exist_ok=True)
@@ -159,6 +221,7 @@ names: {json.dumps(class_names)}
         "num_classes": num_classes,
         "class_names": class_names,
         "output_dir": str(output_dir),
+        "removed_files": removed,      # 重建前清掉的旧副本数（界面上顺手报一句）
     }
 
 

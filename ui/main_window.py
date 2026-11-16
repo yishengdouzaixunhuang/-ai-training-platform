@@ -9105,6 +9105,16 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         """Start detection model training."""
         if not self.current_project:
             return QMessageBox.warning(self, "Warning", "Please open a project first")
+        # ★ 2026-11-16：检测训练是**直接起线程**（不走任务队列），连点两次就是两个
+        #   训练同时跑：抢显存，而且第二个会把第一个正在读的 yolo_dataset 删掉重建
+        #   （重建前清空旧产物）⇒ 第一个训练读着读着文件没了。先挡住。
+        if getattr(self, "_det_training_running", False):
+            return QMessageBox.information(
+                self, "训练还没结束",
+                "上一次目标检测训练还在跑。\n\n"
+                "等它结束或点 Stop 之后再开 —— 两个训练同时跑会抢显存，"
+                "而且会互相删掉对方正在读的数据集。")
+        self._det_training_running = True
         project_dir = str(self.pm.get_project_dir(self.current_project["name"]))
         model_name = self.det_model_combo.currentText() if hasattr(self, 'det_model_combo') else "yolov8s"
         epochs = self.det_epochs_spin.value() if hasattr(self, 'det_epochs_spin') else 200
@@ -9124,6 +9134,12 @@ class MainWindow(OcrOcvMixin, QMainWindow):
                     self.log_signal.emit("ERROR: No detection annotations found")
                     return
                 ds_info = build_yolo_dataset(project_dir, val_split=0.2)
+                # 重建前会整目录清掉上一轮产物（否则补图后同一张图会同时躺在
+                # train 和 val 里，mAP 虚高）。清了多少顺手说一句，别让人以为没重建。
+                if ds_info.get("removed_files"):
+                    self.log_signal.emit(
+                        "已清理上一轮数据集：%d 个文件（避免新旧副本混用）"
+                        % ds_info["removed_files"])
                 self.log_signal.emit(
                     f"Dataset: {ds_info['train_images']} train + {ds_info['val_images']} val, "
                     f"{ds_info['num_classes']} classes: {', '.join(ds_info['class_names'])}")
@@ -9164,9 +9180,15 @@ class MainWindow(OcrOcvMixin, QMainWindow):
                 self.log_signal.emit("GPU memory released")
                 # Use invokeMethod to safely update UI from thread
                 self.log_signal.emit("__DET_TRAINING_DONE__")
-        threading.Thread(target=run, daemon=True).start()
+        try:
+            threading.Thread(target=run, daemon=True).start()
+        except Exception:
+            self._det_training_running = False   # 线程都没起来，别把界面锁死
+            raise
+
     def _on_det_training_done(self):
         """Called from main thread via signal to update UI after training."""
+        self._det_training_running = False      # 见 _start_det_training 的并发说明
         self.btn_det_train_stop.setEnabled(False)
         self.det_train_progress.setVisible(False)
         self.det_train_status.setText("Ready")

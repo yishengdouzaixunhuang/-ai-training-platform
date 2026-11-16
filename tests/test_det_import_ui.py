@@ -273,6 +273,52 @@ def test_import_twice_is_idempotent():
     assert len(d["annotations"]) == 2, "重复导入把框翻倍了：%d" % len(d["annotations"])
 
 
+def test_det_training_guard_blocks_double_start():
+    """★ 检测训练连点两次：第二次必须被拦下，不许起第二个训练线程。
+
+    为什么这条重要：检测训练是直接 `threading.Thread(...)`，不走任务队列。
+    两份训练同时跑会抢显存，而且第二份在重建数据集时会把第一份正在读的
+    `yolo_dataset/` 删掉 —— 第一份读着读着文件没了。
+    """
+    import ui.main_window as mw
+    w = window()
+    name, pd, bases, labels = make_project("目标检测", n=2)
+    w._open_project_by_name(name)
+    wait_until(lambda: w._project_dir == pd, desc="工程已切到临时检测工程")
+
+    calls = []
+
+    class MB(_MB):
+        @staticmethod
+        def information(*a, **k):
+            calls.append(a[1] if len(a) > 1 else "")
+            return 1
+
+    class _NoThread:
+        class Thread:
+            def __init__(self, *a, **k):
+                raise AssertionError("★ 第二次点击仍然起了训练线程")
+
+    w._det_training_running = True            # 模拟"上一份还在跑"
+    orig_mb, orig_th = mw.QMessageBox, mw.threading
+    mw.QMessageBox, mw.threading = MB, _NoThread
+    try:
+        w._start_det_training()
+    finally:
+        mw.QMessageBox, mw.threading = orig_mb, orig_th
+        # ⚠️ 这里**不能**顺手清 `_det_training_running`：清了之后下面那条
+        #   "训练结束要复位"的断言就永远为真（第一版就这么写成空转的）。
+
+    assert w._det_training_running is True, "★ 被挡下的那次把标志清了？"
+    assert calls, "★ 没提示用户（会被当成点了没反应）"
+    assert w.det_train_status.text() != "Preparing...", "★ 状态栏仍被改成 Preparing"
+
+    # 反向：训练结束必须复位，否则"挡一次"变成"永远挡住"，下次点训练毫无反应
+    w._on_det_training_done()
+    assert w._det_training_running is False, \
+        "★ 训练结束后标志没复位 —— 下一次点训练会被误挡"
+
+
 def cleanup():
     w = _WIN
     if w is not None:
@@ -292,6 +338,7 @@ def main():
         ("★ 导入标注走真入口：出 _det.json、不出掩膜", test_import_writes_det_json_not_mask),
         ("★ 对照组：分割工程仍然只出掩膜", test_segmentation_import_still_makes_mask),
         ("重复导入幂等（框不翻倍）", test_import_twice_is_idempotent),
+        ("★ 检测训练连点两次被挡下", test_det_training_guard_blocks_double_start),
     ]
     try:
         for name, fn in checks:
