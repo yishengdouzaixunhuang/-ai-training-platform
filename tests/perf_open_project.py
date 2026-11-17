@@ -13,8 +13,9 @@
     {"open_ms": 1350, "filter_ms": 843, "rows": 1690, ...}
 失败时退出码非 0，并在 stderr 说明原因。
 """
-import _testenv  # noqa: F401  无显示器 + 配置目录隔离（见 tests/_testenv.py）
 from __future__ import annotations
+
+import _testenv  # noqa: F401  无显示器 + 配置目录隔离（见 tests/_testenv.py）
 
 import argparse
 import json
