@@ -8,6 +8,8 @@ import os
 import sys
 import tempfile
 
+import _testenv  # noqa: F401  配置目录隔离（AITP_TEST_CFG_DIR）
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
@@ -91,6 +93,32 @@ def test_corrupt_json_not_overwritten():
         assert f.read() == raw, "load 把坏文件覆盖了"
 
 
+def test_default_path_honors_test_env():
+    """默认落点必须认 AITP_TEST_CFG_DIR，且写它不能碰仓库根真实配置。"""
+    P = _mod()
+    cfg_dir = os.environ.get("AITP_TEST_CFG_DIR")
+    assert cfg_dir, "AITP_TEST_CFG_DIR 未设置（tests/_testenv.py 没生效）"
+    p = P.default_path()
+    assert os.path.abspath(p) == os.path.abspath(
+        os.path.join(cfg_dir, ".ui_settings.json")), \
+        "默认路径没走测试配置目录：%r" % p
+
+    repo_cfg = os.path.join(ROOT, ".ui_settings.json")
+    before = None
+    if os.path.exists(repo_cfg):
+        with open(repo_cfg, "rb") as f:
+            before = f.read()
+
+    P.save({"probe_key": 123})
+    assert os.path.isfile(p), "隔离目录里没写出配置文件"
+    with open(p, "r", encoding="utf-8") as f:
+        assert json.load(f)["probe_key"] == 123
+
+    if before is not None:
+        with open(repo_cfg, "rb") as f:
+            assert f.read() == before, "★ ui_prefs 写了仓库根的真实 .ui_settings.json"
+
+
 def main():
     print("=== UI 偏好落盘 ===")
     check("缺文件给默认值", test_missing_file_defaults)
@@ -98,11 +126,12 @@ def main():
     check("未知键保留", test_unknown_key_preserved)
     check("原子写无残留", test_atomic_no_tmp_left)
     check("坏 JSON 不覆盖", test_corrupt_json_not_overwritten)
+    check("默认路径认测试隔离", test_default_path_honors_test_env)
     print()
     if failures:
-        print("❌ %d/5 项未通过" % len(failures))
+        print("❌ %d/6 项未通过" % len(failures))
         return 1
-    print("✅ 全部通过  5/5 通过")
+    print("✅ 全部通过  6/6 通过")
     return 0
 
 

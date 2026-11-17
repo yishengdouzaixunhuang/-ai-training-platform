@@ -20,6 +20,16 @@ def main():
     app = QApplication.instance() or QApplication([])
 
     from core import i18n
+    from core import ui_prefs
+    # 这条用例不许读仓库根真实偏好：必须走 tests/_testenv.py 的隔离目录。
+    # 否则用户在应用里点了 English，门禁第 2 步就会红（实测已发生）。
+    cfg_dir = os.environ.get("AITP_TEST_CFG_DIR")
+    assert cfg_dir, "AITP_TEST_CFG_DIR 未设置（_testenv 没生效）"
+    assert os.path.abspath(ui_prefs.default_path()) == os.path.abspath(
+        os.path.join(cfg_dir, ".ui_settings.json")), \
+        "ui_prefs 没认 AITP_TEST_CFG_DIR：%r" % ui_prefs.default_path()
+    # 用例自己写死临时配置，不依赖仓库根、也不依赖用户当前选了什么
+    ui_prefs.save({"lang": "zh"})
     i18n.reset_for_tests()
     assert i18n.load_dictionary() >= 1, "resources/i18n/en.json 没读到"
     i18n.set_language("en")

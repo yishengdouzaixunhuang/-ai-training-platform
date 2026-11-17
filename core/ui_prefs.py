@@ -20,7 +20,7 @@ import json
 import os
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DEFAULT_PATH = os.path.join(ROOT, ".ui_settings.json")
+DEFAULT_FILENAME = ".ui_settings.json"
 
 DEFAULTS = {
     "theme": "dark",
@@ -33,8 +33,18 @@ DEFAULTS = {
 }
 
 
+def default_path():
+    """默认落点：仓库根，但认 `AITP_TEST_CFG_DIR`（tests/_testenv.py 的隔离）。
+
+    必须动态解析，不能在 import 时算死 —— 测试会在 import 前设环境变量。
+    与 `core.settings.cfg_path()` 同一套约定，避免再出现"测试写脏真实配置"。
+    """
+    from core.settings import cfg_path
+    return cfg_path(DEFAULT_FILENAME)
+
+
 def _path(path):
-    return path or DEFAULT_PATH
+    return path or default_path()
 
 
 def _read(path):
