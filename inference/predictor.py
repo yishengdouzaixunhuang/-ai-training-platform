@@ -291,8 +291,7 @@ class Predictor:
         pred_sum = np.zeros((h, w), dtype=np.float32)
         count_map = np.zeros((h, w), dtype=np.float32)
 
-        hann_1d = np.hanning(tile_size)
-        hann = np.sqrt(hann_1d.reshape(-1, 1) * hann_1d.reshape(1, -1)).astype(np.float32)
+        hann = self._blend_window(tile_size)
 
         max_batch = 64
         for i in range(0, len(tiles), max_batch):
@@ -303,6 +302,7 @@ class Predictor:
                 tp = batch_preds[j][:tile_size-ph, :tile_size-pw]
                 th, tw = tp.shape
                 wgt = hann[:th, :tw] if (th != tile_size or tw != tile_size) else hann
+                wgt = self._edge_safe_weights(wgt, x1, y1, x2, y2, w, h)
                 pred_sum[y1:y2, x1:x2] += tp * wgt
                 count_map[y1:y2, x1:x2] += wgt
 
@@ -701,6 +701,40 @@ class Predictor:
         return (max(1, tile_size - ov_x), max(1, tile_size - ov_y),
                 ov_x > 0, ov_y > 0)
 
+    @staticmethod
+    def _blend_window(tile_size, use_hx=True, use_hy=True):
+        """分块拼接的权重窗（两轴可各自选择 Hann / 均匀）。"""
+        wx = np.hanning(tile_size) if use_hx else np.ones(tile_size)
+        wy = np.hanning(tile_size) if use_hy else np.ones(tile_size)
+        return np.sqrt(wy.reshape(-1, 1) * wx.reshape(1, -1)).astype(np.float32)
+
+    @staticmethod
+    def _edge_safe_weights(wgt, x1, y1, x2, y2, w, h):
+        """把「贴在图像最外一圈」的权重置 1，别让 Hann 的 0 把边界像素抹掉。
+
+        ★ 2026-11-17 修「分块推理外圈 1px 恒为类别 0」（审核实测：600×600 / 2001×1200
+          两种尺寸整圈为 0，456×456 不重叠时正常）：
+          Hann 窗两端恒为 0，而图像第一列只被第一块覆盖 ⇒ `count_map == 0`
+          ⇒ 被下面的 `count_map[count_map == 0] = 1` 兜住 ⇒ `pred_sum / 1` 仍是 0
+          ⇒ 输出类别 0。贴边缺陷会被**确定性**地漏掉，而 `_pred.png` 看起来一切正常。
+
+          为什么置 1 而不是"补一点"：那一列本来就没有第二块可以平均，平滑没有意义；
+          权重 1 才是"这块在这里说了算"的正确语义。
+
+        ⚠️ 必须 copy：`wgt` 常常是共享窗（`hann`）的切片视图，直接改会污染后面所有块。
+        """
+        if x1 == 0 or y1 == 0 or x2 == w or y2 == h:
+            wgt = wgt.copy()
+            if x1 == 0:
+                wgt[:, 0] = 1.0
+            if x2 == w:
+                wgt[:, -1] = 1.0
+            if y1 == 0:
+                wgt[0, :] = 1.0
+            if y2 == h:
+                wgt[-1, :] = 1.0
+        return wgt
+
     @torch.inference_mode()
     def _predict_tiled_torch(self, image, tile_size=512, overlap=64):
         """Tiled inference with CPU-side Hanning-window blending.
@@ -725,9 +759,7 @@ class Predictor:
 
         # Pre-compute blending window (NumPy is fast for this)
         # 某轴不重叠时该轴用均匀窗 1.0（Hann 两端为 0，会拼出黑缝）
-        _wx = np.hanning(tile_size) if use_hx else np.ones(tile_size)
-        _wy = np.hanning(tile_size) if use_hy else np.ones(tile_size)
-        hann = np.sqrt(_wy.reshape(-1, 1) * _wx.reshape(1, -1))
+        hann = self._blend_window(tile_size, use_hx, use_hy)
 
         # ★★ 2026-10-29 显存修复：批大小改按「每批总像素」预算。
         #
@@ -794,6 +826,7 @@ class Predictor:
                 pp = prob_batch[j][:tile_size-ph, :tile_size-pw]
                 th, tw = tp.shape
                 wgt = hann[:th, :tw] if (th != tile_size or tw != tile_size) else hann
+                wgt = self._edge_safe_weights(wgt, x1, y1, x2, y2, w, h)
                 pred_sum[y1:y2, x1:x2] += tp * wgt
                 prob_sum[y1:y2, x1:x2] += pp * wgt
                 count_map[y1:y2, x1:x2] += wgt
@@ -830,6 +863,7 @@ class Predictor:
                 gy = (np.hanning(tp.shape[0]) if use_hy else np.ones(tp.shape[0])).reshape(-1, 1)
                 gx = (np.hanning(tp.shape[1]) if use_hx else np.ones(tp.shape[1])).reshape(1, -1)
                 wgt = np.sqrt(gy * gx)
+                wgt = self._edge_safe_weights(wgt, x1, y1, x2, y2, w, h)
                 pred_sum[y1:y2, x1:x2] += tp * wgt
                 count_map[y1:y2, x1:x2] += wgt
         count_map[count_map == 0] = 1
