@@ -9,7 +9,7 @@ from PIL import Image
 from PyQt5.QtWidgets import (
     QFrame,
     QButtonGroup,
-    QMainWindow, QMenu, QAction, QSplitter, QTreeWidget, QTreeWidgetItem,
+    QMainWindow, QMenu, QAction, QActionGroup, QSplitter, QTreeWidget, QTreeWidgetItem,
     QTextEdit, QFileDialog, QMessageBox, QInputDialog, QVBoxLayout, QHBoxLayout,
     QWidget, QLabel, QPushButton, QComboBox, QSpinBox, QDoubleSpinBox, QProgressBar, QGroupBox,
     QListWidget, QSlider, QDialog, QFormLayout, QDialogButtonBox, QToolButton,
@@ -23,6 +23,7 @@ matplotlib.use("Qt5Agg")
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from core.config import APP_NAME, APP_VERSION, load_config, save_config, CLASS_COLORS
+from core.i18n import tr
 from core.imgio import resize_mask_u, pil_from_array, ensure_uint8
 from ui.qt_thread import ui_call, run_bg, ui_call_sync
 from ui.widgets import ElideLabel, ShrinkStack, LossCurveWindow, TrainSettingsDialog
@@ -363,6 +364,16 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         tm.addAction("Flow Editor...", self._open_flow_editor)
         sm = mb.addMenu("Settings(&S)")
         sm.addAction("Workspace...", self._set_workspace)
+        # 语言：只做「重启生效」（无 .ui / 无 tr()，热切换要维护控件注册表，留 v2）
+        lm = sm.addMenu(tr("语言 / Language"))
+        _lang_group = QActionGroup(self)
+        _lang_group.setExclusive(True)
+        for _label, _code in (("中文", "zh"), ("English", "en")):
+            _act = lm.addAction(tr(_label))
+            _act.setCheckable(True)
+            _act.setChecked(self._load_ui_setting("lang", "zh") == _code)
+            _act.setActionGroup(_lang_group)
+            _act.triggered.connect(lambda _checked=False, k=_code: self._set_language(k))
         vm = mb.addMenu("View(&V)")
         vm.addAction("Toggle Log Panel	Ctrl+L", self._toggle_log_panel)
         vm.addAction("Toggle Left Panel	Ctrl+[", lambda: self._toggle_panel("left"))
@@ -3281,6 +3292,24 @@ class MainWindow(OcrOcvMixin, QMainWindow):
             pass
         self._save_ui_setting("theme", name)
         self.log(f"[主题] 已切换到 {name}（下次启动保持）")
+
+    def _set_language(self, code):
+        """保存语言偏好；MVP 只做「重启生效」（热切换留 v2）。
+
+        文案用**当前语言**显示：选中文时提示中文，选英文时（重启后）提示英文。
+        """
+        if code == self._load_ui_setting("lang", "zh"):
+            return
+        self._save_ui_setting("lang", code)
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Information)
+        box.setWindowTitle(tr("需要重启"))
+        box.setText(tr("语言已保存，重启后生效。"))
+        restart_btn = box.addButton(tr("立即重启"), QMessageBox.AcceptRole)
+        box.addButton(tr("稍后"), QMessageBox.RejectRole)
+        box.exec_()
+        if box.clickedButton() is restart_btn:
+            self._restart_app()
 
     def _refresh_projects(self):
         projects = self.pm.list_projects()
@@ -8955,17 +8984,23 @@ class MainWindow(OcrOcvMixin, QMainWindow):
             self._save_ui_setting("log_panel_visible", not v)
 
     def _save_ui_setting(self, key, value):
+        """写 `.ui_settings.json`（原子，由 core/ui_prefs 统一负责）。
+
+        历史 bug：这里原来只改内存 `self._ui_settings`，从不落盘，
+        所以 tiled / cls_tta / 面板可见性重启就丢；语言要跨重启，必须先修这条链。
+        """
         try:
-            if not hasattr(self, "_ui_settings"):
-                self._ui_settings = {}
-            self._ui_settings[key] = value
+            from core.ui_prefs import save as _prefs_save
+            _prefs_save({key: value})
         except Exception:
             pass
 
     def _load_ui_setting(self, key, default=True):
-        if hasattr(self, "_ui_settings") and key in self._ui_settings:
-            return self._ui_settings[key]
-        return default
+        try:
+            from core.ui_prefs import get as _prefs_get
+            return _prefs_get(key, default)
+        except Exception:
+            return default
 
     def _pred_count_cache_key(self, base):
         return base

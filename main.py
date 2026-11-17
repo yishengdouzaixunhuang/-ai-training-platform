@@ -51,11 +51,19 @@ def _write_crash(exc_type, exc_value, exc_tb):
         pass
 
 def main():
+    # ===== 用户偏好：必须在 QApplication 之前读，语言/文件对话框属性都要用 =====
+    from core.ui_prefs import load as _load_ui_prefs
+    from core import i18n as _i18n
+    _PREFS = _load_ui_prefs()
+
     # ===== 高 DPI 缩放（幻16 等 2.5K/4K 高分屏，否则界面字体像蚂蚁一样小）=====
     # PyQt5 默认不开启高 DPI 缩放，必须显式设置，且必须在 QApplication 创建之前。
     from PyQt5.QtCore import Qt
     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
+    # 英文模式：文件对话框不用系统原生框（原生框跟 Windows 语言走，会是中文）
+    if _PREFS.get("lang") == "en":
+        QApplication.setAttribute(Qt.AA_DontUseNativeDialogs, True)
     try:
         # PassThrough：按系统实际缩放比例（如 150% -> 1.5x）精确缩放，避免四舍五入过大/过小
         QApplication.setHighDpiScaleFactorRoundingPolicy(
@@ -87,6 +95,10 @@ def main():
 
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
+    # ===== 语言：zh 恒等返回；en 查 resources/i18n/en.json =====
+    _i18n.set_language(_PREFS.get("lang", "zh"))
+    _i18n.load_dictionary()
+    _i18n.install_qt_translator(app, _i18n.get_language())
     # 必须在主线程、QApplication 之后立刻初始化：把「后台线程回主线程更新 UI」
     # 的转发器建在主线程上，否则子线程里 ui_call() 无处投递。
     from ui.qt_thread import init_ui_invoker as _init_ui_invoker
@@ -251,13 +263,7 @@ def main():
     # ===== 主题：基础表登记下来，然后按用户上次选择应用（深色/浅色）=====
     from ui.themes import set_base_qss, apply_theme
     set_base_qss(app.styleSheet())
-    try:
-        import json as _json, os as _os
-        _ui = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), ".ui_settings.json")
-        _th = (_json.load(open(_ui, encoding="utf-8")).get("theme", "dark")
-               if _os.path.exists(_ui) else "dark")
-    except Exception:
-        _th = "dark"
+    _th = _PREFS.get("theme", "dark")
     apply_theme(app, _th)
     # ⚠️ 清扫必须等**主窗口构造完**再跑：main 这里调 apply_theme 时一个控件都还没有，
     #    那一轮清扫等于空转（已踩：启动日志里一条 swept 都没有）。

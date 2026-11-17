@@ -560,18 +560,10 @@ def apply_theme(app, name="dark"):
         sweep_inline_styles(app, restore=True)
         app.setStyleSheet(base_qss() + DARK_INDICATOR + DARK_CHECK
                           + _DARK_SLIDER + _DARK_TOOLBAR_SW + _DARK_TASK_Q)
-    # 记住选择：直接写 .ui_settings.json（不依赖主窗口的 _save_ui_setting 落在哪个文件）
+    # 记住选择：统一走 core/ui_prefs（原子写、保留其它 UI 键）
     try:
-        import json as _json, os as _os
-        p = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))),
-                          ".ui_settings.json")
-        d = {}
-        if _os.path.exists(p):
-            with open(p, "r", encoding="utf-8") as f:
-                d = _json.load(f) or {}
-        d["theme"] = name
-        with open(p, "w", encoding="utf-8") as f:
-            _json.dump(d, f, indent=2, ensure_ascii=False)
+        from core.ui_prefs import save as _prefs_save
+        _prefs_save({"theme": name})
     except Exception:
         pass
     try:
