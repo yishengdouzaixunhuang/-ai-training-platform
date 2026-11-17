@@ -488,6 +488,12 @@ def get_train_test_split(project_dir):
 
 
 def save_train_test_split(project_dir, split_map):
+    """写 `train_test_split.json`（原子替换）。
+
+    ★ 2026-11-17：原来是 `open("w") + json.dump`。写到一半崩/断电 → 半截 JSON，
+    而读侧普遍是"解析失败就当 `{}`" ⇒ **所有图静默变「未划分」（空集）**，
+    界面上看不出异常。与 `core/file_ops._save_json` 统一成临时文件 + `os.replace`。
+    """
+    from core.file_ops import _save_json
     split_file = os.path.join(project_dir, "train_test_split.json")
-    with open(split_file, "w", encoding="utf-8") as f:
-        json.dump(split_map, f, indent=2, ensure_ascii=False)
+    _save_json(split_file, split_map)

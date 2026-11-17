@@ -10110,15 +10110,17 @@ class MainWindow(OcrOcvMixin, QMainWindow):
                 short_key = os.path.basename(k)
                 mapping[short_key] = labels_list.index(v)
             lbl_path = os.path.join(ann_dir, "class_labels.json")
-            with open(lbl_path, "w", encoding="utf-8") as lf:
-                json.dump({"labels": labels_list, "mapping": mapping}, lf, indent=2, ensure_ascii=False)
+            # ★ 2026-11-17：改原子写（临时文件 + os.replace）。半截文件会被读侧当空表，
+            #   表现为"类别全没了/全变未划分"，而不是报错。
+            from core.file_ops import _save_json as _atomic_json
+            _atomic_json(lbl_path, {"labels": labels_list, "mapping": mapping})
             self.log(f"Updated class_labels.json: {labels_list} ({len(label_map)} images)")
         
         # Generate train_test_split.json
         if split_map:
             split_path = os.path.join(project_dir, "train_test_split.json")
-            with open(split_path, "w", encoding="utf-8") as sf:
-                json.dump(split_map, sf, indent=2, ensure_ascii=False)
+            from core.file_ops import _save_json as _atomic_json
+            _atomic_json(split_path, split_map)
             train_cnt = sum(1 for v in split_map.values() if v == "train")
             val_cnt = sum(1 for v in split_map.values() if v == "val")
             self.log(f"Updated train_test_split.json: {train_cnt} train, {val_cnt} val")

@@ -30,10 +30,14 @@ class LabelManager:
         return {"labels": [], "mapping": {}}
 
     def save(self, data):
-        """Save labels to class_labels.json."""
+        """Save labels to class_labels.json（原子替换）。
+
+        ★ 2026-11-17：原来是 `open("w") + json.dump`。分类工程的类别真源就是这个文件，
+        半截 JSON 会被读侧当空映射 ⇒ 界面表现为"类别全没了/全变空集"，且不报错。
+        """
+        from core.file_ops import _save_json
         self.label_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(self.label_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
+        _save_json(str(self.label_path), data)
 
     def auto_label_from_folders(self):
         """Scan images/ subfolders and assign class labels automatically.

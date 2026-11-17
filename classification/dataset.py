@@ -97,10 +97,14 @@ def _default_split_map(project_dir):
 
 
 def _save_split_map(project_dir, split_map):
-    """Persist train_test_split.json."""
+    """Persist train_test_split.json（原子替换，别留半截文件）。
+
+    ★ 2026-11-17：与 `training/dataset.save_train_test_split` 同一口径 ——
+    半截 JSON 会被读侧当 `{}`，用户看到的是"我的划分没了"而不是"文件坏了"。
+    """
+    from core.file_ops import _save_json
     split_path = Path(project_dir) / "train_test_split.json"
-    with open(split_path, "w", encoding="utf-8") as f:
-        json.dump(split_map, f, indent=2, ensure_ascii=False)
+    _save_json(str(split_path), split_map)
 
 
 class _GlobalAugment:
