@@ -208,6 +208,16 @@ class AnnotationCanvas(QWidget):
 
     def load_image(self, image_path):
         self.current_image_path = image_path
+        # ★ 2026-11-17（用户报"列表切图改了 Annot/Ignore/Pred"）：
+        #   显示开关是**用户偏好**，不是"这张图的状态"，换图不许动它们。
+        #   这里存一份、方法结尾原样还原 —— 以后谁在加载流程里顺手改 `_show_*`，
+        #   都会被挡回去。历史真凶是下面那句 `self._show_prediction = False`：
+        #   本意是"别让上一张的预测残影"，但残影是 `_prediction_mask` 的事，
+        #   结果每点一次列表 Pred 就被强制关一次。
+        _keep_display_flags = (
+            self._show_annotation, self._show_ignore, self._show_prediction,
+            self._show_annotation_boxes, self._show_pred_boxes,
+        )
         pil_img = Image.open(image_path)
         ext = os.path.splitext(image_path)[1].lower()
         # Auto-detect height map: any .tif/.tiff
@@ -256,7 +266,7 @@ class AnnotationCanvas(QWidget):
             self._pred_overlay_cache.clear()
         except Exception:
             self._pred_overlay_cache = {}
-        self._show_prediction = False
+        # ⚠️ 不要在这里关 Pred —— 显示开关由 `_keep_display_flags` 原样还原（见方法开头）
         w, h = self.image.size
 
         # Load class names for label mapping
@@ -272,6 +282,9 @@ class AnnotationCanvas(QWidget):
         self._overlay_dirty = True
         self._fit_to_window()
         self._load_prediction_overlay(image_path)
+        # 还原用户偏好（见方法开头）；放在 update() 之前，第一帧就按用户的选择画
+        (self._show_annotation, self._show_ignore, self._show_prediction,
+         self._show_annotation_boxes, self._show_pred_boxes) = _keep_display_flags
         self.update()
 
     def _fit_to_window(self):
