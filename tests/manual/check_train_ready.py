@@ -30,7 +30,7 @@ except Exception as _e:  # pragma: no cover
     print("torch 导入失败: %s" % _e)
     sys.exit(2)
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 IMG_EXT = (".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff")
 

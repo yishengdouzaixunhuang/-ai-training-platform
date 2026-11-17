@@ -33,7 +33,10 @@ import tempfile
 import time
 import traceback
 
-ROOT = os.path.dirname(os.path.abspath(__file__))
+# 2026-11-17：本脚本从仓库根搬进 tests/manual/ 后，ROOT 指向了 manual/，
+# 导致 sys.path 少一层、且 `ROOT/ui/main_window.py` 这类源码核验路径全断。
+# 统一指向**仓库根**（下面的源码核验路径都按仓库根拼）。
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 

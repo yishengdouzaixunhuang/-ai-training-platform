@@ -12,7 +12,7 @@
   ④ 数据集通道数必须与模型一致（不一致就是"能跑但全错"的组合）
   ⑤ checkpoint 里记了 in_channels/views（推理端靠它复现同样的输入）
 
-跑法：`C:/aitp_venv/Scripts/python.exe selftest_inchannels.py`
+跑法：`C:/aitp_venv/Scripts/python.exe tests/manual/selftest_inchannels.py`（在仓库根）
 夹具建在系统临时目录，**不碰任何真实工程**；探针纪律：不写用户的注册表/settings。
 """
 import json
@@ -21,7 +21,9 @@ import shutil
 import sys
 import tempfile
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
 
 _RESULTS = []
 

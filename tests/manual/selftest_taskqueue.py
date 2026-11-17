@@ -9,14 +9,27 @@
   ⑤ **失败不炸平台**：任务抛异常只记 failed
   ⑥ **清空只清历史**，在跑的不动
 
-跑法：`C:/aitp_venv/Scripts/python.exe selftest_taskqueue.py`
+跑法：`C:/aitp_venv/Scripts/python.exe tests/manual/selftest_taskqueue.py`（在仓库根）
+
+⚠️ 2026-11-17：本脚本含「清空历史」「清空全部」两条用例，会用**默认**历史路径
+   `TaskQueue()` 真删 `.task_history.json`。审核实测跑一次就把仓库根的 3234 字节
+   历史写成 `[]`（真实记录全丢，且该文件在 .gitignore 里、版本库救不回来）。
+   所以下面**强制**把默认历史路径指到临时目录 —— 这条自测不许再碰真实数据。
 """
 import os
 import sys
+import tempfile
 import threading
 import time
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
+
+# 必须在构造 TaskQueue() 之前改默认值：它只在 __init__ 里读这一次。
+import ui.task_queue as _task_queue
+_task_queue.DEFAULT_HISTORY_PATH = os.path.join(
+    tempfile.mkdtemp(prefix="aitp_tq_selftest_"), ".task_history.json")
 
 from ui.task_queue import (TaskKind, TaskQueue, TaskState, _Canceled, fmt_eta)
 
