@@ -13,6 +13,7 @@
 区间有 7 组共 14 个数字框，横着排一行会挤成看不清；竖着一类一块又太长。
 """
 from __future__ import annotations
+from core.i18n import tr
 
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal
 from PyQt5.QtWidgets import (
@@ -37,7 +38,7 @@ class InferParamsPanel(QGroupBox):
     def __init__(self, parent=None):
         # ★ 原标题也是「推理参数」，和外层折叠标题重复 → 面板上看着像两个块。
         #   改成「结果过滤」：外层说"这块叫推理参数"，这里说"其中这段是过滤"。
-        super().__init__("结果过滤", parent)
+        super().__init__(tr("结果过滤"), parent)
         self._project_dir = None
         self._params = None
         self._loading = False
@@ -53,13 +54,13 @@ class InferParamsPanel(QGroupBox):
 
         # ── 类别选择 + Apply All ──
         top = QHBoxLayout(); top.setSpacing(4)
-        top.addWidget(QLabel("类别:"))
+        top.addWidget(QLabel(tr("类别:")))
         self.cls_combo = QComboBox()
         self.cls_combo.setMinimumWidth(90)
         self.cls_combo.currentTextChanged.connect(self._on_class_changed)
         top.addWidget(self.cls_combo, 1)
-        self.apply_all_btn = QPushButton("Apply All")
-        self.apply_all_btn.setToolTip("把当前类别的这组区间应用到**所有类别**")
+        self.apply_all_btn = QPushButton(tr("应用到全部"))
+        self.apply_all_btn.setToolTip(tr("把当前类别的这组区间应用到**所有类别**"))
         self.apply_all_btn.clicked.connect(self._apply_all)
         top.addWidget(self.apply_all_btn)
         root.addLayout(top)
@@ -69,7 +70,7 @@ class InferParamsPanel(QGroupBox):
         self._spins = {}
         self._enables = {}
         for row, (key, label, _default) in enumerate(RANGE_KEYS):
-            grid.addWidget(QLabel(label + ":"), row, 0)
+            grid.addWidget(QLabel(tr(label) + ":"), row, 0)
             lo = QDoubleSpinBox(); hi = QDoubleSpinBox()
             for sp in (lo, hi):
                 sp.setDecimals(4 if key == "score" else 1)
@@ -77,70 +78,72 @@ class InferParamsPanel(QGroupBox):
                 sp.setSingleStep(1.0)
                 sp.setKeyboardTracking(False)
                 sp.valueChanged.connect(self._on_value_changed)
-                sp.setToolTip(_NO_LIMIT_TIP)
+                sp.setToolTip(tr(_NO_LIMIT_TIP))
             grid.addWidget(lo, row, 1)
             grid.addWidget(QLabel("~"), row, 2)
             grid.addWidget(hi, row, 3)
             chk = QCheckBox()
             chk.setChecked(True)
-            chk.setToolTip(_ENABLE_TIP)
+            chk.setToolTip(tr(_ENABLE_TIP))
             chk.toggled.connect(self._on_value_changed)
             grid.addWidget(chk, row, 4)
             if key == "angle":
                 tip = ("角度归一到 -45~45：0 = 横平竖直，±45 = 45° 斜；\n"
                        "上下限都填 -180 表示不看角度")
-                lo.setToolTip(tip); hi.setToolTip(tip)
+                lo.setToolTip(tr(tip)); hi.setToolTip(tr(tip))
             elif key == "width":
                 tip = "宽度/高度按**外接矩形**算（和结果表里的宽度/高度同一口径）"
-                lo.setToolTip(tip); hi.setToolTip(tip)
+                lo.setToolTip(tr(tip)); hi.setToolTip(tr(tip))
             elif key == "score":
                 tip = "分数 = 连通域内的平均置信度；\n当前推理后端没有概率图时会自动跳过这一项（日志里会写明）"
-                lo.setToolTip(tip); hi.setToolTip(tip)
+                lo.setToolTip(tr(tip)); hi.setToolTip(tr(tip))
             elif key == "radius":
                 tip = ("半径 = 连通域等效半径 sqrt(面积/π)。\n"
                        "与「面积」等价（半径大 ⇔ 面积大），保留它是为了对齐友商的八维面板 ——\n"
                        "按半径调还是按面积调，挑一个口径统一就行，别两边同时收紧")
-                lo.setToolTip(tip); hi.setToolTip(tip)
+                lo.setToolTip(tr(tip)); hi.setToolTip(tr(tip))
             self._spins[key] = (lo, hi)
             self._enables[key] = chk
         root.addLayout(grid)
 
         # ── 全局后处理 ──
         g = QGridLayout(); g.setHorizontalSpacing(6); g.setVerticalSpacing(2)
-        g.addWidget(QLabel("孔洞填充:"), 0, 0)
+        g.addWidget(QLabel(tr("孔洞填充:")), 0, 0)
         self.hole_spin = QSpinBox(); self.hole_spin.setRange(0, 1000000)
-        self.hole_spin.setToolTip("填掉面积 ≤ N 的内部空洞（0=关）")
+        self.hole_spin.setToolTip(tr("填掉面积 ≤ N 的内部空洞（0=关）"))
         self.hole_spin.setKeyboardTracking(False)
         self.hole_spin.valueChanged.connect(self._on_value_changed)
         g.addWidget(self.hole_spin, 0, 1)
-        g.addWidget(QLabel("中心半径:"), 0, 2)
+        g.addWidget(QLabel(tr("中心半径:")), 0, 2)
         self.radius_spin = QSpinBox(); self.radius_spin.setRange(0, 100000)
-        self.radius_spin.setToolTip("等效半径 sqrt(面积/π) 的全局下限（0=不设下限）")
+        self.radius_spin.setToolTip(tr("等效半径 sqrt(面积/π) 的全局下限（0=不设下限）"))
         self.radius_spin.setKeyboardTracking(False)
         self.radius_spin.valueChanged.connect(self._on_value_changed)
         g.addWidget(self.radius_spin, 0, 3)
         self.center_radius_chk = QCheckBox()
         self.center_radius_chk.setChecked(True)
-        self.center_radius_chk.setToolTip(_ENABLE_TIP)
+        self.center_radius_chk.setToolTip(tr(_ENABLE_TIP))
         self.center_radius_chk.toggled.connect(self._on_value_changed)
         g.addWidget(self.center_radius_chk, 0, 4)
-        g.addWidget(QLabel("排序:"), 1, 0)
-        self.sort_combo = QComboBox(); self.sort_combo.addItems(SORT_CHOICES)
+        g.addWidget(QLabel(tr("排序:")), 1, 0)
+        self.sort_combo = QComboBox()
+        for _sort in SORT_CHOICES:
+            self.sort_combo.addItem(tr(_sort), _sort)
         self.sort_combo.currentTextChanged.connect(self._on_value_changed)
         g.addWidget(self.sort_combo, 1, 1)
-        g.addWidget(QLabel("最大检测个数:"), 1, 2)
+        g.addWidget(QLabel(tr("最大检测个数:")), 1, 2)
         self.maxdet_spin = QSpinBox(); self.maxdet_spin.setRange(1, 99999)
         self.maxdet_spin.setKeyboardTracking(False)
-        self.maxdet_spin.setToolTip("每类最多保留多少个连通域")
+        self.maxdet_spin.setToolTip(tr("每类最多保留多少个连通域"))
         self.maxdet_spin.valueChanged.connect(self._on_value_changed)
         g.addWidget(self.maxdet_spin, 1, 3)
         root.addLayout(g)
 
         bottom = QHBoxLayout(); bottom.setSpacing(4)
-        self.reset_btn = QPushButton("恢复默认")
+        self.reset_btn = QPushButton(tr("恢复默认"))
         self.reset_btn.clicked.connect(self._reset_current)
         bottom.addWidget(self.reset_btn)
-        self.hint = QLabel("上限填负数=不限；右侧勾选=该维是否参与过滤")
+        self.hint = QLabel(tr("上限填负数=不限；右侧勾选=该维是否参与过滤"))
         self.hint.setStyleSheet("color:#8A93A6; font-size:10px;")
         bottom.addWidget(self.hint, 1)
         root.addLayout(bottom)
@@ -165,9 +168,9 @@ class InferParamsPanel(QGroupBox):
             self._loading = False
         self.setEnabled(bool(self._classes))
         if not self._classes:
-            self.hint.setText("该工程还没有类别（先导入标注 JSON）")
+            self.hint.setText(tr("该工程还没有类别（先导入标注 JSON）"))
         else:
-            self.hint.setText("上限填负数=不限；右侧勾选=该维是否参与过滤")
+            self.hint.setText(tr("上限填负数=不限；右侧勾选=该维是否参与过滤"))
 
     def current_params(self):
         return self._params
@@ -192,7 +195,7 @@ class InferParamsPanel(QGroupBox):
             self.hole_spin.setValue(int(g.get("hole_fill", 0) or 0))
             self.radius_spin.setValue(int(g.get("center_radius", 0) or 0))
             self.center_radius_chk.setChecked(bool(g.get("center_radius_on", True)))
-            idx = self.sort_combo.findText(str(g.get("sort", "面积降序")))
+            idx = self.sort_combo.findData(str(g.get("sort", "面积降序")))
             self.sort_combo.setCurrentIndex(idx if idx >= 0 else 0)
             self.maxdet_spin.setValue(int(g.get("max_det", 99999) or 99999))
         finally:
@@ -217,7 +220,7 @@ class InferParamsPanel(QGroupBox):
         g["hole_fill"] = self.hole_spin.value()
         g["center_radius"] = self.radius_spin.value()
         g["center_radius_on"] = bool(self.center_radius_chk.isChecked())
-        g["sort"] = self.sort_combo.currentText()
+        g["sort"] = self.sort_combo.currentData() or "面积降序"
         g["max_det"] = self.maxdet_spin.value()
         self._save_timer.start()
         self.params_changed.emit()

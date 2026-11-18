@@ -17,6 +17,7 @@
   轮询比逐个挂钩子更稳、且不用改动画布代码）。
 """
 from __future__ import annotations
+from core.i18n import tr
 
 import numpy as np
 
@@ -190,7 +191,7 @@ class _RefPanel(QFrame):
         self._dirty = True
         if self._src is None or self._src.isNull():
             self.view.setPixmap(QPixmap())
-            self.view.setText("加载失败")
+            self.view.setText(tr("加载失败"))
         else:
             self.view.setText("")
             # 换图后光标还停在这一格上：按同一个窗口位置补报一次。

@@ -1,4 +1,5 @@
 """Image resize tool - fixed size / scale / max dimension, batch support."""
+from core.i18n import tr
 import os
 import cv2
 import numpy as np
@@ -16,7 +17,7 @@ class ResizeToolDialog(QDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Image Resize Tool")
+        self.setWindowTitle(tr("图像缩放工具"))
         self.setMinimumSize(700, 500)
         self._files = []
         self._output_dir = ""
@@ -27,7 +28,7 @@ class ResizeToolDialog(QDialog):
 
         # ---- File selection ----
         fl = QHBoxLayout()
-        fl.addWidget(QLabel("Images:"))
+        fl.addWidget(QLabel(tr("图片：")))
         self._file_list = QListWidget()
         self._file_list.setMaximumHeight(80)
         fl.addWidget(self._file_list)
@@ -42,12 +43,12 @@ class ResizeToolDialog(QDialog):
 
         # ---- Output directory ----
         ol = QHBoxLayout()
-        ol.addWidget(QLabel("Output:"))
+        ol.addWidget(QLabel(tr("输出：")))
         self._out_edit = QLineEdit()
-        self._out_edit.setPlaceholderText("Select output folder...")
+        self._out_edit.setPlaceholderText(tr("选择输出文件夹…"))
         self._out_edit.setReadOnly(True)
         ol.addWidget(self._out_edit)
-        btn_out = QPushButton("Browse...")
+        btn_out = QPushButton(tr("浏览…"))
         btn_out.clicked.connect(self._choose_output)
         ol.addWidget(btn_out)
         layout.addLayout(ol)
@@ -59,33 +60,33 @@ class ResizeToolDialog(QDialog):
         tab1 = QWidget()
         f1 = QFormLayout(tab1)
         self._fw_w = QSpinBox(); self._fw_w.setRange(1, 99999); self._fw_w.setValue(256)
-        f1.addRow("Width:", self._fw_w)
+        f1.addRow(tr("宽度："), self._fw_w)
         self._fw_h = QSpinBox(); self._fw_h.setRange(1, 99999); self._fw_h.setValue(256)
-        f1.addRow("Height:", self._fw_h)
-        self._fw_keep_ar = QCheckBox("Keep aspect ratio (fit within WxH)")
+        f1.addRow(tr("高度："), self._fw_h)
+        self._fw_keep_ar = QCheckBox(tr("保持宽高比（限制在 WxH 内）"))
         self._fw_keep_ar.setChecked(True)
         f1.addRow(self._fw_keep_ar)
-        self._tabs.addTab(tab1, "Fixed Size")
+        self._tabs.addTab(tab1, tr("固定尺寸"))
 
         # Tab 2: Scale Factor
         tab2 = QWidget()
         f2 = QFormLayout(tab2)
         self._sc_pct = QSpinBox(); self._sc_pct.setRange(10, 500); self._sc_pct.setValue(50)
         self._sc_pct.setSuffix(" %")
-        f2.addRow("Scale:", self._sc_pct)
-        self._sc_label = QLabel("Original: ? x ?")
+        f2.addRow(tr("缩放："), self._sc_pct)
+        self._sc_label = QLabel(tr("原始：? x ?"))
         f2.addRow(self._sc_label)
-        self._tabs.addTab(tab2, "Scale")
+        self._tabs.addTab(tab2, tr("缩放"))
 
         # Tab 3: Max Dimension
         tab3 = QWidget()
         f3 = QFormLayout(tab3)
         self._md_max = QSpinBox(); self._md_max.setRange(8, 99999); self._md_max.setValue(512)
         self._md_max.setSuffix(" px")
-        f3.addRow("Max side:", self._md_max)
-        self._md_label = QLabel("Longest side \u2264 N px, keep aspect ratio")
+        f3.addRow(tr("最长边："), self._md_max)
+        self._md_label = QLabel(tr("最长边 ≤ N px，保持宽高比"))
         f3.addRow(self._md_label)
-        self._tabs.addTab(tab3, "Max Dim")
+        self._tabs.addTab(tab3, tr("最大尺寸"))
 
         layout.addWidget(self._tabs)
 
@@ -98,7 +99,7 @@ class ResizeToolDialog(QDialog):
         bl.addStretch()
         self._preview_label = QLabel("")
         bl.addWidget(self._preview_label)
-        btn_process = QPushButton("Process")
+        btn_process = QPushButton(tr("处理"))
         btn_process.setFixedWidth(100)
         btn_process.setStyleSheet(
             "QPushButton { background-color: #2C5F8A; color: white; font-weight: bold; padding: 6px; }"
@@ -110,7 +111,7 @@ class ResizeToolDialog(QDialog):
     # ---- File management ----
     def _add_files(self):
         files, _ = QFileDialog.getOpenFileNames(
-            self, "Select Images", "",
+            self, tr("选择图片"), "",
             "Images (*.png *.jpg *.jpeg *.bmp *.tif *.tiff);;All (*.*)"
         )
         for f in files:
@@ -125,7 +126,7 @@ class ResizeToolDialog(QDialog):
         self._update_preview()
 
     def _choose_output(self):
-        d = QFileDialog.getExistingDirectory(self, "Select Output Directory")
+        d = QFileDialog.getExistingDirectory(self, tr("选择输出目录"))
         if d:
             self._output_dir = d
             self._out_edit.setText(d)
@@ -156,15 +157,15 @@ class ResizeToolDialog(QDialog):
                     nw, nh = int(w * scale), int(h * scale)
                     self._preview_label.setText(f"{w}x{h} \u2192 {nw}x{nh}")
         except Exception:
-            self._preview_label.setText("(preview error)")
+            self._preview_label.setText(tr("（预览失败）"))
 
     # ---- Processing ----
     def _process(self):
         if not self._files:
-            QMessageBox.warning(self, "Warning", "Please add images first")
+            QMessageBox.warning(self, tr("警告"), tr("请先添加图片"))
             return
         if not self._output_dir:
-            QMessageBox.warning(self, "Warning", "Please select output directory")
+            QMessageBox.warning(self, tr("警告"), tr("请选择输出目录"))
             return
 
         tab = self._tabs.currentIndex()
@@ -225,4 +226,4 @@ class ResizeToolDialog(QDialog):
         msg = f"Resized {total} images saved to:\n{self._output_dir}"
         if errors:
             msg += f"\n\nErrors ({len(errors)}):\n" + "\n".join(errors[:10])
-        QMessageBox.information(self, "Done", msg)
+        QMessageBox.information(self, tr("完成"), msg)

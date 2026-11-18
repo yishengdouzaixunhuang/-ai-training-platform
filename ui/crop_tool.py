@@ -1,4 +1,5 @@
 """Image crop tool - sliding window + ROI Crop, batch support."""
+from core.i18n import tr
 from core.imgio import imread_u, imwrite_u
 import os, cv2, json
 import numpy as np
@@ -22,7 +23,7 @@ class ROICanvas(QLabel):
         #    不在主题色白名单里，不会被 themes.py 清扫）。文字色必须显式给，
         #    否则「Drop image here or click Browse」在浅色主题下看不见。
         self.setStyleSheet("background-color: #1a1a1a; border: 1px solid #444; color: #D6E4FF;")
-        self.setText("Drop image here or click Browse")
+        self.setText(tr("拖入图片，或点击“浏览”"))
         self.setFont(QFont("Sans", 12))
         self._orig_pixmap = None
         self._scaled_pixmap = None
@@ -115,7 +116,7 @@ class CropToolDialog(QDialog):
     """Dual-mode image crop dialog."""
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Image Crop Tool")
+        self.setWindowTitle(tr("图像裁剪工具"))
         self.setMinimumSize(900, 650)
         self._files = []
         self._output_dir = ""
@@ -126,7 +127,7 @@ class CropToolDialog(QDialog):
 
         # File selection
         fl = QHBoxLayout()
-        fl.addWidget(QLabel("Images:"))
+        fl.addWidget(QLabel(tr("图片：")))
         self._file_list = QListWidget()
         self._file_list.setMaximumHeight(80)
         fl.addWidget(self._file_list)
@@ -140,31 +141,31 @@ class CropToolDialog(QDialog):
 
         # Output dir
         ol = QHBoxLayout()
-        ol.addWidget(QLabel("Output:"))
+        ol.addWidget(QLabel(tr("输出：")))
         self._out_edit = QLineEdit()
-        self._out_edit.setPlaceholderText("Select output directory...")
+        self._out_edit.setPlaceholderText(tr("选择输出目录…"))
         ol.addWidget(self._out_edit)
         btn_out = QPushButton("..."); btn_out.setFixedWidth(28)
         btn_out.clicked.connect(self._pick_output)
         ol.addWidget(btn_out)
         # 输出格式：默认跟随原图，避免 bmp 进来 png 出去
-        ol.addWidget(QLabel("Format:"))
+        ol.addWidget(QLabel(tr("格式：")))
         self._out_fmt = QComboBox()
-        self._out_fmt.addItems(["Same as source", "PNG", "BMP", "JPG"])
+        self._out_fmt.addItems([tr("与源图相同"), "PNG", "BMP", "JPG"])
         self._out_fmt.setFixedWidth(120)
         ol.addWidget(self._out_fmt)
         layout.addLayout(ol)
 
         # Tabs
         self._tabs = QTabWidget()
-        self._tabs.addTab(self._create_sliding_tab(), "Sliding Window")
-        self._tabs.addTab(self._create_roi_tab(), "ROI Crop")
+        self._tabs.addTab(self._create_sliding_tab(), tr("滑窗裁剪"))
+        self._tabs.addTab(self._create_roi_tab(), tr("ROI 裁剪"))
         layout.addWidget(self._tabs)
 
         # Go button
         bl = QHBoxLayout()
         bl.addStretch()
-        btn_go = QPushButton("Start Crop")
+        btn_go = QPushButton(tr("开始裁剪"))
         btn_go.setStyleSheet("QPushButton { padding: 8px 24px; font-weight: bold; background: #2d6a4f; color: white; }")
         btn_go.clicked.connect(self._start_crop)
         bl.addWidget(btn_go)
@@ -175,23 +176,23 @@ class CropToolDialog(QDialog):
         l = QFormLayout(w); l.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
         self._sw_win_w = QSpinBox(); self._sw_win_w.setRange(64, 4096); self._sw_win_w.setValue(512)
         self._sw_win_h = QSpinBox(); self._sw_win_h.setRange(64, 4096); self._sw_win_h.setValue(512)
-        l.addRow("Window W:", self._sw_win_w)
-        l.addRow("Window H:", self._sw_win_h)
+        l.addRow(tr("窗口宽："), self._sw_win_w)
+        l.addRow(tr("窗口高："), self._sw_win_h)
         self._sw_stride_x = QSpinBox(); self._sw_stride_x.setRange(1, 4096); self._sw_stride_x.setValue(256)
         self._sw_stride_y = QSpinBox(); self._sw_stride_y.setRange(1, 4096); self._sw_stride_y.setValue(256)
-        l.addRow("Stride X:", self._sw_stride_x)
-        l.addRow("Stride Y:", self._sw_stride_y)
+        l.addRow(tr("步长 X："), self._sw_stride_x)
+        l.addRow(tr("步长 Y："), self._sw_stride_y)
         # 重叠率由 stride / window 决定，这里只读显示。
         # 原来是个可输入的 QDoubleSpinBox，但全文件从来没读过它的值 ——
         # 填了 0.5 也不生效，纯属骗人（2026-11-06 修）。
         self._sw_overlap_label = QLabel("--")
         self._sw_overlap_label.setStyleSheet("color: #555;")
-        l.addRow("Overlap (computed):", self._sw_overlap_label)
+        l.addRow(tr("重叠（自动计算）："), self._sw_overlap_label)
         for sb in (self._sw_win_w, self._sw_win_h,
                    self._sw_stride_x, self._sw_stride_y):
             sb.valueChanged.connect(self._update_overlap_label)
         self._update_overlap_label()
-        self._sw_discard = QCheckBox("Discard edge tiles smaller than window")
+        self._sw_discard = QCheckBox(tr("丢弃小于窗口的边缘块"))
         self._sw_discard.setChecked(True)
         l.addRow(self._sw_discard)
         return w
@@ -202,26 +203,26 @@ class CropToolDialog(QDialog):
         self._roi_canvas = ROICanvas()
         vl.addWidget(self._roi_canvas)
         hl = QHBoxLayout()
-        btn_load = QPushButton("Load Image")
+        btn_load = QPushButton(tr("加载图片"))
         btn_load.clicked.connect(self._load_roi_preview)
         hl.addWidget(btn_load)
-        btn_clear = QPushButton("Clear ROI")
+        btn_clear = QPushButton(tr("清除 ROI"))
         btn_clear.clicked.connect(lambda: (setattr(self._roi_canvas, '_roi', None), self._roi_canvas.update()))
         hl.addWidget(btn_clear)
-        self._roi_label = QLabel("ROI: --"); hl.addWidget(self._roi_label); hl.addStretch()
+        self._roi_label = QLabel(tr("ROI：--")); hl.addWidget(self._roi_label); hl.addStretch()
         vl.addLayout(hl)
         return w
 
     def _add_files(self):
-        files, _ = QFileDialog.getOpenFileNames(self, "Select Images", "",
-            "Images (*.png *.jpg *.jpeg *.bmp *.tiff)")
+        files, _ = QFileDialog.getOpenFileNames(self, tr("选择图片"), "",
+            tr("图片 (*.png *.jpg *.jpeg *.bmp *.tiff)"))
         for f in files:
             if f not in self._files:
                 self._files.append(f)
                 self._file_list.addItem(os.path.basename(f))
 
     def _pick_output(self):
-        d = QFileDialog.getExistingDirectory(self, "Select Output Directory")
+        d = QFileDialog.getExistingDirectory(self, tr("选择输出目录"))
         if d:
             self._output_dir = d
             self._out_edit.setText(d)
@@ -256,18 +257,18 @@ class CropToolDialog(QDialog):
         return {1: ".png", 2: ".bmp", 3: ".jpg"}.get(idx, ".png")
 
     def _load_roi_preview(self):
-        f, _ = QFileDialog.getOpenFileName(self, "Load Preview", "",
-            "Images (*.png *.jpg *.jpeg *.bmp *.tiff)")
+        f, _ = QFileDialog.getOpenFileName(self, tr("加载预览"), "",
+            tr("图片 (*.png *.jpg *.jpeg *.bmp *.tiff)"))
         if f:
             self._roi_canvas.load_image(f)
-            self._roi_label.setText("Draw rectangle on image...")
+            self._roi_label.setText(tr("在图上画矩形…"))
 
     def _start_crop(self):
         if not self._files:
-            QMessageBox.warning(self, "Warning", "Please add images first")
+            QMessageBox.warning(self, tr("警告"), tr("请先添加图片"))
             return
         if not self._output_dir:
-            QMessageBox.warning(self, "Warning", "Please select output directory")
+            QMessageBox.warning(self, tr("警告"), tr("请选择输出目录"))
             return
 
         if self._tabs.currentIndex() == 0:
@@ -335,7 +336,7 @@ class CropToolDialog(QDialog):
         if skipped:
             head = "、".join(s[0] for s in skipped[:3])
             msg += f"\n\n跳过 {len(skipped)} 项：{head}" + (" ..." if len(skipped) > 3 else "")
-        QMessageBox.information(self, "Done", msg)
+        QMessageBox.information(self, tr("完成"), msg)
 
     def _fmt_desc(self):
         idx = self._out_fmt.currentIndex() if hasattr(self, "_out_fmt") else 0
@@ -343,11 +344,11 @@ class CropToolDialog(QDialog):
     def _crop_roi(self):
         roi = self._roi_canvas.get_roi()
         if roi is None:
-            QMessageBox.warning(self, "Warning", "Please draw a ROI rectangle first")
+            QMessageBox.warning(self, tr("警告"), tr("请先画 ROI 矩形"))
             return
         rx, ry, rw, rh = roi
         if rw < 2 or rh < 2:
-            QMessageBox.warning(self, "Warning", "ROI too small")
+            QMessageBox.warning(self, tr("警告"), tr("ROI 太小"))
             return
 
         total = 0
@@ -386,4 +387,4 @@ class CropToolDialog(QDialog):
         if skipped:
             head = "、".join(s[0] for s in skipped[:3])
             msg += f"\n\n跳过 {len(skipped)} 项：{head}" + (" ..." if len(skipped) > 3 else "")
-        QMessageBox.information(self, "Done", msg)
+        QMessageBox.information(self, tr("完成"), msg)

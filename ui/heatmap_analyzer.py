@@ -7,6 +7,7 @@ Tools → Heatmap Region Analyzer... 入口。
 - 信号经 _Signals(QObject) 从 Python 线程 emit（与 main_window 的 log_signal 模式一致）
 - 单图异常不中断；支持中途取消；关闭对话框时安全停止
 """
+from core.i18n import tr
 import os
 from datetime import datetime
 
@@ -138,7 +139,7 @@ class HeatmapAnalyzerDialog(QDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Heatmap Region Analyzer · 热力图区域分析")
+        self.setWindowTitle(tr("Heatmap Region Analyzer · 热力图区域分析"))
         self.setMinimumSize(960, 640)
         self._result: dict = {}
         self._worker: _AnalysisWorker = None
@@ -151,36 +152,36 @@ class HeatmapAnalyzerDialog(QDialog):
 
         # ===== 顶部：输入 + 参数 =====
         top = QHBoxLayout()
-        left_box = QGroupBox("输入")
+        left_box = QGroupBox(tr("输入"))
         lv = QVBoxLayout(left_box)
 
         # 文件夹
         h1 = QHBoxLayout()
-        h1.addWidget(QLabel("热力图文件夹:"))
+        h1.addWidget(QLabel(tr("热力图文件夹:")))
         self._folder_edit = QLineEdit()
-        self._folder_edit.setPlaceholderText("选择文件夹…")
+        self._folder_edit.setPlaceholderText(tr("选择文件夹…"))
         h1.addWidget(self._folder_edit)
-        b1 = QPushButton("浏览…")
+        b1 = QPushButton(tr("浏览…"))
         b1.clicked.connect(self._choose_folder)
         h1.addWidget(b1)
         lv.addLayout(h1)
 
         # 输出
         h2 = QHBoxLayout()
-        h2.addWidget(QLabel("报告输出目录:"))
+        h2.addWidget(QLabel(tr("报告输出目录:")))
         self._out_edit = QLineEdit()
-        self._out_edit.setPlaceholderText("默认 = 输入文件夹/_heatmap_report_时间戳")
+        self._out_edit.setPlaceholderText(tr("默认 = 输入文件夹/_heatmap_report_时间戳"))
         h2.addWidget(self._out_edit)
-        b2 = QPushButton("浏览…")
+        b2 = QPushButton(tr("浏览…"))
         b2.clicked.connect(self._choose_output)
         h2.addWidget(b2)
         lv.addLayout(h2)
 
         # 选项
         opts = QHBoxLayout()
-        self._chk_recurse = QCheckBox("递归子文件夹")
+        self._chk_recurse = QCheckBox(tr("递归子文件夹"))
         opts.addWidget(self._chk_recurse)
-        self._chk_auto = QCheckBox("自动 OTSU 阈值")
+        self._chk_auto = QCheckBox(tr("自动 OTSU 阈值"))
         self._chk_auto.setChecked(True)
         opts.addWidget(self._chk_auto)
         opts.addStretch()
@@ -188,20 +189,20 @@ class HeatmapAnalyzerDialog(QDialog):
         top.addWidget(left_box, stretch=2)
 
         # 参数
-        param_box = QGroupBox("参数")
+        param_box = QGroupBox(tr("参数"))
         pg = QFormLayout(param_box)
         self._spin_thresh = QDoubleSpinBox()
         self._spin_thresh.setRange(0.05, 0.95)
         self._spin_thresh.setSingleStep(0.05)
         self._spin_thresh.setValue(0.4)
         self._spin_thresh.setEnabled(False)
-        pg.addRow("固定阈值:", self._spin_thresh)
+        pg.addRow(tr("固定阈值:"), self._spin_thresh)
         self._chk_auto.toggled.connect(self._spin_thresh.setDisabled)
 
         self._spin_min_area = QSpinBox()
         self._spin_min_area.setRange(5, 100000)
         self._spin_min_area.setValue(40)
-        pg.addRow("最小区域像素:", self._spin_min_area)
+        pg.addRow(tr("最小区域像素:"), self._spin_min_area)
 
         gw = QHBoxLayout()
         self._spin_grid_w = QSpinBox(); self._spin_grid_w.setRange(2, 20); self._spin_grid_w.setValue(8)
@@ -210,14 +211,14 @@ class HeatmapAnalyzerDialog(QDialog):
         self._spin_grid_h = QSpinBox(); self._spin_grid_h.setRange(2, 20); self._spin_grid_h.setValue(3)
         gw.addWidget(self._spin_grid_h)
         gw_w = QWidget(); gw_w.setLayout(gw)
-        pg.addRow("聚类网格(W×H):", gw_w)
+        pg.addRow(tr("聚类网格(W×H):"), gw_w)
 
         self._spin_max_dim = QSpinBox()
         self._spin_max_dim.setRange(64, 8192)
         self._spin_max_dim.setValue(1200)
         self._spin_max_dim.setSingleStep(100)
         self._spin_max_dim.setSpecialValueText("原始尺寸")
-        pg.addRow("缩放上限(像素):", self._spin_max_dim)
+        pg.addRow(tr("缩放上限(像素):"), self._spin_max_dim)
 
         top.addWidget(param_box, stretch=1)
         root.addLayout(top)
@@ -227,10 +228,10 @@ class HeatmapAnalyzerDialog(QDialog):
 
         # 文件列表
         left_mid = QWidget(); ll = QVBoxLayout(left_mid); ll.setContentsMargins(0, 0, 0, 0)
-        ll.addWidget(QLabel("📁 处理队列（实时刷新）"))
+        ll.addWidget(QLabel(tr("📁 处理队列（实时刷新）")))
         self._file_list = QListWidget()
         ll.addWidget(self._file_list)
-        ll.addWidget(QLabel("运行日志:"))
+        ll.addWidget(QLabel(tr("运行日志:")))
         self._log = QTextEdit(); self._log.setReadOnly(True)
         self._log.setMaximumHeight(180)
         ll.addWidget(self._log)
@@ -241,7 +242,7 @@ class HeatmapAnalyzerDialog(QDialog):
         # 详情
         self._tbl_files = QTableWidget(0, 5)
         self._tbl_files.setHorizontalHeaderLabels(
-            ["文件名", "尺寸", "高亮数", "标签", "高亮位置"]
+            [tr("文件名"), tr("尺寸"), tr("高亮数"), tr("标签"), tr("高亮位置")]
         )
         self._tbl_files.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
         self._tbl_files.horizontalHeader().setStretchLastSection(True)
@@ -251,17 +252,17 @@ class HeatmapAnalyzerDialog(QDialog):
         self._tbl_files.setColumnWidth(1, 80)
         self._tbl_files.setColumnWidth(2, 60)
         self._tbl_files.setColumnWidth(3, 200)
-        self._tabs.addTab(self._tbl_files, "每图详情")
+        self._tabs.addTab(self._tbl_files, tr("每图详情"))
 
         # 聚类
         self._tbl_clusters = QTableWidget(0, 4)
         self._tbl_clusters.setHorizontalHeaderLabels(
-            ["类#", "网格坐标", "归一化中心", "样本数"]
+            [tr("类#"), tr("网格坐标"), tr("归一化中心"), tr("样本数")]
         )
         self._tbl_clusters.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self._tbl_clusters.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self._tbl_clusters.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self._tabs.addTab(self._tbl_clusters, "聚类汇总 (=NG 种类估计)")
+        self._tabs.addTab(self._tbl_clusters, tr("聚类汇总 (=NG 种类估计)"))
         mid.addWidget(self._tabs)
         mid.setStretchFactor(0, 1)
         mid.setStretchFactor(1, 2)
@@ -272,18 +273,18 @@ class HeatmapAnalyzerDialog(QDialog):
         self._progress = QProgressBar()
         self._progress.setRange(0, 100)
         bot.addWidget(self._progress, stretch=1)
-        self._btn_run = QPushButton("▶ 运行分析")
+        self._btn_run = QPushButton(tr("▶ 运行分析"))
         self._btn_run.clicked.connect(self._run)
         bot.addWidget(self._btn_run)
-        self._btn_cancel = QPushButton("■ 取消")
+        self._btn_cancel = QPushButton(tr("■ 取消"))
         self._btn_cancel.setEnabled(False)
         self._btn_cancel.clicked.connect(self._cancel_run)
         bot.addWidget(self._btn_cancel)
-        self._btn_export = QPushButton("💾 导出 HTML 报告")
+        self._btn_export = QPushButton(tr("💾 导出 HTML 报告"))
         self._btn_export.setEnabled(False)
         self._btn_export.clicked.connect(self._export_report)
         bot.addWidget(self._btn_export)
-        self._btn_close = QPushButton("关闭")
+        self._btn_close = QPushButton(tr("关闭"))
         self._btn_close.clicked.connect(self.close)
         bot.addWidget(self._btn_close)
         root.addLayout(bot)
@@ -291,7 +292,7 @@ class HeatmapAnalyzerDialog(QDialog):
     # ────────────────── 槽函数 ──────────────────
 
     def _choose_folder(self):
-        d = QFileDialog.getExistingDirectory(self, "选择热力图文件夹")
+        d = QFileDialog.getExistingDirectory(self, tr("选择热力图文件夹"))
         if d:
             self._folder_edit.setText(d)
             if not self._out_edit.text():
@@ -299,7 +300,7 @@ class HeatmapAnalyzerDialog(QDialog):
                 self._out_edit.setText(os.path.join(d, f"_heatmap_report_{ts}"))
 
     def _choose_output(self):
-        d = QFileDialog.getExistingDirectory(self, "选择报告输出目录")
+        d = QFileDialog.getExistingDirectory(self, tr("选择报告输出目录"))
         if d:
             self._out_edit.setText(d)
 
@@ -314,7 +315,7 @@ class HeatmapAnalyzerDialog(QDialog):
     def _run(self):
         folder = self._folder_edit.text().strip()
         if not folder or not os.path.isdir(folder):
-            QMessageBox.warning(self, "提示", "请选择有效的热力图文件夹。")
+            QMessageBox.warning(self, tr("提示"), tr("请选择有效的热力图文件夹。"))
             return
         out = self._out_edit.text().strip()
         if not out:
@@ -322,7 +323,7 @@ class HeatmapAnalyzerDialog(QDialog):
             out = os.path.join(folder, f"_heatmap_report_{ts}")
             self._out_edit.setText(out)
         if self._worker and self._worker.is_busy():
-            QMessageBox.information(self, "提示", "分析或报告渲染正在进行中…")
+            QMessageBox.information(self, tr("提示"), tr("分析或报告渲染正在进行中…"))
             return
 
         # 重置 UI
@@ -468,12 +469,12 @@ class HeatmapAnalyzerDialog(QDialog):
 
     def _export_report(self):
         if not self._result or not self._worker:
-            QMessageBox.information(self, "提示", "请先运行分析。")
+            QMessageBox.information(self, tr("提示"), tr("请先运行分析。"))
             return
         if self._worker.is_busy():
-            QMessageBox.information(self, "提示", "报告渲染正在进行中，请稍候…")
+            QMessageBox.information(self, tr("提示"), tr("报告渲染正在进行中，请稍候…"))
             return
-        d = QFileDialog.getExistingDirectory(self, "选择报告输出目录")
+        d = QFileDialog.getExistingDirectory(self, tr("选择报告输出目录"))
         if not d:
             return
         try:
@@ -484,7 +485,7 @@ class HeatmapAnalyzerDialog(QDialog):
         except Exception as e:  # noqa: BLE001
             self._btn_export.setEnabled(True)
             self._btn_cancel.setEnabled(False)
-            QMessageBox.critical(self, "导出失败", str(e))
+            QMessageBox.critical(self, tr("导出失败"), str(e))
 
     def closeEvent(self, event):
         """关闭时设置取消标志；后台线程为 daemon，随进程退出自然结束。

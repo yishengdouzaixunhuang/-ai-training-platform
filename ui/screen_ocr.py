@@ -8,6 +8,7 @@
 流程: 隐藏主窗口 -> 全屏截图 -> 拖拽框选区域 -> 后台 RapidOCR 识别
        -> 弹出结果对话框（文本按位置排序，可一键复制全部）。
 """
+from core.i18n import tr
 import os
 import sys
 import tempfile
@@ -187,7 +188,7 @@ class ScreenOcrResultDialog(QDialog):
 
     def __init__(self, results, elapsed, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("截图 OCR 结果")
+        self.setWindowTitle(tr("截图 OCR 结果"))
         self.resize(560, 420)
         lay = QVBoxLayout(self)
         text = compose_text(results)
@@ -199,8 +200,8 @@ class ScreenOcrResultDialog(QDialog):
                       "（文本按位置从上到下、从左到右排列）")
         lay.addWidget(info)
         btns = QHBoxLayout()
-        btn_copy = QPushButton("复制全部")
-        btn_close = QPushButton("关闭")
+        btn_copy = QPushButton(tr("复制全部"))
+        btn_close = QPushButton(tr("关闭"))
         btns.addStretch()
         btns.addWidget(btn_copy)
         btns.addWidget(btn_close)
@@ -210,7 +211,7 @@ class ScreenOcrResultDialog(QDialog):
 
     def _copy_all(self):
         QApplication.clipboard().setText(self._edit.toPlainText())
-        QMessageBox.information(self, "截图 OCR", "已复制全部识别文本到剪贴板")
+        QMessageBox.information(self, tr("截图 OCR"), tr("已复制全部识别文本到剪贴板"))
 
 
 def screen_ocr_and_show(main_win):
@@ -221,7 +222,7 @@ def screen_ocr_and_show(main_win):
     main_win._screen_ocr_busy = True
     try:
         ans = QMessageBox.question(
-            main_win, "截图 OCR",
+            main_win, tr("截图 OCR"),
             "截图前是否隐藏主窗口？\n（选\"是\"可避免平台窗口出现在截图画面里）",
             QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
     except Exception:
@@ -251,15 +252,15 @@ def _capture_and_ocr(main_win):
             pil_img = pixmap_region_to_pil(pix, sel_rect)
         except Exception as e:  # noqa: BLE001
             main_win._screen_ocr_busy = False
-            QMessageBox.warning(main_win, "截图 OCR", f"截取区域失败: {e}")
+            QMessageBox.warning(main_win, tr("截图 OCR"), f"截取区域失败: {e}")
             return
     except Exception as e:  # noqa: BLE001
         main_win._screen_ocr_busy = False
-        QMessageBox.warning(main_win, "截图 OCR", f"截图失败: {e}")
+        QMessageBox.warning(main_win, tr("截图 OCR"), f"截图失败: {e}")
         return
 
     wait = QProgressDialog("OCR 识别中，请稍候…（首次加载模型较慢）", None, 0, 0, main_win)
-    wait.setWindowTitle("截图 OCR")
+    wait.setWindowTitle(tr("截图 OCR"))
     wait.setCancelButton(None)
     wait.setWindowModality(Qt.WindowModal)
     wait.setMinimumDuration(200)
@@ -272,7 +273,7 @@ def _capture_and_ocr(main_win):
         wait.close()
         try:
             if not res.get("ok"):
-                QMessageBox.warning(main_win, "截图 OCR",
+                QMessageBox.warning(main_win, tr("截图 OCR"),
                                     res.get("error") or "识别失败")
                 return
             dlg = ScreenOcrResultDialog(res.get("results", []),

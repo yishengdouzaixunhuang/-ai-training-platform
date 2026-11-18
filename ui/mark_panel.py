@@ -14,6 +14,7 @@
 只负责喊一声，由 MainWindow 执行并回灌数据。这样面板可以脱离主窗口单测。
 """
 from __future__ import annotations
+from core.i18n import tr
 
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtWidgets import (
@@ -80,8 +81,8 @@ class MarkToolbar(QWidget):
         row = QHBoxLayout(); row.setSpacing(2)
         self._btns = {}
         for k in mk.MARK_KINDS:
-            b = QPushButton(mk.MARK_LABELS[k])
-            b.setToolTip(mk.MARK_HINTS[k])
+            b = QPushButton(tr(mk.MARK_LABELS[k]))
+            b.setToolTip(tr(mk.MARK_HINTS[k]))
             b.setStyleSheet(_btn_style(k))
             b.setMinimumWidth(_CHIP_MIN_W)
             b.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
@@ -91,18 +92,18 @@ class MarkToolbar(QWidget):
         # 分隔线：左边是"给这张图定性"，右边是"附加操作"，语义不同不该糊成一片
         sep = QFrame(); sep.setFrameShape(QFrame.VLine); sep.setFrameShadow(QFrame.Sunken)
         row.addWidget(sep)
-        self.btn_clear = QPushButton("清空")
-        self.btn_clear.setToolTip("清掉选中图片的标记")
+        self.btn_clear = QPushButton(tr("清空"))
+        self.btn_clear.setToolTip(tr("清掉选中图片的标记"))
         self.btn_clear.setStyleSheet(_AUX_QSS)
         self.btn_clear.clicked.connect(lambda: self.mark_requested.emit(""))
         row.addWidget(self.btn_clear)
-        self.btn_note = QPushButton("备注")
-        self.btn_note.setToolTip("给已标记的图写理由（现场经验最难传承，理由要留下来）")
+        self.btn_note = QPushButton(tr("备注"))
+        self.btn_note.setToolTip(tr("给已标记的图写理由（现场经验最难传承，理由要留下来）"))
         self.btn_note.setStyleSheet(_AUX_QSS)
         self.btn_note.clicked.connect(self.note_requested.emit)
         row.addWidget(self.btn_note)
-        self.btn_stats = QPushButton("统计")
-        self.btn_stats.setToolTip("四态计数与占比、缺陷类型 × 标记 交叉表")
+        self.btn_stats = QPushButton(tr("统计"))
+        self.btn_stats.setToolTip(tr("四态计数与占比、缺陷类型 × 标记 交叉表"))
         self.btn_stats.setStyleSheet(_AUX_QSS)
         self.btn_stats.clicked.connect(self.stats_requested.emit)
         row.addWidget(self.btn_stats)
@@ -112,8 +113,9 @@ class MarkToolbar(QWidget):
     def set_scope_text(self, n):
         """把"当前作用于几张图"显示在按钮 tooltip 上（不占版面）。"""
         for b in list(self._btns.values()) + [self.btn_clear, self.btn_note]:
-            base = b.toolTip().split(" ｜")[0]
-            b.setToolTip(base + ("  ｜  当前选中 %d 张" % n if n else "  ｜  未选中任何图"))
+            base = b.toolTip().split(" ｜")[0].split(" |")[0]
+            b.setToolTip(base + (tr("  ｜  当前选中 %d 张") % n if n
+                                else tr("  ｜  未选中任何图")))
 
 
 class MarkStatsPanel(QGroupBox):
@@ -126,7 +128,7 @@ class MarkStatsPanel(QGroupBox):
     back_requested = pyqtSignal()          # 「← 返回列表」：不带筛选地回图片列表页
 
     def __init__(self, parent=None):
-        super().__init__("标记统计", parent)
+        super().__init__(tr("标记统计"), parent)
         self._records = []
         root = QVBoxLayout(self)
         root.setContentsMargins(6, 4, 4, 4)
@@ -136,8 +138,8 @@ class MarkStatsPanel(QGroupBox):
         # 2026-10-15：左栏页头那行（含「标记统计」入口按钮）因冗余整行删除后，
         # 从本页回图片列表**只剩"点格子带筛选跳回"一条路**。补一个不带筛选的返回。
         top_row = QHBoxLayout(); top_row.setContentsMargins(0, 0, 0, 0); top_row.setSpacing(4)
-        self.btn_back = QPushButton("← 返回列表")
-        self.btn_back.setToolTip("回到图片列表（不改变当前筛选条件）")
+        self.btn_back = QPushButton(tr("← 返回列表"))
+        self.btn_back.setToolTip(tr("回到图片列表（不改变当前筛选条件）"))
         self.btn_back.setFixedHeight(22)
         self.btn_back.clicked.connect(self.back_requested.emit)
         top_row.addWidget(self.btn_back)
@@ -148,15 +150,15 @@ class MarkStatsPanel(QGroupBox):
         self._chips = {}
         chip_row = QGridLayout(); chip_row.setHorizontalSpacing(4); chip_row.setVerticalSpacing(2)
         for i, k in enumerate(mk.MARK_KINDS):
-            b = QPushButton("%s 0" % mk.MARK_LABELS[k])
+            b = QPushButton("%s 0" % tr(mk.MARK_LABELS[k]))
             b.setStyleSheet(_btn_style(k))
-            b.setToolTip(mk.MARK_HINTS[k] + "  ｜  点击 = 只看这个标记")
+            b.setToolTip(tr(mk.MARK_HINTS[k]) + "  " + tr("｜") + "  " + tr("点击 = 只看这个标记"))
             b.clicked.connect(lambda _c=False, kk=k: self.kind_filter_requested.emit(kk))
             chip_row.addWidget(b, 0, i)
             self._chips[k] = b
         root.addLayout(chip_row)
 
-        self.lbl_total = QLabel("尚无标记")
+        self.lbl_total = QLabel(tr("尚无标记"))
         self.lbl_total.setWordWrap(True)
         root.addWidget(self.lbl_total)
 
@@ -171,7 +173,7 @@ class MarkStatsPanel(QGroupBox):
 
         # ── 交叉表：缺陷类型 × 标记 ──
         self.table = QTableWidget(0, len(mk.MARK_KINDS) + 2)
-        heads = ["缺陷类型"] + [mk.MARK_LABELS[k] for k in mk.MARK_KINDS] + ["无标记"]
+        heads = [tr("缺陷类型")] + [tr(mk.MARK_LABELS[k]) for k in mk.MARK_KINDS] + [tr("无标记")]
         self.table.setHorizontalHeaderLabels(heads)
         self.table.verticalHeader().setVisible(False)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
@@ -181,7 +183,7 @@ class MarkStatsPanel(QGroupBox):
         for c in range(1, self.table.columnCount()):
             self.table.horizontalHeader().setSectionResizeMode(c, QHeaderView.ResizeToContents)
         self.table.cellClicked.connect(self._on_cell)
-        self.table.setToolTip("点某个格子 = 只看「这个缺陷 + 这个标记」的图")
+        self.table.setToolTip(tr("点某个格子 = 只看「这个缺陷 + 这个标记」的图"))
         self.table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.table.setMinimumHeight(120)
         root.addWidget(self.table, 1)
@@ -192,16 +194,16 @@ class MarkStatsPanel(QGroupBox):
         self._records = list(records or [])
         cnt = mk.count_marks(self._records)
         for k in mk.MARK_KINDS:
-            self._chips[k].setText("%s %d" % (mk.MARK_LABELS[k], cnt.get(k, 0)))
+            self._chips[k].setText("%s %d" % (tr(mk.MARK_LABELS[k]), cnt.get(k, 0)))
         marked = sum(cnt.get(k, 0) for k in mk.MARK_KINDS)
-        self.lbl_total.setText("共 %d 张　已标记 %d　无标记 %d"
+        self.lbl_total.setText(tr("共 %d 张　已标记 %d　无标记 %d")
                                % (len(self._records), marked, cnt.get("", 0)))
         if marked:
             cells = []
             for k, (n, r) in mk.mark_ratios(cnt).items():
                 if n:
-                    cells.append("%s %d（%.1f%%）" % (mk.MARK_LABELS[k], n, r * 100))
-            self.lbl_ratio.setText("占比（分母=已标记）：" + "　".join(cells))
+                    cells.append(tr("%s %d（%.1f%%）") % (tr(mk.MARK_LABELS[k]), n, r * 100))
+            self.lbl_ratio.setText(tr("占比（分母=已标记）：") + tr("　").join(cells))
         else:
             self.lbl_ratio.setText("")
 
@@ -213,8 +215,8 @@ class MarkStatsPanel(QGroupBox):
         if bad:
             from collections import Counter
             top = Counter(bad).most_common(3)
-            self.lbl_warn.setText("⚠ 自相矛盾 %d 条：%s"
-                                  % (len(bad), "；".join("%s×%d" % (t, n) for t, n in top)))
+            self.lbl_warn.setText(tr("⚠ 自相矛盾 %d 条：%s")
+                                  % (len(bad), tr("；").join("%s×%d" % (t, n) for t, n in top)))
             self.lbl_warn.setVisible(True)
         else:
             self.lbl_warn.setVisible(False)
@@ -233,7 +235,7 @@ class MarkStatsPanel(QGroupBox):
                 cell = QTableWidgetItem(str(n) if n else "")
                 cell.setTextAlignment(Qt.AlignCenter)
                 if n:
-                    cell.setToolTip("%s ｜ %s：%d 张（点此筛选）" % (name, mk.MARK_LABELS[k], n))
+                    cell.setToolTip(tr("%s ｜ %s：%d 张（点此筛选）") % (name, tr(mk.MARK_LABELS[k]), n))
                     cell.setForeground(_qcolor(mk.kind_color(k)))
                 self.table.setItem(i, 1 + j, cell)
             n0 = row.get("", 0)

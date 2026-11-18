@@ -31,6 +31,8 @@ import psutil
 from PyQt5.QtCore import QTimer
 from PyQt5.QtWidgets import QLabel
 
+from core.i18n import tr
+
 #: I/O 活动率按这个字节/秒算 100%（任务管理器的"活动 %"同量级）
 _IO_FULL_RATE_MBPS = 40.0
 
@@ -268,7 +270,7 @@ class SystemMonitor(QLabel):
             cpu_txt = "<span style='color:#ff4444;font-weight:bold'>" + cpu_txt + "</span>"
         parts.append(cpu_txt)
         cp = d["cpu_proc"]
-        cp_txt = "进程:{:.0f}%".format(cp)
+        cp_txt = tr("进程:") + "{:.0f}%".format(cp)
         if cp >= 90:
             cp_txt = "<span style='color:#ff4444;font-weight:bold'>" + cp_txt + "</span>"
         parts.append(cp_txt)
@@ -287,11 +289,11 @@ class SystemMonitor(QLabel):
                 txt = "<span style='color:#ff4444;font-weight:bold'>" + txt + "</span>"
             parts.append(txt)
         else:
-            parts.append("<span style='color:#8A93A6'>GPU:不可读</span>")
+            parts.append("<span style='color:#8A93A6'>" + tr("GPU:不可读") + "</span>")
 
         # 内存（口径与任务管理器一致）
         mp = d["mem_pct"]
-        mtxt = "内存:{:.2f}/{:.2f}GB".format(d["mem_used"], d["mem_total"])
+        mtxt = tr("内存:") + "{:.2f}/{:.2f}GB".format(d["mem_used"], d["mem_total"])
         if mp >= 90:
             mtxt = "<span style='color:#ff4444;font-weight:bold'>" + mtxt + "</span>"
         parts.append(mtxt)

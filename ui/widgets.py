@@ -10,6 +10,7 @@
 - TrainSettingsDialog  训练参数弹窗（主界面已改为直接读面板，保留以免回退）
 """
 from __future__ import annotations
+from core.i18n import tr
 
 import json
 import os
@@ -110,7 +111,7 @@ class LossCurveWindow(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Loss / Accuracy Curve")
+        self.setWindowTitle(tr("损失 / 准确率曲线"))
         self.resize(760, 480)
         self.setWindowFlag(Qt.Window)
         layout = QVBoxLayout(self)
@@ -181,7 +182,7 @@ class TrainSettingsDialog(QDialog):
 
     def __init__(self, parent=None, project_dir=None):
         super().__init__(parent)
-        self.setWindowTitle("Training Settings")
+        self.setWindowTitle(tr("训练参数"))
         layout = QFormLayout(self)
         saved = self._load()
         # ── 三视图检测 ──
@@ -226,10 +227,10 @@ class TrainSettingsDialog(QDialog):
             self.size_combo.setToolTip(f"切片工程固定为 {self._mv_tile}px 原分辨率训练")
         else:
             idx2 = self.size_combo.findText(str(saved.get("image_size", 512))); self.size_combo.setCurrentIndex(max(0, idx2))
-        layout.addRow("Epochs:", self.epochs_spin)
-        layout.addRow("Batch Size:", self.batch_spin)
-        layout.addRow("Model:", self.model_combo)
-        layout.addRow("Image Size:", self.size_combo)
+        layout.addRow(tr("轮数："), self.epochs_spin)
+        layout.addRow(tr("批大小："), self.batch_spin)
+        layout.addRow(tr("模型："), self.model_combo)
+        layout.addRow(tr("图像尺寸："), self.size_combo)
         # ── U-Net 容量参数（仅三视图工程显示）──
         if self._is_mv:
             self.unet_base_spin = QSpinBox(); self.unet_base_spin.setRange(8, 64); self.unet_base_spin.setSingleStep(8)
@@ -237,8 +238,8 @@ class TrainSettingsDialog(QDialog):
             self.unet_base_spin.setToolTip("首层通道数：16≈2.0M 参数（快）/ 32≈7.9M 参数（容量更大，小目标更稳）")
             self.unet_depth_spin = QSpinBox(); self.unet_depth_spin.setRange(2, 6)
             self.unet_depth_spin.setValue(saved.get("unet_depth", 4))
-            layout.addRow("U-Net Base:", self.unet_base_spin)
-            layout.addRow("U-Net Depth:", self.unet_depth_spin)
+            layout.addRow(tr("U-Net 基础通道："), self.unet_base_spin)
+            layout.addRow(tr("U-Net 深度："), self.unet_depth_spin)
         else:
             self.unet_base_spin = None
             self.unet_depth_spin = None
@@ -247,9 +248,9 @@ class TrainSettingsDialog(QDialog):
         #    缩完只剩 ~4px、127px 的 Zw 剩 ~2px —— 缺陷在数据加载阶段就被抹掉了。
         #    勾上「分块」后改成在**原分辨率**上按滑窗裁剪，缺陷像素一个不丢。
         self._is_mv = bool(getattr(self, "_is_mv", False))
-        self.tile_check = QCheckBox("分块（滑窗裁剪，不缩放整图）")
+        self.tile_check = QCheckBox(tr("分块（滑窗裁剪，不缩放整图）"))
         self.tile_check.setChecked(bool(saved.get("tile", self._is_mv)))
-        self.tile_check.setToolTip("大图必须分块：整图缩放会把小缺陷缩没")
+        self.tile_check.setToolTip(tr("大图必须分块：整图缩放会把小缺陷缩没"))
         layout.addRow(self.tile_check)
         # ⚠️ 勾上「分块」后 Image Size 就不再决定训练输入了（那是「滑窗大小」的事），
         #    它只剩"验证时整图缩放到多大"这一个作用。留着可编辑会让人以为改它有用 ——
@@ -264,18 +265,18 @@ class TrainSettingsDialog(QDialog):
         _sync_size_enabled()
         self.tile_spin = QSpinBox(); self.tile_spin.setRange(64, 1024); self.tile_spin.setSingleStep(64)
         self.tile_spin.setValue(int(saved.get("tile_size", 256)))
-        layout.addRow("滑窗大小:", self.tile_spin)
+        layout.addRow(tr("滑窗大小:"), self.tile_spin)
         self.stride_spin = QSpinBox(); self.stride_spin.setRange(10, 100); self.stride_spin.setSingleStep(5)
         self.stride_spin.setValue(int(saved.get("tile_stride", 75)))
         self.stride_spin.setSuffix(" %")
-        self.stride_spin.setToolTip("步长(%)：75 = 25% 重叠。越小覆盖越全，块数按平方增长")
-        layout.addRow("步长(%):", self.stride_spin)
+        self.stride_spin.setToolTip(tr("步长(%)：75 = 25% 重叠。越小覆盖越全，块数按平方增长"))
+        layout.addRow(tr("步长(%):"), self.stride_spin)
         self.tile_mode_combo = QComboBox()
-        self.tile_mode_combo.addItems(["滑窗遍历（覆盖全）", "缺陷居中+负样本（省算力）"])
+        self.tile_mode_combo.addItems([tr("滑窗遍历（覆盖全）"), tr("缺陷居中+负样本（省算力）")])
         self.tile_mode_combo.setCurrentIndex(0 if saved.get("tile_mode", "slide") == "slide" else 1)
         self.tile_mode_combo.setToolTip("滑窗遍历：友商口径，覆盖无死角但 98% 是背景块\n"
                                         "缺陷居中+负样本：只抽缺陷居中块+定量背景块，省约 10 倍算力")
-        layout.addRow("取样方式:", self.tile_mode_combo)
+        layout.addRow(tr("取样方式:"), self.tile_mode_combo)
 
         # ★ 2026-11-13：这四个控件的值来自文件，但 `_save_and_accept()` **不写回它们**
         #   （分块设置的权威在主面板上；写回去会和面板互相覆盖，见那个方法的注释）。
@@ -286,26 +287,26 @@ class TrainSettingsDialog(QDialog):
                                 "这里只显示当前值")
         self.tile_hint.setWordWrap(True)
         self.tile_hint.setStyleSheet("color: #8A93A6;")
-        layout.addRow("Tiling:", self.tile_hint)
+        layout.addRow(tr("分块："), self.tile_hint)
         _tile_ro_tip = "以主界面「分块」设置为准；这里只显示当前值，改了不会保存"
         for _w_ro in (self.tile_check, self.tile_spin,
                       self.stride_spin, self.tile_mode_combo):
             _w_ro.setEnabled(False)
             _w_ro.setToolTip(_tile_ro_tip)
         self.kfold_spin = QSpinBox(); self.kfold_spin.setRange(1, 10); self.kfold_spin.setValue(saved.get("k_folds", 1))
-        self.kfold_spin.setToolTip("1=no cross-validation, 5=5-fold CV")
-        layout.addRow("K-Fold CV:", self.kfold_spin)
+        self.kfold_spin.setToolTip(tr("1=不交叉验证，5=5 折交叉验证"))
+        layout.addRow(tr("K 折交叉验证："), self.kfold_spin)
         self.loss_combo = QComboBox()
         self.loss_combo.addItems(["cross_entropy", "lovasz", "dice", "focal", "ce+lovasz", "ce+dice"])
         idx3 = self.loss_combo.findText(saved.get("loss", "cross_entropy"))
         self.loss_combo.setCurrentIndex(max(0, idx3))
-        self.loss_combo.setToolTip("Loss function: ce+lovasz recommended for small defects")
-        layout.addRow("Loss:", self.loss_combo)
-        self.augment_hint = QLabel("数据增强：请在主界面右侧「增强」面板设置（全局生效）")
+        self.loss_combo.setToolTip(tr("损失函数：小缺陷建议 ce+lovasz"))
+        layout.addRow(tr("损失函数："), self.loss_combo)
+        self.augment_hint = QLabel(tr("数据增强：请在主界面右侧「增强」面板设置（全局生效）"))
         self.augment_hint.setWordWrap(True)
         self.augment_hint.setStyleSheet("color: #8A93A6;")
-        layout.addRow("Augment:", self.augment_hint)
-        self.resume_check = QCheckBox("Resume from last checkpoint")
+        layout.addRow(tr("数据增强："), self.augment_hint)
+        self.resume_check = QCheckBox(tr("从上次检查点继续"))
         self.resume_check.setChecked(saved.get("resume", False))
         layout.addRow(self.resume_check)
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
@@ -385,5 +386,5 @@ class TrainSettingsDialog(QDialog):
             if parent is not None and hasattr(parent, "log"):
                 parent.log(msg)
             else:
-                QMessageBox.warning(self, "训练参数未保存", msg)
+                QMessageBox.warning(self, tr("训练参数未保存"), msg)
         self.accept()

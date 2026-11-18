@@ -10,6 +10,7 @@
 （AI 工程师或客户）不欠我们一套查询语法，选项直接摆出来就行。
 """
 from __future__ import annotations
+from core.i18n import tr
 
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
@@ -46,7 +47,7 @@ class _CondRow(QWidget):
         lay.addWidget(self.cb_op)
 
         self.ed_val = QLineEdit()
-        self.ed_val.setPlaceholderText("值")
+        self.ed_val.setPlaceholderText(tr("值"))
         self.ed_val.setMinimumWidth(110)
         lay.addWidget(self.ed_val, 1)
         self.cb_val = QComboBox()
@@ -56,7 +57,7 @@ class _CondRow(QWidget):
 
         btn = QPushButton("×")
         btn.setFixedWidth(24)
-        btn.setToolTip("删除这条条件")
+        btn.setToolTip(tr("删除这条条件"))
         btn.clicked.connect(lambda: self._on_remove(self))
         lay.addWidget(btn)
 
@@ -137,7 +138,7 @@ class _CondRow(QWidget):
 class FilterBuilderDialog(QDialog):
     def __init__(self, parent=None, expr=None):
         super().__init__(parent)
-        self.setWindowTitle("筛选条件")
+        self.setWindowTitle(tr("筛选条件"))
         self.resize(560, 360)
         root = QVBoxLayout(self)
         root.setSpacing(6)
@@ -148,8 +149,8 @@ class FilterBuilderDialog(QDialog):
         root.addWidget(tip)
 
         logic_row = QHBoxLayout(); logic_row.setSpacing(10)
-        self.rb_and = QRadioButton("同时满足 (AND)")
-        self.rb_or = QRadioButton("任一满足 (OR)")
+        self.rb_and = QRadioButton(tr("同时满足 (AND)"))
+        self.rb_or = QRadioButton(tr("任一满足 (OR)"))
         self._grp = QButtonGroup(self)
         self._grp.addButton(self.rb_and); self._grp.addButton(self.rb_or)
         logic_row.addWidget(self.rb_and); logic_row.addWidget(self.rb_or)
@@ -164,7 +165,7 @@ class FilterBuilderDialog(QDialog):
         root.addWidget(sa, 1)
         self._rows = []
 
-        add = QPushButton("+ 添加条件")
+        add = QPushButton(tr("+ 添加条件"))
         add.clicked.connect(lambda: self._add_row(new_condition()))
         root.addWidget(add)
 
@@ -179,15 +180,15 @@ class FilterBuilderDialog(QDialog):
         ]
         for label, conds, logic in self._quick:
             b = QPushButton(label)
-            b.setToolTip("一键填入该组合")
+            b.setToolTip(tr("一键填入该组合"))
             b.clicked.connect(lambda _c=False, cs=conds, lg=logic: self._apply_quick(cs, lg))
             quick.addWidget(b)
         quick.addStretch(1)
         root.addLayout(quick)
 
         bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        bb.button(QDialogButtonBox.Ok).setText("应用")
-        bb.button(QDialogButtonBox.Cancel).setText("取消")
+        bb.button(QDialogButtonBox.Ok).setText(tr("应用"))
+        bb.button(QDialogButtonBox.Cancel).setText(tr("取消"))
         bb.accepted.connect(self.accept)
         bb.rejected.connect(self.reject)
         root.addWidget(bb)

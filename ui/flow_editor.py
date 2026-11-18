@@ -8,6 +8,7 @@ P2 目标：对齐海康 VisionMaster 的「方案」编辑体验。
 - 顶部工具栏：打开/保存/运行/停止，运行结果写入日志区
 """
 from __future__ import annotations
+from core.i18n import tr
 
 import os
 import threading
@@ -340,7 +341,7 @@ class ParamPanel(QWidget):
         self._widgets = {}
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
-        self.title = QLabel("未选择节点")
+        self.title = QLabel(tr("未选择节点"))
         # ⚠️ 原本写死 color:#ddd —— 深色主题下没问题，但 ParamPanel 的底色是**主题表**给的
         #    （浅色主题 -> 浅灰），浅灰字压浅底就是"看不清"。字重留着，颜色交给主题表
         #    （深色 -> #E6F0FF，浅色 -> #1A2233，两边都可读）。
@@ -359,7 +360,7 @@ class ParamPanel(QWidget):
         while self._form.rowCount() > 0:
             self._form.removeRow(0)
         if node is None:
-            self.title.setText("未选择节点")
+            self.title.setText(tr("未选择节点"))
             return
         self.title.setText(f"{node.display_name}\n[{node.node_type}]")
         for p in node.PARAMS:
@@ -368,7 +369,7 @@ class ParamPanel(QWidget):
             self._widgets[p.name] = w
             self._form.addRow(QLabel(label), w)
         if not node.PARAMS:
-            self._form.addRow(QLabel("无参数"))
+            self._form.addRow(QLabel(tr("无参数")))
 
     def _make_control(self, node, p):
         value = node.params.get(p.name, p.default)
@@ -473,11 +474,11 @@ class FlowEditorWidget(QWidget):
         tbh = QHBoxLayout(tb)
         tbh.setContentsMargins(6, 4, 6, 4)
         tbh.setSpacing(6)
-        b_open = QPushButton("打开方案")
-        b_save = QPushButton("保存方案")
-        b_run = QPushButton("▶ 运行")
-        b_stop = QPushButton("■ 停止")
-        b_pick = QPushButton("选择输入图...")
+        b_open = QPushButton(tr("打开方案"))
+        b_save = QPushButton(tr("保存方案"))
+        b_run = QPushButton(tr("▶ 运行"))
+        b_stop = QPushButton(tr("■ 停止"))
+        b_pick = QPushButton(tr("选择输入图..."))
         for b in (b_open, b_save, b_run, b_stop, b_pick):
             b.setStyleSheet("QPushButton { background:#3a3a42; color:#eee; border:1px solid #555; border-radius:3px; padding:4px 10px; }"
                             "QPushButton:hover { background:#4a4a55; }")
@@ -567,7 +568,7 @@ class FlowEditorWidget(QWidget):
 
     # ---- 保存/加载 ----
     def _open_flow(self):
-        path, _ = QFileDialog.getOpenFileName(self, "打开方案", self._last_dir, "Flow JSON (*.json)")
+        path, _ = QFileDialog.getOpenFileName(self, tr("打开方案"), self._last_dir, tr("流程 JSON (*.json)"))
         if not path:
             return
         try:
@@ -575,14 +576,14 @@ class FlowEditorWidget(QWidget):
             self.scene.load_flow(flow)
             self._last_dir = os.path.dirname(path)
         except Exception as e:
-            QMessageBox.warning(self, "加载失败", str(e))
+            QMessageBox.warning(self, tr("加载失败"), str(e))
 
     def _save_flow(self):
         if not self.scene._node_items:
-            QMessageBox.information(self, "提示", "画布上没有节点")
+            QMessageBox.information(self, tr("提示"), tr("画布上没有节点"))
             return
-        path, _ = QFileDialog.getSaveFileName(self, "保存方案",
-                                              os.path.join(self._last_dir, "flow.json"), "Flow JSON (*.json)")
+        path, _ = QFileDialog.getSaveFileName(self, tr("保存方案"),
+                                              os.path.join(self._last_dir, "flow.json"), tr("流程 JSON (*.json)"))
         if not path:
             return
         try:
@@ -591,11 +592,11 @@ class FlowEditorWidget(QWidget):
             self._last_dir = os.path.dirname(path)
             self.log(f"已保存方案: {path}")
         except Exception as e:
-            QMessageBox.warning(self, "保存失败", str(e))
+            QMessageBox.warning(self, tr("保存失败"), str(e))
 
     # ---- 运行 ----
     def _pick_input(self):
-        path, _ = QFileDialog.getOpenFileName(self, "选择输入图像", self._last_dir,
+        path, _ = QFileDialog.getOpenFileName(self, tr("选择输入图像"), self._last_dir,
                                               "Images (*.bmp *.png *.jpg *.jpeg *.tif)")
         if path:
             self._input_path = path
@@ -604,11 +605,11 @@ class FlowEditorWidget(QWidget):
 
     def _run_flow(self):
         if not self.scene._node_items:
-            QMessageBox.information(self, "提示", "画布上没有节点")
+            QMessageBox.information(self, tr("提示"), tr("画布上没有节点"))
             return
         input_path = self._input_path
         if not input_path:
-            input_path, _ = QFileDialog.getOpenFileName(self, "选择输入图像", self._last_dir,
+            input_path, _ = QFileDialog.getOpenFileName(self, tr("选择输入图像"), self._last_dir,
                                                         "Images (*.bmp *.png *.jpg *.jpeg *.tif)")
             if not input_path:
                 return
@@ -677,7 +678,7 @@ class FlowEditorDialog(QDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("流程编辑器 - Vision Flow")
+        self.setWindowTitle(tr("流程编辑器 - Vision Flow"))
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.addWidget(FlowEditorWidget(self))

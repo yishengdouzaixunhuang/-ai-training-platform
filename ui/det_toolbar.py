@@ -4,6 +4,7 @@
 按 PRD：画矩形框开关 | 清除所有 / 删除选中 / 取消操作 | 撤销 / 重做。
 极简 SVG 线条图标；画框开关互斥高亮、Hover 反馈、禁用置灰、中文 Tooltip。
 """
+from core.i18n import tr
 from PyQt5.QtCore import QSize, Qt, pyqtSignal
 from PyQt5.QtGui import QKeySequence
 from PyQt5.QtWidgets import QFrame, QHBoxLayout, QVBoxLayout, QToolButton, QWidget
@@ -66,8 +67,8 @@ class DetToolbar(QWidget):
         self.tools_toggle.setObjectName("toolsToggle")
         self.tools_toggle.setCheckable(True)
         self.tools_toggle.setChecked(False)          # 默认折叠
-        self.tools_toggle.setText("标注")
-        self.tools_toggle.setToolTip("显示 / 隐藏目标检测工具栏（画框 + 撤销重做）\n快捷键 Ctrl+B")
+        self.tools_toggle.setText(tr("标注"))
+        self.tools_toggle.setToolTip(tr("显示 / 隐藏目标检测工具栏（画框 + 撤销重做）\n快捷键 Ctrl+B"))
         # QToolButton 默认 IconOnly ⇒ 不设这句就只有图标、没有「标注」两个字（同分割工具栏）
         self.tools_toggle.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         self.tools_toggle.setIcon(icons.make_icon("rect"))
@@ -88,7 +89,7 @@ class DetToolbar(QWidget):
         self.draw_btn = QToolButton()
         self.draw_btn.setCheckable(True)
         self.draw_btn.setChecked(True)
-        self.draw_btn.setToolTip("画矩形框")
+        self.draw_btn.setToolTip(tr("画矩形框"))
         self.draw_btn.setIcon(icons.make_icon("rect"))
         self.draw_btn.setIconSize(QSize(24, 24))
         self.draw_btn.setFixedSize(30, 30)
@@ -136,7 +137,7 @@ class DetToolbar(QWidget):
         #   只**追加**（已有同位置标注会跳过），走 BoxManager 所以 Ctrl+Z 能撤销。
         lay.addWidget(_separator())
         self.btn_adopt = QToolButton()
-        self.btn_adopt.setToolTip("把本图预测框追加为标注（已有框保留，可撤销）")
+        self.btn_adopt.setToolTip(tr("把本图预测框追加为标注（已有框保留，可撤销）"))
         self.btn_adopt.setIcon(icons.make_icon("adopt"))
         self.btn_adopt.setIconSize(QSize(24, 24))
         self.btn_adopt.setFixedSize(30, 30)

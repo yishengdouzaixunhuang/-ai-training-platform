@@ -5,6 +5,7 @@ Tools 菜单 "分类阈值调优 (过杀/漏检)..." 打开。
 依赖 classification.threshold（collect_probs / binary_report / optimize_threshold）。
 """
 
+from core.i18n import tr
 import traceback
 from pathlib import Path
 
@@ -49,7 +50,7 @@ class _SweepThread(QThread):
 class ThresholdPanelDialog(QDialog):
     def __init__(self, parent=None, project_dir=None):
         super().__init__(parent)
-        self.setWindowTitle("分类阈值调优 —— 过杀率 / 漏检率")
+        self.setWindowTitle(tr("分类阈值调优 —— 过杀率 / 漏检率"))
         self.resize(1280, 800)
         self.project_dir = str(project_dir or "")
         self.rows = []
@@ -59,37 +60,37 @@ class ThresholdPanelDialog(QDialog):
         root = QVBoxLayout(self)
 
         # ── 顶部：工程与参数 ────────────────────────────────
-        top = QGroupBox("参数")
+        top = QGroupBox(tr("参数"))
         form = QFormLayout(top)
         row1 = QHBoxLayout()
         self.ed_dir = QLineEdit(self.project_dir)
-        btn_browse = QPushButton("浏览...")
+        btn_browse = QPushButton(tr("浏览..."))
         btn_browse.clicked.connect(self._browse)
         row1.addWidget(self.ed_dir, 1)
         row1.addWidget(btn_browse)
         w1 = QWidget(); w1.setLayout(row1)
-        form.addRow("工程目录", w1)
+        form.addRow(tr("工程目录"), w1)
 
         row2 = QHBoxLayout()
         self.cb_split = QComboBox(); self.cb_split.addItems(["val", "train", "all"])
-        self.chk_tta = QCheckBox("TTA(多视图平均)"); self.chk_tta.setChecked(True)
+        self.chk_tta = QCheckBox(tr("TTA(多视图平均)")); self.chk_tta.setChecked(True)
         self.sp_size = QSpinBox(); self.sp_size.setRange(64, 1024); self.sp_size.setValue(224); self.sp_size.setSingleStep(32)
         self.sp_miss = QDoubleSpinBox(); self.sp_miss.setDecimals(4); self.sp_miss.setRange(0.0, 0.5)
         self.sp_miss.setSingleStep(0.001); self.sp_miss.setValue(0.002)
         self.cb_obj = QComboBox(); self.cb_obj.addItems(["min_overkill", "youden", "f1"])
-        self.btn_run = QPushButton("开始扫描"); self.btn_run.clicked.connect(self._run)
-        row2.addWidget(QLabel("数据集")); row2.addWidget(self.cb_split)
-        row2.addWidget(QLabel("图像尺寸")); row2.addWidget(self.sp_size)
+        self.btn_run = QPushButton(tr("开始扫描")); self.btn_run.clicked.connect(self._run)
+        row2.addWidget(QLabel(tr("数据集"))); row2.addWidget(self.cb_split)
+        row2.addWidget(QLabel(tr("图像尺寸"))); row2.addWidget(self.sp_size)
         row2.addWidget(self.chk_tta)
-        row2.addWidget(QLabel("最大漏检率")); row2.addWidget(self.sp_miss)
-        row2.addWidget(QLabel("目标")); row2.addWidget(self.cb_obj)
+        row2.addWidget(QLabel(tr("最大漏检率"))); row2.addWidget(self.sp_miss)
+        row2.addWidget(QLabel(tr("目标"))); row2.addWidget(self.cb_obj)
         row2.addStretch(1); row2.addWidget(self.btn_run)
         w2 = QWidget(); w2.setLayout(row2)
-        form.addRow("选项", w2)
+        form.addRow(tr("选项"), w2)
 
-        self.lbl_status = QLabel("就绪。点【开始扫描】在验证集上扫阈值。")
+        self.lbl_status = QLabel(tr("就绪。点【开始扫描】在验证集上扫阈值。"))
         self.lbl_status.setStyleSheet("color:#00E5FF;")
-        form.addRow("状态", self.lbl_status)
+        form.addRow(tr("状态"), self.lbl_status)
         root.addWidget(top)
 
         # ── 中部：曲线 + 表格 ──────────────────────────────
@@ -101,7 +102,7 @@ class ThresholdPanelDialog(QDialog):
 
         self.table = QTableWidget(0, 10)
         self.table.setHorizontalHeaderLabels(
-            ["阈值", "漏检率%", "过杀率%", "精确率", "召回", "F1", "TP", "FN", "FP", "TN"])
+            [tr("阈值"), tr("漏检率%"), tr("过杀率%"), tr("精确率"), tr("召回"), "F1", "TP", "FN", "FP", "TN"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.table.itemSelectionChanged.connect(self._on_row_selected)
         split.addWidget(self.table)
@@ -113,28 +114,28 @@ class ThresholdPanelDialog(QDialog):
         self.sp_thr = QDoubleSpinBox(); self.sp_thr.setDecimals(3)
         self.sp_thr.setRange(0.001, 0.999); self.sp_thr.setSingleStep(0.005); self.sp_thr.setValue(0.5)
         self.sp_thr.valueChanged.connect(self._update_vline)
-        btn_best = QPushButton("用最优阈值"); btn_best.clicked.connect(self._use_best)
-        btn_save = QPushButton("保存该阈值到模型"); btn_save.clicked.connect(self._save)
+        btn_best = QPushButton(tr("用最优阈值")); btn_best.clicked.connect(self._use_best)
+        btn_save = QPushButton(tr("保存该阈值到模型")); btn_save.clicked.connect(self._save)
         self.lbl_at = QLabel("")
         self.lbl_at.setStyleSheet("color:#E6F0FF;")
-        bottom.addWidget(QLabel("当前阈值")); bottom.addWidget(self.sp_thr)
+        bottom.addWidget(QLabel(tr("当前阈值"))); bottom.addWidget(self.sp_thr)
         bottom.addWidget(btn_best); bottom.addWidget(btn_save)
         bottom.addWidget(self.lbl_at, 1)
         root.addLayout(bottom)
 
     # ── 交互 ────────────────────────────────────────────
     def _browse(self):
-        d = QFileDialog.getExistingDirectory(self, "选择分类工程目录", self.ed_dir.text() or "")
+        d = QFileDialog.getExistingDirectory(self, tr("选择分类工程目录"), self.ed_dir.text() or "")
         if d:
             self.ed_dir.setText(d)
 
     def _run(self):
         pd = self.ed_dir.text().strip()
         if not pd or not Path(pd).exists():
-            QMessageBox.warning(self, "提示", "请先选择有效的工程目录")
+            QMessageBox.warning(self, tr("提示"), tr("请先选择有效的工程目录"))
             return
         self.btn_run.setEnabled(False)
-        self.lbl_status.setText("正在推理验证集…")
+        self.lbl_status.setText(tr("正在推理验证集…"))
         self._thread = _SweepThread(pd, self.cb_split.currentText(),
                                     self.chk_tta.isChecked(), self.sp_size.value())
         self._thread.done.connect(self._on_sweep)
@@ -144,7 +145,7 @@ class ThresholdPanelDialog(QDialog):
         self.btn_run.setEnabled(True)
         if "error" in res:
             self.lbl_status.setText("失败：" + res["error"].splitlines()[0])
-            QMessageBox.critical(self, "扫描失败", res["error"][:2000])
+            QMessageBox.critical(self, tr("扫描失败"), res["error"][:2000])
             return
         from classification.threshold import binary_report, optimize_threshold, pick_pos_idx
         probs, labels, names = res["probs"], res["labels"], res["names"]
@@ -222,7 +223,7 @@ class ThresholdPanelDialog(QDialog):
     def _save(self):
         from classification.threshold import save_threshold_result
         if not self.rows:
-            QMessageBox.warning(self, "提示", "请先扫描")
+            QMessageBox.warning(self, tr("提示"), tr("请先扫描"))
             return
         r = self._row_at(self.sp_thr.value())
         if not r:
@@ -230,8 +231,8 @@ class ThresholdPanelDialog(QDialog):
         try:
             p = save_threshold_result(self.ed_dir.text().strip(), r, self.pos_name, self.rows)
             self.lbl_status.setText(f"已保存阈值 {r['threshold']} → {p}")
-            QMessageBox.information(self, "已保存",
+            QMessageBox.information(self, tr("已保存"),
                                     f"阈值 {r['threshold']} 已写入：\n{p}\n\n"
                                     f"推理端 Predictor.classify_with_threshold() 会自动读取该阈值判定 OK/NG。")
         except Exception as e:
-            QMessageBox.critical(self, "保存失败", f"{e}\n{traceback.format_exc()[:1200]}")
+            QMessageBox.critical(self, tr("保存失败"), f"{e}\n{traceback.format_exc()[:1200]}")

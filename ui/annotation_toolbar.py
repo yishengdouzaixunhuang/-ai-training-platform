@@ -12,6 +12,7 @@
     而中央列在左栏展开时只有 757px ⇒ 右侧这几个控件必须**紧凑**（见 _SW_QSS），
     且只在多视图模式下显示（单图模式画布上本就叠着状态行，再显示一处就是冗余）。
 """
+from core.i18n import tr
 from PyQt5.QtCore import QSize, Qt, pyqtSignal
 from PyQt5.QtGui import QKeySequence
 from PyQt5.QtWidgets import (
@@ -198,7 +199,7 @@ class AnnotationToolbar(QWidget):
             b.setIconSize(QSize(22, 22))
             b.setFixedSize(28, 28)
             b.setCursor(Qt.PointingHandCursor)
-            b.setToolTip(tip)
+            b.setToolTip(tr(tip))
             b.clicked.connect(slot)
             self._nav_group.addButton(b)
             chrome.addWidget(b)
@@ -220,8 +221,8 @@ class AnnotationToolbar(QWidget):
         self.tools_toggle.setObjectName("toolsToggle")
         self.tools_toggle.setCheckable(True)
         self.tools_toggle.setChecked(False)          # 默认折叠（维护者 拍板）
-        self.tools_toggle.setText("标注")
-        self.tools_toggle.setToolTip("显示 / 隐藏标注工具栏（形状工具 + 撤销重做）\n快捷键 Ctrl+B")
+        self.tools_toggle.setText(tr("标注"))
+        self.tools_toggle.setToolTip(tr("显示 / 隐藏标注工具栏（形状工具 + 撤销重做）\n快捷键 Ctrl+B"))
         # ⚠️ QToolButton 默认是 ToolButtonIconOnly ⇒ 光设 setText("标注") **一个字都不会显示**
         #    （实测：折叠态抓图只剩一个斜杠图标，根本看不出这是折叠开关）。
         #    要文字就必须显式 TextBesideIcon。
@@ -247,7 +248,7 @@ class AnnotationToolbar(QWidget):
             # 上一张/下一张全应用没有快捷键，一旦被人挪进 tools_box 就是导航失联，
             # 而那种改动**不会报任何错**（只是少了两枚按钮）。
             btn.setObjectName("nav" + key.capitalize())
-            btn.setToolTip(tip)
+            btn.setToolTip(tr(tip))
             btn.setIcon(icons.make_icon(ikey))
             btn.setIconSize(QSize(24, 24))
             btn.setFixedSize(30, 30)
@@ -272,17 +273,17 @@ class AnnotationToolbar(QWidget):
         # 看不出"这三个是图层可见性开关"。友商的做法是：一个「显示」小标题
         # + 一串**真正的复选框**（勾上 = 实心青块，没勾 = 空框 + 灰字）。
         # 实测宽度：友商方案 191px vs 原方块按钮 203px —— **反而更窄**，不占地方。
-        self._display_label = QLabel("显示")
+        self._display_label = QLabel(tr("显示"))
         self._display_label.setObjectName("layerGroupLabel")
         self._display_label.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         self._right_lay.addWidget(self._display_label)
         for key, text, tip in _LAYERS:
-            chk = QCheckBox(text)
+            chk = QCheckBox(tr(text))
             chk.setObjectName("layerSw")
             # 只写度量（间距），颜色在 themes.py 的主题表（见文件头"剥色"那段的教训）
             chk.setStyleSheet(_SW_CHECK_QSS)
             chk.setChecked(True)
-            chk.setToolTip(tip)
+            chk.setToolTip(tr(tip))
             chk.setCursor(Qt.PointingHandCursor)
             chk.toggled.connect(lambda on, k=key: self.layer_toggled.emit(k, bool(on)))
             self._layer_btns[key] = chk
@@ -297,7 +298,7 @@ class AnnotationToolbar(QWidget):
         #        现在由**右栏类别表的选中行**承担（它才是与 canvas 同步的那一份）。
         #    ⇒ 菜单对象 `class_btn` / `_class_menu` 与 set_class_name/set_classes 一并消失，
         #       不留"看着能用、其实没接上"的死代码。
-        self._display_label.setToolTip("图层显示开关（叠加显示的是哪几层）")
+        self._display_label.setToolTip(tr("图层显示开关（叠加显示的是哪几层）"))
 
         # ────────── 可折叠工具行 ──────────
         self.tools_box = QWidget(self)
@@ -306,7 +307,7 @@ class AnnotationToolbar(QWidget):
         tl.setSpacing(4)
 
         # ---- 模块 1：宽度 ----
-        _wlab = QLabel("宽度")
+        _wlab = QLabel(tr("宽度"))
         # ⚠️ QLabel 默认水平策略是 Preferred：整行余量没人要时，**它会全吞** ——
         #    实测被撑到 605px 宽，文字左对齐 ⇒ 「宽度」和数字框之间裂开一大段空白。
         #    （第一版只把数字框钉成 Fixed，标签照样吞余量 —— 抓图才看出来，
@@ -317,7 +318,7 @@ class AnnotationToolbar(QWidget):
         self.width_spin.setRange(1, 100)
         self.width_spin.setValue(15)
         self.width_spin.setSuffix(" px")
-        self.width_spin.setToolTip("画笔/直线粗细（1-100，实时生效）")
+        self.width_spin.setToolTip(tr("画笔/直线粗细（1-100，实时生效）"))
         # ⚠️ 必须钉 Fixed：QSpinBox 的默认水平策略会**吞掉整行多余的宽度**，
         #    展开态下数字框被拉成 ~290px，「宽度」标签和它之间裂开一大段空白
         #    （实测截图才发现，label/sizeHint 类断言都看不出来）。
@@ -333,7 +334,7 @@ class AnnotationToolbar(QWidget):
         for tid, tip, ikey in _TOOLS:
             btn = QToolButton()
             btn.setCheckable(True)
-            btn.setToolTip(tip)
+            btn.setToolTip(tr(tip))
             btn.setIcon(icons.make_ai_icon() if ikey == "ai" else icons.make_icon(ikey))
             btn.setIconSize(QSize(24, 24))
             btn.setFixedSize(30, 30)
@@ -351,7 +352,7 @@ class AnnotationToolbar(QWidget):
         tl.addWidget(_separator())
         for key, tip, ikey, sig_name in _ACTIONS:
             btn = QToolButton()
-            btn.setToolTip(tip)
+            btn.setToolTip(tr(tip))
             btn.setIcon(icons.make_icon(ikey))
             btn.setIconSize(QSize(24, 24))
             btn.setFixedSize(30, 30)

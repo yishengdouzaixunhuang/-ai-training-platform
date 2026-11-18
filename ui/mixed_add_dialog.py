@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Mixed Classification Add Images Dialog."""
 
+from core.i18n import tr
 import os
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QCheckBox,
@@ -34,7 +35,7 @@ class MixedAddImagesDialog(QDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Add Images - Mixed Classification")
+        self.setWindowTitle(tr("添加图片 - 混合分类"))
         self.setMinimumSize(860, 600)
         self.resize(960, 640)
         self.setStyleSheet(STYLE)
@@ -48,12 +49,12 @@ class MixedAddImagesDialog(QDialog):
         root.setContentsMargins(16, 12, 16, 16)
 
         top = QHBoxLayout()
-        self._bind_check = QCheckBox("Bind View")
+        self._bind_check = QCheckBox(tr("绑定视图"))
         self._bind_check.setChecked(True)
-        self._bind_check.setToolTip("When checked, loading one column auto-pairs the other")
+        self._bind_check.setToolTip(tr("勾选后，加载一列会自动配对另一列"))
         top.addWidget(self._bind_check)
         top.addStretch()
-        la = QPushButton("Load All Images")
+        la = QPushButton(tr("加载全部图片"))
         la.clicked.connect(self._load_all)
         top.addWidget(la)
         root.addLayout(top)
@@ -61,15 +62,15 @@ class MixedAddImagesDialog(QDialog):
         hdr = QHBoxLayout(); hdr.setSpacing(0)
         self._gc_lbl = QLabel("0"); self._gc_lbl.setObjectName("count_label")
         self._hc_lbl = QLabel("0"); self._hc_lbl.setObjectName("count_label")
-        hdr.addLayout(self._mk_hdr("Grayscale", self._on_gray_file, self._on_gray_dir, self._on_clr_gray, self._gc_lbl), 1)
+        hdr.addLayout(self._mk_hdr(tr("灰度"), self._on_gray_file, self._on_gray_dir, self._on_clr_gray, self._gc_lbl), 1)
         hdr.addSpacing(12)
-        hdr.addLayout(self._mk_hdr("Height Map", self._on_hgt_file, self._on_hgt_dir, self._on_clr_hgt, self._hc_lbl), 1)
+        hdr.addLayout(self._mk_hdr(tr("高度图"), self._on_hgt_file, self._on_hgt_dir, self._on_clr_hgt, self._hc_lbl), 1)
         root.addLayout(hdr)
 
         lst = QHBoxLayout(); lst.setSpacing(0)
-        self._gl = QListWidget(); self._gl.setToolTip("Grayscale images")
+        self._gl = QListWidget(); self._gl.setToolTip(tr("灰度图"))
         self._gl.itemEntered.connect(self._on_hover)
-        self._hl = QListWidget(); self._hl.setToolTip("Height maps")
+        self._hl = QListWidget(); self._hl.setToolTip(tr("高度图"))
         self._hl.itemEntered.connect(self._on_hover)
         # 两列是同一零件的配对图，选中行互相同步，方便逐行核对是否配错
         self._syncing = False
@@ -90,9 +91,9 @@ class MixedAddImagesDialog(QDialog):
         root.addWidget(self._err)
 
         btns = QHBoxLayout(); btns.addStretch()
-        self._ok = QPushButton("OK"); self._ok.setObjectName("ok_btn"); self._ok.setMinimumWidth(90)
+        self._ok = QPushButton(tr("确定")); self._ok.setObjectName("ok_btn"); self._ok.setMinimumWidth(90)
         self._ok.clicked.connect(self._on_ok)
-        cancel = QPushButton("Cancel"); cancel.setObjectName("cancel_btn"); cancel.setMinimumWidth(90)
+        cancel = QPushButton(tr("取消")); cancel.setObjectName("cancel_btn"); cancel.setMinimumWidth(90)
         cancel.clicked.connect(self.reject)
         btns.addWidget(self._ok); btns.addWidget(cancel)
         root.addLayout(btns)
@@ -122,19 +123,19 @@ class MixedAddImagesDialog(QDialog):
         return r
 
     def _on_gray_file(self):
-        fs, _ = QFileDialog.getOpenFileNames(self, "Select Grayscale", "", "Images (*.bmp *.png *.jpg *.jpeg);;All (*)")
+        fs, _ = QFileDialog.getOpenFileNames(self, tr("选择灰度图"), "", tr("图片 (*.bmp *.png *.jpg *.jpeg);;全部 (*)"))
         if fs: self._add_g(fs)
     def _on_gray_dir(self):
-        d = QFileDialog.getExistingDirectory(self, "Select Grayscale Folder")
+        d = QFileDialog.getExistingDirectory(self, tr("选择灰度图目录"))
         if d: self._add_g(self._scan(d, {".bmp",".png",".jpg",".jpeg"}))
     def _on_hgt_file(self):
-        fs, _ = QFileDialog.getOpenFileNames(self, "Select Height Maps", "", "Height Maps (*.tif *.tiff);;All (*)")
+        fs, _ = QFileDialog.getOpenFileNames(self, tr("选择高度图"), "", tr("高度图 (*.tif *.tiff);;全部 (*)"))
         if fs: self._add_h(fs)
     def _on_hgt_dir(self):
-        d = QFileDialog.getExistingDirectory(self, "Select Height Map Folder")
+        d = QFileDialog.getExistingDirectory(self, tr("选择高度图目录"))
         if d: self._add_h(self._scan(d, {".tif",".tiff"}))
     def _load_all(self):
-        d = QFileDialog.getExistingDirectory(self, "Select Folder with Both Types")
+        d = QFileDialog.getExistingDirectory(self, tr("选择同时含两类图的目录"))
         if not d: return
         g, h = [], []
         for f in sorted(os.listdir(d)):

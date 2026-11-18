@@ -5,6 +5,7 @@
 提供「应用并开始训练 / 仅应用参数 / 取消」三个动作。
 """
 from __future__ import annotations
+from core.i18n import tr
 
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtWidgets import (QDialog, QFormLayout, QGroupBox, QHBoxLayout,
@@ -24,7 +25,7 @@ class RecommendationDialog(QDialog):
         super().__init__(parent)
         self._project_dir = project_dir or ""
         self._params: dict = {}
-        self.setWindowTitle("智能推荐训练参数")
+        self.setWindowTitle(tr("智能推荐训练参数"))
         self.resize(760, 640)
         self._build_ui()
         self._refresh()
@@ -34,7 +35,7 @@ class RecommendationDialog(QDialog):
         root = QVBoxLayout(self)
 
         # 环境与数据集摘要
-        self.summary_box = QGroupBox("环境与数据集")
+        self.summary_box = QGroupBox(tr("环境与数据集"))
         self.summary_form = QFormLayout(self.summary_box)
         self.summary_labels = {}
         for key, label in [("device", "设备"), ("dataset", "数据集"),
@@ -48,7 +49,7 @@ class RecommendationDialog(QDialog):
 
         # 目标推理耗时
         lat = QHBoxLayout()
-        lat.addWidget(QLabel("目标推理耗时(ms)（线上部署约束，0 = 不约束）:"))
+        lat.addWidget(QLabel(tr("目标推理耗时(ms)（线上部署约束，0 = 不约束）:")))
         self.latency_spin = QSpinBox()
         self.latency_spin.setRange(0, 10000)
         self.latency_spin.setSingleStep(5)
@@ -61,7 +62,7 @@ class RecommendationDialog(QDialog):
 
         # 推荐表
         self.table = QTableWidget(0, 3)
-        self.table.setHorizontalHeaderLabels(["参数", "推荐值", "推荐理由"])
+        self.table.setHorizontalHeaderLabels([tr("参数"), tr("推荐值"), tr("推荐理由")])
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         header = self.table.horizontalHeader()
@@ -73,9 +74,9 @@ class RecommendationDialog(QDialog):
         # 底部按钮
         btns = QHBoxLayout()
         btns.addStretch(1)
-        self.btn_apply_start = QPushButton("应用并开始训练")
-        self.btn_apply_only = QPushButton("仅应用参数")
-        btn_cancel = QPushButton("取消")
+        self.btn_apply_start = QPushButton(tr("应用并开始训练"))
+        self.btn_apply_only = QPushButton(tr("仅应用参数"))
+        btn_cancel = QPushButton(tr("取消"))
         self.btn_apply_start.setStyleSheet("QPushButton { background:#2e7d32; color:white; font-weight:bold; padding:6px 14px; }")
         self.btn_apply_only.setStyleSheet("QPushButton { padding:6px 14px; }")
         btn_cancel.setStyleSheet("QPushButton { padding:6px 14px; }")

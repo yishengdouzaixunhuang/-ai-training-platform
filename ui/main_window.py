@@ -1,5 +1,6 @@
 """Main Window - Optimized for large datasets"""
 import os, json, re, sys, threading, shutil, cv2
+import textwrap
 from collections import deque
 import torch
 from datetime import datetime
@@ -88,6 +89,18 @@ def zoom_pct_to_pos(pct):
     p = max(ZOOM_PCT_MIN, min(ZOOM_PCT_MAX, int(pct)))
     span = math.log(float(ZOOM_PCT_MAX) / float(ZOOM_PCT_MIN))
     return int(round(ZOOM_POS_MAX * math.log(float(p) / float(ZOOM_PCT_MIN)) / span))
+
+
+def _vtab_text(zh_label):
+    """竖排页签文字：中文一字一行；英文按 4 字符折行，避免 40px 宽横排溢出。
+
+    不能直接 ``"\\n".join(tr(label))``：英文 8~10 个字母会变成 8~10 行，
+    56px 高的按钮放不下；按 4 字符折行后最多 2~3 行。
+    """
+    label = tr(zh_label)
+    if any("\u4e00" <= ch <= "\u9fff" for ch in label):
+        return "\n".join(label)
+    return "\n".join(textwrap.wrap(label, 4))
 
 
 # ────────── 竖排页签的样式：右栏 / 左栏**共用这一份** ──────────
@@ -332,38 +345,38 @@ class MainWindow(OcrOcvMixin, QMainWindow):
 
     def _create_menus(self):
         mb = self.menuBar()
-        fm = mb.addMenu("File(&F)")
-        fm.addAction("New Project(&N)", self._new_project)
-        fm.addAction("Open Project(&O)", self._open_project)
+        fm = mb.addMenu(tr("文件(&F)"))
+        fm.addAction(tr("新建工程(&N)"), self._new_project)
+        fm.addAction(tr("打开工程(&O)"), self._open_project)
         fm.addSeparator()
-        fm.addAction("Close Project", self._close_project)
+        fm.addAction(tr("关闭工程"), self._close_project)
         fm.addSeparator()
-        fm.addAction("Restart App", self._restart_app)
-        fm.addAction("Exit(&Q)", self.close)
-        tm = mb.addMenu("Tools(&T)")
-        tm.addAction("Semantic Segmentation", lambda: self._set_task("segmentation"))
-        tm.addAction("Object Detection", lambda: self._set_task("detection"))
-        tm.addAction("Image Classification", lambda: self._set_task("classification"))
-        tm.addAction("Mixed Classification", lambda: self._set_task("mixed_classification"))
+        fm.addAction(tr("重启应用"), self._restart_app)
+        fm.addAction(tr("退出(&Q)"), self.close)
+        tm = mb.addMenu(tr("工具(&T)"))
+        tm.addAction(tr("语义分割"), lambda: self._set_task("segmentation"))
+        tm.addAction(tr("目标检测"), lambda: self._set_task("detection"))
+        tm.addAction(tr("图像分类"), lambda: self._set_task("classification"))
+        tm.addAction(tr("混合分类"), lambda: self._set_task("mixed_classification"))
         tm.addSeparator()
-        tm.addAction("OCR Text Recognition", lambda: self._set_task("ocr"))
-        self._act_screen_ocr = tm.addAction("Screen OCR (截图识别)...", self._open_screen_ocr)
+        tm.addAction(tr("OCR 文字识别"), lambda: self._set_task("ocr"))
+        self._act_screen_ocr = tm.addAction(tr("Screen OCR (截图识别)..."), self._open_screen_ocr)
         # 快捷键统一在 _register_screen_ocr_hotkey() 里设置：
         # 优先注册系统级全局热键（窗口未聚焦也能触发），失败则回退为窗口内快捷键
-        tm.addAction("OCV Quality Inspection", lambda: self._set_task("ocv"))
+        tm.addAction(tr("OCV 字符质检"), lambda: self._set_task("ocv"))
         tm.addSeparator()
-        tm.addAction("Image Crop Tool...", self._open_crop_tool)
-        tm.addAction("Image Resize Tool...", self._open_resize_tool)
-        tm.addAction("Heatmap Region Analyzer...", self._open_heatmap_analyzer)
-        tm.addAction("分类阈值调优 (过杀/漏检)...", self._open_threshold_panel)
+        tm.addAction(tr("图像裁剪工具…"), self._open_crop_tool)
+        tm.addAction(tr("图像缩放工具…"), self._open_resize_tool)
+        tm.addAction(tr("热力图区域分析…"), self._open_heatmap_analyzer)
+        tm.addAction(tr("分类阈值调优 (过杀/漏检)..."), self._open_threshold_panel)
         # 「管理数据集划分…」的**零门槛兜底入口**：图片列表右键里也有一条，但那条要
         # 先选中至少一行才出菜单（`_on_image_context_menu` 的早退），而"划分"是工程级动作、
         # 跟选没选中图无关 —— 没这个兜底，面板按钮删掉后就会出现"想划分却点不到"。
-        tm.addAction("数据集划分管理...", self._manage_split)
+        tm.addAction(tr("数据集划分管理..."), self._manage_split)
         tm.addSeparator()
-        tm.addAction("Flow Editor...", self._open_flow_editor)
-        sm = mb.addMenu("Settings(&S)")
-        sm.addAction("Workspace...", self._set_workspace)
+        tm.addAction(tr("流程编辑器…"), self._open_flow_editor)
+        sm = mb.addMenu(tr("设置(&S)"))
+        sm.addAction(tr("工作空间…"), self._set_workspace)
         # 语言：只做「重启生效」（无 .ui / 无 tr()，热切换要维护控件注册表，留 v2）
         lm = sm.addMenu(tr("语言 / Language"))
         _lang_group = QActionGroup(self)
@@ -374,17 +387,17 @@ class MainWindow(OcrOcvMixin, QMainWindow):
             _act.setChecked(self._load_ui_setting("lang", "zh") == _code)
             _act.setActionGroup(_lang_group)
             _act.triggered.connect(lambda _checked=False, k=_code: self._set_language(k))
-        vm = mb.addMenu("View(&V)")
-        vm.addAction("Toggle Log Panel	Ctrl+L", self._toggle_log_panel)
-        vm.addAction("Toggle Left Panel	Ctrl+[", lambda: self._toggle_panel("left"))
-        vm.addAction("Toggle Right Panel	Ctrl+]", lambda: self._toggle_panel("right"))
+        vm = mb.addMenu(tr("视图(&V)"))
+        vm.addAction(tr("显示/隐藏日志面板\tCtrl+L"), self._toggle_log_panel)
+        vm.addAction(tr("显示/隐藏左栏\tCtrl+["), lambda: self._toggle_panel("left"))
+        vm.addAction(tr("显示/隐藏右栏\tCtrl+]"), lambda: self._toggle_panel("right"))
         vm.addSeparator()
-        vm.addAction("Toggle Detection Mode	Ctrl+D", self._toggle_detection_mode)
-        vm.addAction("Refresh Projects", self._refresh_projects)
+        vm.addAction(tr("切换检测模式\tCtrl+D"), self._toggle_detection_mode)
+        vm.addAction(tr("刷新工程列表"), self._refresh_projects)
         # 主题（深色/浅色）：勾选框指示器在深色下容易看不见，给个可切换的主题
-        tm = vm.addMenu("主题 / Theme")
+        tm = vm.addMenu(tr("主题 / Theme"))
         for _label, _key in (("深色（默认）", "dark"), ("浅色", "light")):
-            act = tm.addAction(_label)
+            act = tm.addAction(tr(_label))
             act.setCheckable(True)
             act.setChecked(self._load_ui_setting("theme", "dark") == _key)
             act.triggered.connect(lambda _c, k=_key: self._set_theme(k))
@@ -397,18 +410,18 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         #                              2026-10-14 该页删除时改挂到这里）
         #      导出 JSON / 导出标注 / 清理碎标注 -> 左栏图片列表右键菜单（原"标注管理/标注操作"）
         #      批量推理（全部图片）…  -> 模型管理 / 模型列表
-        hm = mb.addMenu("Help(&H)")
+        hm = mb.addMenu(tr("帮助(&H)"))
         # 参照友商「帮助」：日志 / 使用说明 / 开发文档 / 示例工程 / 快捷键提示
-        hm.addAction("日志面板\tCtrl+L", self._toggle_log_panel)
-        hm.addAction("使用说明", self._open_user_guide)
-        hm.addAction("开发文档", self._open_dev_docs)
-        hx = hm.addMenu("示例工程")
-        hx.addAction("生成三视图示例工程…", self._create_example_project)
-        hx.addAction("打开文档目录", lambda: self._open_dir(os.path.join(
+        hm.addAction(tr("显示/隐藏日志面板\tCtrl+L"), self._toggle_log_panel)
+        hm.addAction(tr("使用说明"), self._open_user_guide)
+        hm.addAction(tr("开发文档"), self._open_dev_docs)
+        hx = hm.addMenu(tr("示例工程"))
+        hx.addAction(tr("生成三视图示例工程…"), self._create_example_project)
+        hx.addAction(tr("打开文档目录"), lambda: self._open_dir(os.path.join(
             os.path.dirname(os.path.abspath(__file__)), "..", "docs")))
-        hm.addAction("快捷键提示\tF1", self._show_shortcuts)
+        hm.addAction(tr("快捷键提示\tF1"), self._show_shortcuts)
         hm.addSeparator()
-        hm.addAction("About(&A)", self._about)
+        hm.addAction(tr("关于(&A)"), self._about)
 
     # ────────── 帮助 ──────────
 
@@ -458,7 +471,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
                      f"<td><b>{keys}</b></td><td>{desc.replace('**','')}</td></tr>")
         html += "</table>"
         box = QMessageBox(self)
-        box.setWindowTitle("快捷键提示")
+        box.setWindowTitle(tr("快捷键提示"))
         box.setTextFormat(Qt.RichText)
         box.setText(html)
         box.exec_()
@@ -528,13 +541,13 @@ class MainWindow(OcrOcvMixin, QMainWindow):
                     os.path.join(pd, "annotations", f"{key}_te_0_mask.png"))
             self._refresh_projects()
             self.log(f"[示例工程] 已生成 {pd}")
-            QMessageBox.information(self, "示例工程",
+            QMessageBox.information(self, tr("示例工程"),
                                     f"示例工程已生成：\n{pd}\n\n"
                                     "含 3 组三视图 + 标注 JSON + 掩膜（Zw/Ys + 忽略区）。\n"
                                     "左栏工程列表里双击即可打开。")
         except Exception as e:
             self.log(f"[示例工程] 生成失败: {type(e).__name__}: {e}")
-            QMessageBox.warning(self, "示例工程", f"生成失败: {e}")
+            QMessageBox.warning(self, tr("示例工程"), f"生成失败: {e}")
 
     def _create_left_panel(self):
         # ★ 2026-10-15 改成「**常驻把手条 + 可折叠内容**」：
@@ -554,7 +567,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         _hl.setSpacing(0)
         btn_left = QPushButton("\u25c0")
         btn_left.setFixedSize(20, 20)
-        btn_left.setToolTip("收起左栏（再点一下展开；Ctrl+[）")
+        btn_left.setToolTip(tr("收起左栏（再点一下展开；Ctrl+[）"))
         btn_left.clicked.connect(lambda: self._toggle_panel("left"))
         _hl.addWidget(btn_left)
         _hl.addStretch()
@@ -596,10 +609,11 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         ]
         self._left_tab_btns = {}
         for icon_text, tooltip, key in tab_defs:
-            # 竖排：一个字一行（与右栏完全一致；横排 4 个字塞进 40px 会溢出到按钮外面）
-            btn = QPushButton("\n".join(icon_text))
+            # 竖排：中文一个字一行；英文按 4 字符折行（40px 宽横排会溢出）
+            btn = QPushButton(_vtab_text(icon_text))
             btn.setCheckable(True)
-            btn.setToolTip(tooltip + f"（{icon_text}：点一下显示，再点一下收起）")
+            btn.setToolTip(tr(tooltip) +
+                           tr("（%s：点一下显示，再点一下收起）") % tr(icon_text))
             btn.setMinimumHeight(56)
             btn.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
             btn.setStyleSheet(_V_TAB_QSS)          # 与右栏共用同一份样式
@@ -623,18 +637,18 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         # ── 页 0：工程管理（工程列表）──
         page_proj = QWidget()
         pl = QVBoxLayout(page_proj); pl.setContentsMargins(0, 2, 0, 0); pl.setSpacing(2)
-        pl.addWidget(self._make_block_header("工程列表"))
+        pl.addWidget(self._make_block_header(tr("工程列表")))
 
         self.project_tree = QTreeWidget()
-        self.project_tree.setHeaderLabels(["Name", "Time"])
+        self.project_tree.setHeaderLabels([tr("名称"), tr("时间")])
         # Name 列宽度根据工程名自适应，避免工程名被截断、用户手动拉伸
         self.project_tree.header().setSectionResizeMode(0, QHeaderView.ResizeToContents)
         self.project_tree.setContextMenuPolicy(Qt.CustomContextMenu)
         self.project_tree.customContextMenuRequested.connect(self._on_project_context_menu)
         self.project_tree.itemDoubleClicked.connect(self._on_project_double_click)
-        self.week_item = QTreeWidgetItem(["Within 1 week"])
-        self.month_item = QTreeWidgetItem(["Within 1 month"])
-        self.older_item = QTreeWidgetItem(["Older"])
+        self.week_item = QTreeWidgetItem([tr("一周内")])
+        self.month_item = QTreeWidgetItem([tr("一个月内")])
+        self.older_item = QTreeWidgetItem([tr("更早")])
         self.project_tree.addTopLevelItems([self.week_item, self.month_item, self.older_item])
         # ⚠️ 这里原来钉死 `setMaximumHeight(150)`，理由是"别把下面的图片列表挤没了"。
         #    现在两者是**两页**、不会再互相挤，所以把这个限制撤掉：
@@ -669,7 +683,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         # 行2 = Pred 门限 + 两个"要不要"的勾选（原来 Pred 独占一行、右边一大片空白）。
         ft = QHBoxLayout(); ft.setContentsMargins(0, 0, 0, 0); ft.setSpacing(2)
         self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("Search...")
+        self.search_input.setPlaceholderText(tr("搜索…"))
         self.search_input.setMinimumWidth(110)
         # 防抖 280ms：列表构建已经挪到后台线程，每敲一个字符都会起一个全量扫描
         # （2001 张图的目录索引 + json 扫描）。不防抖的话打 "NG" 就是两个线程并发，
@@ -685,24 +699,28 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         self.split_filter = QComboBox()
         # 对标友商 友商平台 的筛选下拉：除数据集外，还要能按"是否标注 / 是否有结果"筛。
         # 后半段这几项在 _filter_images 里实现。
-        self.split_filter.addItems(["All Sets", "Train Only", "Val Only", "Test Only",
-                                    "Annotated Only", "Unannotated Only",
-                                    "Has Result", "No Result"])
-        self.split_filter.setToolTip("筛选：数据集 / 已标注 / 未标注 / 有结果 / 无结果")
+        for _sf_label, _sf_key in (
+            ("全部集", "All Sets"), ("仅训练集", "Train Only"),
+            ("仅验证集", "Val Only"), ("仅测试集", "Test Only"),
+            ("仅已标注", "Annotated Only"), ("仅未标注", "Unannotated Only"),
+            ("有结果", "Has Result"), ("无结果", "No Result"),
+        ):
+            self.split_filter.addItem(tr(_sf_label), _sf_key)
+        self.split_filter.setToolTip(tr("筛选：数据集 / 已标注 / 未标注 / 有结果 / 无结果"))
         self.split_filter.currentIndexChanged.connect(lambda: self._filter_images(self.search_input.text()))
         ft.addWidget(self.split_filter)
         # 标注名字筛选（对标友商下拉里的「标注名字」）：选一个类别，只看含该类的图。
         # 选项在 _filter_images 里按工程类别懒同步，不必到处挂钩子。
         self.label_filter = QComboBox()
-        self.label_filter.addItem("All Labels")
-        self.label_filter.setToolTip("只看含指定标注类别的图片")
+        self.label_filter.addItem(tr("全部标签"))
+        self.label_filter.setToolTip(tr("只看含指定标注类别的图片"))
         self.label_filter.currentIndexChanged.connect(
             lambda: self._filter_images(self.search_input.text()))
         ft.addWidget(self.label_filter)
         il.addLayout(ft)
         # Pred filter row
         pf = QHBoxLayout(); pf.setContentsMargins(0, 0, 0, 0); pf.setSpacing(2)
-        pf.addWidget(QLabel("Pred:"))
+        pf.addWidget(QLabel(tr("预测：")))
         self.pred_op_combo = QComboBox()
         self.pred_op_combo.addItems(["\u2265", "=", "\u2264"])
         self.pred_op_combo.currentIndexChanged.connect(lambda: self._filter_images(self.search_input.text()))
@@ -712,11 +730,11 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         self.pred_count_spin.valueChanged.connect(lambda: self._filter_images(self.search_input.text()))
         pf.addWidget(self.pred_count_spin)
         pf.addSpacing(10)
-        self.annotated_check = QCheckBox("Annotated")
+        self.annotated_check = QCheckBox(tr("已标注"))
         self.annotated_check.toggled.connect(lambda: self._filter_images(self.search_input.text()))
         pf.addWidget(self.annotated_check)
-        self.recent_check = QCheckBox("Recent")
-        self.recent_check.setToolTip("Sort by annotation date")
+        self.recent_check = QCheckBox(tr("最近"))
+        self.recent_check.setToolTip(tr("按标注日期排序"))
         self.recent_check.toggled.connect(lambda: self._filter_images(self.search_input.text()))
         pf.addWidget(self.recent_check)
         pf.addStretch()
@@ -737,8 +755,8 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         #     面板上删掉，不再重复挂第三个地方
         #   · 「清除筛选」是高频 + mark_filter_label 的提示文案指向它 → 保留在面板上
         mf = QHBoxLayout(); mf.setContentsMargins(0, 0, 0, 0); mf.setSpacing(2)
-        self.btn_filter_clear = QPushButton("清除筛选")
-        self.btn_filter_clear.setToolTip("清掉条目式筛选/标记筛选/缺陷筛选，恢复显示全部图片")
+        self.btn_filter_clear = QPushButton(tr("清除筛选"))
+        self.btn_filter_clear.setToolTip(tr("清掉条目式筛选/标记筛选/缺陷筛选，恢复显示全部图片"))
         self.btn_filter_clear.clicked.connect(self._clear_mark_filters)
         mf.addWidget(self.btn_filter_clear)
         mf.addStretch(1)
@@ -752,7 +770,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         self.image_list_widget = QTableWidget()
         self.image_list_widget.setColumnCount(9)
         self.image_list_widget.setHorizontalHeaderLabels(
-            ["序号", "图片名", "大小", "数据集", "标注", "结果", "分数", "耗时ms", "标记"])
+            [tr("序号"), tr("图片名"), tr("大小"), tr("数据集"), tr("标注"), tr("结果"), tr("分数"), tr("耗时ms"), tr("标记")])
         # 「分数」= 该图所有检出块的**平均模型置信度**（与 Result 表同口径），
         # 没有置信度图（<base>_prob.png）时留空 —— 别让人误以为是 IoU。
         try:
@@ -799,13 +817,13 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         pag_bar = QHBoxLayout(); pag_bar.setContentsMargins(0, 0, 0, 0); pag_bar.setSpacing(2)
         self.stats_summary = QLabel(""); pag_bar.addWidget(self.stats_summary)
         pag_bar.addStretch()
-        pag_bar.addWidget(QLabel("Per page:"))
+        pag_bar.addWidget(QLabel(tr("每页：")))
         self.page_size_combo = QComboBox()
         # "全部" = 不分页，一次列出所有图片（滑块会随数量变短），方便直接全选。
         # 对标友商 友商平台：列表不分页，一眼能看全并 Ctrl+A。
-        self.page_size_combo.addItems(["50", "100", "200", "500", "全部"])
-        self.page_size_combo.setCurrentText("全部")
-        self.page_size_combo.setToolTip("每页显示数量；选「全部」不分页，便于全选（图片很多时会略慢）")
+        self.page_size_combo.addItems(["50", "100", "200", "500", tr("全部")])
+        self.page_size_combo.setCurrentIndex(4)   # 「全部」= 不分页
+        self.page_size_combo.setToolTip(tr("每页显示数量；选「全部」不分页，便于全选（图片很多时会略慢）"))
         self.page_size_combo.currentTextChanged.connect(self._on_page_size_changed)
         # 注意：上面是先 setCurrentText 再 connect，所以这里必须手动同步初值，
         # 否则下拉显示"全部"而 _page_size 还是 50，行为与界面不一致。
@@ -814,7 +832,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         self.page_prev_btn = QPushButton("\u25c0"); self.page_prev_btn.setFixedWidth(30)
         self.page_prev_btn.clicked.connect(lambda: self._go_to_page(self._current_page - 1))
         pag_bar.addWidget(self.page_prev_btn)
-        self.page_info_label = QLabel("Page 0/0"); pag_bar.addWidget(self.page_info_label)
+        self.page_info_label = QLabel(tr("第 0/0 页")); pag_bar.addWidget(self.page_info_label)
         self.page_next_btn = QPushButton("\u25b6"); self.page_next_btn.setFixedWidth(30)
         self.page_next_btn.clicked.connect(lambda: self._go_to_page(self._current_page + 1))
         pag_bar.addWidget(self.page_next_btn); pag_bar.addStretch()
@@ -869,13 +887,13 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         # 位置**不动**（用户明确说过别挪它）：仍在左栏最底下、不随页签收起而消失。
         sep2 = QFrame(); sep2.setFrameShape(QFrame.HLine); sep2.setFrameShadow(QFrame.Sunken)
         outer_layout.addWidget(sep2)
-        btn_new = QPushButton("+ New Project"); btn_new.clicked.connect(self._new_project)
+        btn_new = QPushButton(tr("+ 新建工程")); btn_new.clicked.connect(self._new_project)
         outer_layout.addWidget(btn_new)
 
         # ★ 导入图片 —— 放在 New Project 下面（它的位置按注释要求不动）。
         # 样式**故意不写 setStyleSheet**：主题扫描器会处理内联 qss，上次加 :disabled
         # 选择器直接把程序搞崩了（40 秒内必退，无 traceback）。跟隔壁按钮同款最稳。
-        btn_imp = QPushButton("＋ 导入图片")
+        btn_imp = QPushButton(tr("＋ 导入图片"))
         btn_imp.clicked.connect(self._import_images)
         self._btn_import_images = btn_imp
         outer_layout.addWidget(btn_imp)
@@ -1252,13 +1270,13 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         lay.setSpacing(7)
         self._info_file = ElideLabel("文件 --")
         lay.addWidget(self._info_file, 1)
-        self._info_dims = QLabel("宽高 --")
-        self._info_xy = QLabel("坐标 --")
+        self._info_dims = QLabel(tr("宽高 --"))
+        self._info_xy = QLabel(tr("坐标 --"))
         self._info_rgb = QLabel("RGB --")
-        self._info_ann = QLabel("已标注 --")
-        self._info_det = QLabel("已检出 --")
-        self._info_ms = QLabel("耗时 --")
-        self._info_avg = QLabel("平均 --")
+        self._info_ann = QLabel(tr("已标注 --"))
+        self._info_det = QLabel(tr("已检出 --"))
+        self._info_ms = QLabel(tr("耗时 --"))
+        self._info_avg = QLabel(tr("平均 --"))
         self._img_info_bar = box          # 供探针/后续代码定位这一条（断言它挂在图像区下方）
         fm = QFontMetrics(self.font())
         # 数字位数一变（1129,1962 -> 999,1962）整条栏就会左右抖，看着像在跳。
@@ -1314,8 +1332,8 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         # 顶栏删掉后无处可去：塞标注工具栏实测放不下（工具栏 sizeHint 已 773px，
         # 中央列左栏展开时只有 757px），所以跟缩放一起放在底栏右端，只有在多视图模式下才出现。
         self._view_layout_btn = QToolButton(box)
-        self._view_layout_btn.setText("视图布局")
-        self._view_layout_btn.setToolTip("多视图排列方式（1*1 / 2*1 / 3*1 / 2*2 / 4*1）")
+        self._view_layout_btn.setText(tr("视图布局"))
+        self._view_layout_btn.setToolTip(tr("多视图排列方式（1*1 / 2*1 / 3*1 / 2*2 / 4*1）"))
         self._view_layout_btn.setCursor(Qt.PointingHandCursor)
         self._view_layout_btn.setPopupMode(QToolButton.InstantPopup)
         self._view_layout_btn.setStyleSheet(_BAR_BTN_QSS)
@@ -1326,7 +1344,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
 
         self._zoom_out_btn = QToolButton(box)
         self._zoom_out_btn.setText("\u2212")        # U+2212：连字符"-"在居中时偏上，视觉不对称
-        self._zoom_out_btn.setToolTip("缩小（三窗同步，长按连续）")
+        self._zoom_out_btn.setToolTip(tr("缩小（三窗同步，长按连续）"))
         self._zoom_out_btn.setCursor(Qt.PointingHandCursor)
         self._zoom_out_btn.setAutoRepeat(True)
         self._zoom_out_btn.setAutoRepeatDelay(420)
@@ -1342,7 +1360,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         self._zoom_slider.setPageStep(ZOOM_STEP_POS * 3)
         self._zoom_slider.setFixedWidth(84)
         self._zoom_slider.setFixedHeight(17)
-        self._zoom_slider.setToolTip("缩放（相对「适应窗口」，三窗同步）")
+        self._zoom_slider.setToolTip(tr("缩放（相对「适应窗口」，三窗同步）"))
         # ⚠️ **不要**在这里 setStyleSheet 写颜色：颜色写在内联样式里会被
         #    `sweep_inline_styles` 剥掉（白名单色）⇒ 槽和手柄没有背景色 ⇒ 空槽。
         #    配色在 ui/themes.py 的 `_DARK_SLIDER` / `_LIGHT_SLIDER`。
@@ -1350,7 +1368,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
 
         self._zoom_in_btn = QToolButton(box)
         self._zoom_in_btn.setText("+")
-        self._zoom_in_btn.setToolTip("放大（三窗同步，长按连续）")
+        self._zoom_in_btn.setToolTip(tr("放大（三窗同步，长按连续）"))
         self._zoom_in_btn.setCursor(Qt.PointingHandCursor)
         self._zoom_in_btn.setAutoRepeat(True)
         self._zoom_in_btn.setAutoRepeatDelay(420)
@@ -1582,22 +1600,23 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         base = os.path.splitext(os.path.basename(path))[0] if path else ""
         self._img_info_rec_cache = None
         rec = self._img_info_record(base)
-        self._info_file.setFullText(("文件 " + os.path.basename(path)) if path else "文件 --")
+        self._info_file.setFullText((tr("文件 %s") % os.path.basename(path))
+                                    if path else tr("文件 --"))
         w = int(rec.get("img_w") or 0) if rec else 0
         h = int(rec.get("img_h") or 0) if rec else 0
         if not w or not h:
             img = getattr(self.canvas, "image", None)
             if img is not None:
                 w, h = img.size
-        self._info_dims.setText("宽高 %s" % ("%d×%d" % (w, h) if (w and h) else "--"))
-        self._info_ann.setText("已标注 %s" % (rec.get("shape_count", 0) if rec else "--"))
-        self._info_det.setText("已检出 %s" % (rec.get("pred_cnt", 0) if rec else "--"))
+        self._info_dims.setText(tr("宽高 %s") % ("%d×%d" % (w, h) if (w and h) else "--"))
+        self._info_ann.setText(tr("已标注 %s") % (rec.get("shape_count", 0) if rec else "--"))
+        self._info_det.setText(tr("已检出 %s") % (rec.get("pred_cnt", 0) if rec else "--"))
         ms = rec.get("infer_ms") if rec else None
-        self._info_ms.setText("耗时 %s" % ("%dms" % int(round(float(ms))) if ms not in (None, "") else "--"))
+        self._info_ms.setText(tr("耗时 %s") % ("%dms" % int(round(float(ms))) if ms not in (None, "") else "--"))
         # 平均耗时：本项目已跑过推理的图取平均（与列表「耗时」列同一个字典，同一种单位）
         times = [float(v) for v in (getattr(self, "_infer_times", None) or {}).values()
                  if isinstance(v, (int, float))]
-        self._info_avg.setText("平均 %s" % ("%dms" % int(round(sum(times) / len(times))) if times else "--"))
+        self._info_avg.setText(tr("平均 %s") % ("%dms" % int(round(sum(times) / len(times))) if times else "--"))
         if not path:
             self._on_canvas_cursor_moved(-1, -1)
 
@@ -1618,20 +1637,20 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         if getattr(self, "_info_xy", None) is None:
             return
         if x < 0 or y < 0:
-            self._info_xy.setText("坐标 --")
+            self._info_xy.setText(tr("坐标 --"))
             self._info_rgb.setText("RGB --")
             return
-        self._info_xy.setText("坐标 %d,%d" % (x, y))
+        self._info_xy.setText(tr("坐标 %d,%d") % (x, y))
         v = self._pixel_at(source if source is not None else self.canvas, x, y)
         if isinstance(v, (tuple, list)):
             if len(v) >= 3:
                 self._info_rgb.setText("RGB %d,%d,%d" % (int(v[0]), int(v[1]), int(v[2])))
             else:
-                self._info_rgb.setText("灰度 %d" % int(v[0]))
+                self._info_rgb.setText(tr("灰度 %d") % int(v[0]))
         elif v is None:
             self._info_rgb.setText("RGB --")
         else:
-            self._info_rgb.setText("灰度 %d" % int(v))
+            self._info_rgb.setText(tr("灰度 %d") % int(v))
 
     @staticmethod
     def _pixel_at(src, x, y):
@@ -1684,7 +1703,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         _hr.setSpacing(0)
         btn_collapse = QPushButton("\u25b6")
         btn_collapse.setFixedSize(20, 20)
-        btn_collapse.setToolTip("收起右栏（再点一下展开；Ctrl+]）")
+        btn_collapse.setToolTip(tr("收起右栏（再点一下展开；Ctrl+]）"))
         btn_collapse.clicked.connect(lambda: self._toggle_panel("right"))
         _hr.addWidget(btn_collapse)
         _hr.addStretch()
@@ -1717,7 +1736,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         # 第 1 段：Class（类别表）
         cls_box = QWidget(); cl_layout = QVBoxLayout(cls_box)
         cl_layout.setContentsMargins(0, 0, 0, 0); cl_layout.setSpacing(1)
-        self._block_labels["cls"] = self._make_block_header("Class (0)")
+        self._block_labels["cls"] = self._make_block_header(tr("类别 (0)"))
         cl_layout.addWidget(self._block_labels["cls"])
         self.class_list = ClassTableView()
         self.class_list.currentRowChanged.connect(self._on_class_changed)
@@ -1734,7 +1753,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         # 第 2 段：Annotation（标注块）—— 用户要求：标注表在上
         ann_box = QWidget(); ann_layout = QVBoxLayout(ann_box)
         ann_layout.setContentsMargins(0, 0, 0, 0); ann_layout.setSpacing(1)
-        self._block_labels["ann"] = self._make_block_header("Annotation (0)")
+        self._block_labels["ann"] = self._make_block_header(tr("标注 (0)"))
         ann_layout.addWidget(self._block_labels["ann"])
         self.ann_table = QTableWidget()
         self.ann_table.setColumnCount(8)
@@ -1747,7 +1766,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         # 第 3 段：Result（预测/结果块）—— 结果表在下
         res_box = QWidget(); res_layout = QVBoxLayout(res_box)
         res_layout.setContentsMargins(0, 0, 0, 0); res_layout.setSpacing(1)
-        self._block_labels["res"] = self._make_block_header("Result (0)")
+        self._block_labels["res"] = self._make_block_header(tr("结果 (0)"))
         res_layout.addWidget(self._block_labels["res"])
         self.stats_table = QTableWidget()
         self.stats_table.setColumnCount(8)
@@ -1770,14 +1789,14 @@ class MainWindow(OcrOcvMixin, QMainWindow):
 
         # Panel 1: Version History
         panel_ver = QWidget(); vl = QVBoxLayout(panel_ver); vl.setContentsMargins(4, 2, 2, 2)
-        vl.addWidget(QLabel("<b>Version History</b>"))
+        vl.addWidget(QLabel(tr("<b>版本历史</b>")))
         self.version_list = QListWidget()
-        self.version_list.setToolTip("Double-click to restore version")
+        self.version_list.setToolTip(tr("双击恢复该版本"))
         self.version_list.itemDoubleClicked.connect(self._restore_version)
         vl.addWidget(self.version_list)
         vbl = QHBoxLayout()
-        vbl.addWidget(QPushButton("Restore", clicked=self._slot_restore_version))
-        self.version_count_label = QLabel("0 versions"); vbl.addWidget(self.version_count_label)
+        vbl.addWidget(QPushButton(tr("恢复"), clicked=self._slot_restore_version))
+        self.version_count_label = QLabel(tr("0 个版本")); vbl.addWidget(self.version_count_label)
         vl.addLayout(vbl)
         # 同上：panel_ver 由末尾的模块组装挂进「模型管理」
 
@@ -1786,11 +1805,11 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         # ══ ① 模型 ══
         # ★ 顺序原来是：Model 标签 → **Scale 滑块** → model 下拉 → backend → Tiled
         #   （下拉框被自己的标签和 Scale 隔开，看着莫名其妙）→ 现已按"标签+控件配对"重排。
-        il.addWidget(QLabel("Model:"))
+        il.addWidget(QLabel(tr("模型：")))
         self.model_combo = QComboBox(); self.model_combo.addItems(["best_model.pth", "last_model.pth"])
         il.addWidget(self.model_combo)
         self.backend_combo = QComboBox(); self.backend_combo.addItems(["PyTorch", "Compiled", "TorchScript", "TensorRT (FP16)", "ONNX (CPU fallback)"])
-        self.backend_combo.setToolTip("Inference backend")
+        self.backend_combo.setToolTip(tr("推理后端"))
         il.addWidget(self.backend_combo)
         # ★★ 2026-10-29（用户要求）：**去掉 Scale 滑块，改为自动**。
         #   那个滑块是让用户手动把整图缩小再推理，本质是「用检出率换速度」。
@@ -1800,15 +1819,15 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         #   留着只会让人以为「调它能解决慢」，然后踩坑。现在固定原分辨率，
         #   超大图仍由 Predictor 内部按长边 1024 自动兜底（见 predict()）。
         _scale_row = QHBoxLayout()
-        _scale_row.addWidget(QLabel("Scale:"))
-        _scale_note = QLabel("自动（原分辨率）")
+        _scale_row.addWidget(QLabel(tr("缩放：")))
+        _scale_note = QLabel(tr("自动（原分辨率）"))
         _scale_note.setStyleSheet("color: #8A93A6; font-size: 11px;")
-        _scale_note.setToolTip(
+        _scale_note.setToolTip(tr(
             "不再可调。手动缩小整图会让小缺陷在输入里变得过小、直接检不出。\n"
-            "图特别大时 Predictor 内部会自动把长边缩到 1024，无需干预。")
+            "图特别大时 Predictor 内部会自动把长边缩到 1024，无需干预。"))
         _scale_row.addWidget(_scale_note, 1)
         il.addLayout(_scale_row)
-        self.tiled_check = QCheckBox("Tiled")
+        self.tiled_check = QCheckBox(tr("分块"))
         # ★★ 2026-10-29（用户要求）：**这个勾选框不再显示给用户**。
         #   推理该不该分块，取决于**训练时是怎么训的**，不是问用户 ——
         #   训练在原分辨率上按 tile 切块，推理却把整图缩成方形喂进去，同一块缺陷在
@@ -1831,18 +1850,18 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         il.addWidget(_sep1)
 
         # ══ ② 运行 ══
-        il.addWidget(QPushButton("Run Inference", clicked=self._start_inference))
+        il.addWidget(QPushButton(tr("开始推理"), clicked=self._start_inference))
         # 批量推理：走的是模型管理里那个同一个入口（_batch_inference），
         # 按任务类型自动分发（分割/多视图/检测/分类），结果写到 <工程>/outputs/。
         # 这里加一个更顺手的入口 —— 用户原来在「模型管理」面板最底部，得滚很远才找得到。
-        _btn_batch_all = QPushButton("批量推理（全部图片）…")
-        _btn_batch_all.setToolTip("对工程内所有图片跑一遍推理，结果写到 <工程>/outputs/")
+        _btn_batch_all = QPushButton(tr("批量推理（全部图片）…"))
+        _btn_batch_all.setToolTip(tr("对工程内所有图片跑一遍推理，结果写到 <工程>/outputs/"))
         _btn_batch_all.clicked.connect(self._batch_inference)
         il.addWidget(_btn_batch_all)
         self.infer_progress = QProgressBar(); il.addWidget(self.infer_progress)
         self.infer_status = QLabel(); il.addWidget(self.infer_status)
         hil = QHBoxLayout()
-        self.btn_infer_stop = QPushButton("Stop"); self.btn_infer_stop.clicked.connect(self._stop_inference)
+        self.btn_infer_stop = QPushButton(tr("停止")); self.btn_infer_stop.clicked.connect(self._stop_inference)
         self.btn_infer_stop.setEnabled(False); hil.addWidget(self.btn_infer_stop)
         self.infer_result_label = QLabel(""); hil.addWidget(self.infer_result_label)
         il.addLayout(hil)
@@ -1862,15 +1881,15 @@ class MainWindow(OcrOcvMixin, QMainWindow):
 
         # Panel 3: Training
         panel_train = QWidget(); tl = QVBoxLayout(panel_train); tl.setContentsMargins(4, 2, 2, 2)
-        tl.addWidget(QLabel("<b>Training</b>"))
+        tl.addWidget(QLabel(tr("<b>训练</b>")))
         self.train_progress = QProgressBar(); tl.addWidget(self.train_progress)
-        self.train_status = QLabel("Ready"); tl.addWidget(self.train_status)
+        self.train_status = QLabel(tr("就绪")); tl.addWidget(self.train_status)
         btns = QHBoxLayout()
-        self.btn_train_start = QPushButton("Start Training")
+        self.btn_train_start = QPushButton(tr("开始训练"))
         self.btn_train_start.clicked.connect(self._start_training)
         self.btn_train_start.setStyleSheet("QPushButton { background-color: #00FF9C; color: #061018; font-weight: bold; padding: 4px 12px; }")
         btns.addWidget(self.btn_train_start)
-        self.btn_train_stop = QPushButton("Stop")
+        self.btn_train_stop = QPushButton(tr("停止"))
         self.btn_train_stop.clicked.connect(self._stop_batch)
         self.btn_train_stop.setEnabled(False)
         btns.addWidget(self.btn_train_stop)
@@ -1879,21 +1898,21 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         # 会夹一大片空白（见 ShrinkStack 的说明）
         fl = QFormLayout()
         self.epochs_spin = QSpinBox(); self.epochs_spin.setRange(1, 5000); self.epochs_spin.setValue(200)
-        fl.addRow("Epochs:", self.epochs_spin)
+        fl.addRow(tr("轮数："), self.epochs_spin)
         # ★ 2026-10-23：早停。8 张图那种小数据集训到 2000+ 轮时 val loss 会翻几倍（实测 0.20→1.57），
         #   后面全在把模型训坏。0 = 关闭（默认，保持老行为）。
         self.early_stop_spin = QSpinBox()
         self.early_stop_spin.setRange(0, 2000); self.early_stop_spin.setValue(0)
-        self.early_stop_spin.setToolTip(
+        self.early_stop_spin.setToolTip(tr(
             "连续 N 轮「val loss 与 mIoU 都没改善」就自动停止训练。\n"
-            "0 = 不早停。小数据集建议 100~200。")
-        fl.addRow("早停耐心:", self.early_stop_spin)
+            "0 = 不早停。小数据集建议 100~200。"))
+        fl.addRow(tr("早停耐心:"), self.early_stop_spin)
         self.batch_spin = QSpinBox(); self.batch_spin.setRange(1, 128); self.batch_spin.setValue(8)
-        fl.addRow("Batch:", self.batch_spin)
+        fl.addRow(tr("批大小："), self.batch_spin)
         self.kfold_spin = QSpinBox(); self.kfold_spin.setRange(1, 10); self.kfold_spin.setValue(1)
-        self.kfold_spin.setToolTip("1 = no cross-validation")
-        fl.addRow("K-Fold CV:", self.kfold_spin)
-        self.resume_check = QCheckBox("Resume from last")
+        self.kfold_spin.setToolTip(tr("1 = 不交叉验证"))
+        fl.addRow(tr("K 折交叉验证："), self.kfold_spin)
+        self.resume_check = QCheckBox(tr("从上次继续"))
         fl.addRow("", self.resume_check)
 
         # ══ ★ 训练参数全部开放到面板 ══
@@ -1908,39 +1927,40 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         # unet 也放进来：单图工程现在也支持（小模型，200×200 小图推理 2-3ms）
         self.tr_model_combo.addItems(["deeplabv3", "fcn", "unet"])
         self.tr_model_combo.setCurrentText("deeplabv3")
-        self.tr_model_combo.setToolTip("deeplabv3：默认，小目标分割稳；fcn：更轻更快")
-        fl.addRow("Model:", self.tr_model_combo)
+        self.tr_model_combo.setToolTip(tr("deeplabv3：默认，小目标分割稳；fcn：更轻更快"))
+        fl.addRow(tr("模型："), self.tr_model_combo)
 
         self.tr_size_combo = QComboBox()
         self.tr_size_combo.addItems(["256", "512", "768", "1024"])
         self.tr_size_combo.setCurrentText("256")
-        self.tr_size_combo.setToolTip("训练输入尺寸（未开分块时 = 整图缩放到这个尺寸）。"
-                                   "200×200 的图选 256；不能再小，U-Net 4 层下采样要求能被 16 整除")
-        fl.addRow("Image Size:", self.tr_size_combo)
+        self.tr_size_combo.setToolTip(tr(
+            "训练输入尺寸（未开分块时 = 整图缩放到这个尺寸）。"
+            "200×200 的图选 256；不能再小，U-Net 4 层下采样要求能被 16 整除"))
+        fl.addRow(tr("图像尺寸："), self.tr_size_combo)
 
         self.tr_mode_combo = QComboBox()
-        self.tr_mode_combo.addItems(["精细（缩到1024 + 滑窗200）", "快速（缩到1024 整图）"])
-        self.tr_mode_combo.setToolTip(
+        self.tr_mode_combo.addItems([tr("精细（缩到1024 + 滑窗200）"), tr("快速（缩到1024 整图）")])
+        self.tr_mode_combo.setToolTip(tr(
             "精细：大图缩到长边1024后按200滑窗拼回，保留细节，慢\n"
-            "快速：大图缩到长边1024整图一次前向，对标友商，快")
-        fl.addRow("推理模式:", self.tr_mode_combo)
+            "快速：大图缩到长边1024整图一次前向，对标友商，快"))
+        fl.addRow(tr("推理模式:"), self.tr_mode_combo)
 
         self.tr_loss_combo = QComboBox()
         self.tr_loss_combo.addItems(["ce+lovasz", "cross_entropy", "lovasz", "dice"])
         self.tr_loss_combo.setCurrentText("ce+lovasz")
-        fl.addRow("Loss:", self.tr_loss_combo)
+        fl.addRow(tr("损失函数："), self.tr_loss_combo)
 
-        self.tr_tile_check = QCheckBox("分块（滑窗）")
-        self.tr_tile_check.setToolTip("只对大图有意义；200×200 的图**不要勾**（整图训练就够）")
+        self.tr_tile_check = QCheckBox(tr("分块（滑窗）"))
+        self.tr_tile_check.setToolTip(tr("只对大图有意义；200×200 的图**不要勾**（整图训练就够）"))
         self.tr_tile_check.setChecked(False)
         fl.addRow("", self.tr_tile_check)
 
         self.tr_tile_spin = QSpinBox(); self.tr_tile_spin.setRange(64, 1024); self.tr_tile_spin.setSingleStep(64)
         self.tr_tile_spin.setValue(256)
-        fl.addRow("滑窗大小:", self.tr_tile_spin)
+        fl.addRow(tr("滑窗大小:"), self.tr_tile_spin)
 
         self.tr_tile_stride_spin = QSpinBox(); self.tr_tile_stride_spin.setRange(10, 100); self.tr_tile_stride_spin.setValue(75)
-        fl.addRow("步长%:", self.tr_tile_stride_spin)
+        fl.addRow(tr("步长%:"), self.tr_tile_stride_spin)
 
         def _sync_tile_enabled():
             on = self.tr_tile_check.isChecked()
@@ -1960,8 +1980,8 @@ class MainWindow(OcrOcvMixin, QMainWindow):
 
         # Panel 4: Detection Tools
         panel_det = QWidget(); dl = QVBoxLayout(panel_det); dl.setContentsMargins(4, 2, 2, 2)
-        dl.addWidget(QLabel("<b>Detection Tools</b>"))
-        dl.addWidget(QLabel("Class:"))
+        dl.addWidget(QLabel(tr("<b>检测工具</b>")))
+        dl.addWidget(QLabel(tr("类别：")))
         self.det_class_list = QListWidget()
         self.det_class_list.currentRowChanged.connect(self._on_det_class_changed)
         dl.addWidget(self.det_class_list)
@@ -1972,42 +1992,42 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         self.det_obb_btn.clicked.connect(lambda: self._set_det_bbox_type("obb"))
         btl.addWidget(QLabel("Box:")); btl.addWidget(self.det_hbb_btn); btl.addWidget(self.det_obb_btn)
         dl.addLayout(btl)
-        dl.addWidget(QPushButton("Delete Selected Box (Del)", clicked=self._det_delete_box))
-        dl.addWidget(QPushButton("Delete All Boxes", clicked=self._det_clear_all))
+        dl.addWidget(QPushButton(tr("删除选中框 (Del)"), clicked=self._det_delete_box))
+        dl.addWidget(QPushButton(tr("删除全部框"), clicked=self._det_clear_all))
         dl.addStretch()
 
         # Panel 5: Detection Training
         panel_det_train = QWidget(); dtl = QVBoxLayout(panel_det_train); dtl.setContentsMargins(4, 2, 2, 2)
-        dtl.addWidget(QLabel("<b>Detection Training</b>"))
+        dtl.addWidget(QLabel(tr("<b>检测训练</b>")))
         self.det_train_progress = QProgressBar(); dtl.addWidget(self.det_train_progress)
-        self.det_train_status = QLabel("Ready"); dtl.addWidget(self.det_train_status)
-        self.btn_det_train_stop = QPushButton("Stop"); self.btn_det_train_stop.clicked.connect(self._stop_training)
+        self.det_train_status = QLabel(tr("就绪")); dtl.addWidget(self.det_train_status)
+        self.btn_det_train_stop = QPushButton(tr("停止")); self.btn_det_train_stop.clicked.connect(self._stop_training)
         self.btn_det_train_stop.setEnabled(False); dtl.addWidget(self.btn_det_train_stop)
         dfl = QFormLayout()
         self.det_model_combo = QComboBox()
         self.det_model_combo.addItems(["yolov8n", "yolov8s", "yolov8m", "yolov8l", "yolov8x"])
-        self.det_model_combo.setToolTip("YOLOv8 model variant (s recommended for balance)")
-        dfl.addRow("Model:", self.det_model_combo)
+        self.det_model_combo.setToolTip(tr("YOLOv8 模型规格（推荐 s，均衡）"))
+        dfl.addRow(tr("模型："), self.det_model_combo)
         self.det_epochs_spin = QSpinBox(); self.det_epochs_spin.setRange(1, 2000); self.det_epochs_spin.setValue(200)
-        dfl.addRow("Epochs:", self.det_epochs_spin)
+        dfl.addRow(tr("轮数："), self.det_epochs_spin)
         self.det_batch_spin = QSpinBox(); self.det_batch_spin.setRange(1, 128); self.det_batch_spin.setValue(16)
-        dfl.addRow("Batch:", self.det_batch_spin)
+        dfl.addRow(tr("批大小："), self.det_batch_spin)
         self.det_img_size_spin = QSpinBox(); self.det_img_size_spin.setRange(320, 1280); self.det_img_size_spin.setSingleStep(32)
-        self.det_img_size_spin.setValue(640); dfl.addRow("Image Size:", self.det_img_size_spin)
+        self.det_img_size_spin.setValue(640); dfl.addRow(tr("图像尺寸："), self.det_img_size_spin)
         dtl.addLayout(dfl)
-        dtl.addWidget(QPushButton("Start Training", clicked=self._start_det_training))
+        dtl.addWidget(QPushButton(tr("开始训练"), clicked=self._start_det_training))
         dtl.addStretch()
 
         # Panel 6: Classification Training
         panel_cls_train = QWidget(); ctl = QVBoxLayout(panel_cls_train); ctl.setContentsMargins(4, 2, 2, 2)
-        ctl.addWidget(QLabel("<b>Classification Training</b>"))
-        self.cls_mixed_check = QCheckBox("Mixed (Gray + Height Map)")
-        self.cls_mixed_check.setToolTip("Use paired grayscale (.bmp) + height (.tif) images for training")
+        ctl.addWidget(QLabel(tr("<b>分类训练</b>")))
+        self.cls_mixed_check = QCheckBox(tr("混合（灰度 + 高度图）"))
+        self.cls_mixed_check.setToolTip(tr("使用成对的灰度图（.bmp）+ 高度图（.tif）训练"))
         self.cls_mixed_check.toggled.connect(self._on_cls_mixed_toggled)
         ctl.addWidget(self.cls_mixed_check)
         self.cls_train_progress = QProgressBar(); ctl.addWidget(self.cls_train_progress)
-        self.cls_train_status = QLabel("Ready"); ctl.addWidget(self.cls_train_status)
-        btn_cls_stop = QPushButton("Stop"); btn_cls_stop.clicked.connect(self._stop_training)
+        self.cls_train_status = QLabel(tr("就绪")); ctl.addWidget(self.cls_train_status)
+        btn_cls_stop = QPushButton(tr("停止")); btn_cls_stop.clicked.connect(self._stop_training)
         btn_cls_stop.setEnabled(False); ctl.addWidget(btn_cls_stop)
         self._cls_stop_btn = btn_cls_stop
         cfl = QFormLayout()
@@ -2018,109 +2038,109 @@ class MainWindow(OcrOcvMixin, QMainWindow):
                                         "convnext_tiny", "convnext_base", "efficientnet_v2_s", "efficientnet_v2_m",
                                         "efficientnet_v2_l", "swin_t", "swin_s", "swin_b",
                                         "densenet121", "densenet161", "densenet201"])
-        cfl.addRow("Model:", self.cls_model_combo)
+        cfl.addRow(tr("模型："), self.cls_model_combo)
         self.cls_epochs_spin = QSpinBox(); self.cls_epochs_spin.setRange(1, 2000); self.cls_epochs_spin.setValue(200)
-        cfl.addRow("Epochs:", self.cls_epochs_spin)
+        cfl.addRow(tr("轮数："), self.cls_epochs_spin)
         self.cls_batch_spin = QSpinBox(); self.cls_batch_spin.setRange(1, 256); self.cls_batch_spin.setValue(32)
-        cfl.addRow("Batch:", self.cls_batch_spin)
+        cfl.addRow(tr("批大小："), self.cls_batch_spin)
         self.cls_optim_combo = QComboBox()
         self.cls_optim_combo.addItems(["AdamW", "Adam", "SGD"])
-        cfl.addRow("Optimizer:", self.cls_optim_combo)
+        cfl.addRow(tr("优化器："), self.cls_optim_combo)
         self.cls_lr_spin = QDoubleSpinBox(); self.cls_lr_spin.setRange(0.00001, 0.1); self.cls_lr_spin.setSingleStep(0.0001)
         self.cls_lr_spin.setDecimals(5); self.cls_lr_spin.setValue(0.001)
-        cfl.addRow("LR:", self.cls_lr_spin)
+        cfl.addRow(tr("学习率："), self.cls_lr_spin)
         self.cls_loss_combo = QComboBox()
         self.cls_loss_combo.addItems(["cross_entropy", "label_smoothing", "focal"])
-        cfl.addRow("Loss:", self.cls_loss_combo)
-        cls_aug_hint = QLabel("数据增强：右侧「增强」面板（全局生效）")
+        cfl.addRow(tr("损失函数："), self.cls_loss_combo)
+        cls_aug_hint = QLabel(tr("数据增强：右侧「增强」面板（全局生效）"))
         cls_aug_hint.setWordWrap(True)
         cls_aug_hint.setStyleSheet("color: #8A93A6;")
-        cfl.addRow("Augment:", cls_aug_hint)
+        cfl.addRow(tr("数据增强："), cls_aug_hint)
         hl_scale = QHBoxLayout()
         self.cls_scale_w_spin = QDoubleSpinBox(); self.cls_scale_w_spin.setRange(0.1, 1.0); self.cls_scale_w_spin.setSingleStep(0.05)
         self.cls_scale_w_spin.setDecimals(2); self.cls_scale_w_spin.setValue(1.0)
-        self.cls_scale_w_spin.setToolTip("Width scale factor (0.1~1.0)")
+        self.cls_scale_w_spin.setToolTip(tr("宽度缩放系数（0.1~1.0）"))
         hl_scale.addWidget(QLabel("W:"))
         hl_scale.addWidget(self.cls_scale_w_spin)
         self.cls_scale_h_spin = QDoubleSpinBox(); self.cls_scale_h_spin.setRange(0.1, 1.0); self.cls_scale_h_spin.setSingleStep(0.05)
         self.cls_scale_h_spin.setDecimals(2); self.cls_scale_h_spin.setValue(1.0)
-        self.cls_scale_h_spin.setToolTip("Height scale factor (0.1~1.0)")
+        self.cls_scale_h_spin.setToolTip(tr("高度缩放系数（0.1~1.0）"))
         hl_scale.addWidget(QLabel("H:"))
         hl_scale.addWidget(self.cls_scale_h_spin)
         self.cls_scale_link_btn = QPushButton("🔗"); self.cls_scale_link_btn.setFixedWidth(30)
         self.cls_scale_link_btn.setCheckable(True); self.cls_scale_link_btn.setChecked(True)
-        self.cls_scale_link_btn.setToolTip("Lock W/H ratio")
+        self.cls_scale_link_btn.setToolTip(tr("锁定宽高比"))
         self.cls_scale_link_btn.toggled.connect(self._on_cls_scale_link_toggled)
         hl_scale.addWidget(self.cls_scale_link_btn)
         self.cls_scale_w_spin.valueChanged.connect(lambda: self._sync_cls_scale("w"))
         self.cls_scale_h_spin.valueChanged.connect(lambda: self._sync_cls_scale("h"))
-        cfl.addRow("Pre-Scale:", hl_scale)
+        cfl.addRow(tr("预缩放："), hl_scale)
         hl_input = QHBoxLayout()
         self.cls_input_w_spin = QSpinBox(); self.cls_input_w_spin.setRange(32, 2048); self.cls_input_w_spin.setSingleStep(32)
         self.cls_input_w_spin.setValue(448)
-        self.cls_input_w_spin.setToolTip("输入尺寸宽（letterbox 目标画布宽）")
+        self.cls_input_w_spin.setToolTip(tr("输入尺寸宽（letterbox 目标画布宽）"))
         hl_input.addWidget(QLabel("W:")); hl_input.addWidget(self.cls_input_w_spin)
         self.cls_input_h_spin = QSpinBox(); self.cls_input_h_spin.setRange(32, 2048); self.cls_input_h_spin.setSingleStep(32)
         self.cls_input_h_spin.setValue(192)
-        self.cls_input_h_spin.setToolTip("输入尺寸高（letterbox 目标画布高）")
+        self.cls_input_h_spin.setToolTip(tr("输入尺寸高（letterbox 目标画布高）"))
         hl_input.addWidget(QLabel("H:")); hl_input.addWidget(self.cls_input_h_spin)
-        cfl.addRow("Input Size:", hl_input)
-        self.cls_keep_aspect_check = QCheckBox("保持宽高比 Letterbox（不拉伸变形）")
+        cfl.addRow(tr("输入尺寸："), hl_input)
+        self.cls_keep_aspect_check = QCheckBox(tr("保持宽高比 Letterbox（不拉伸变形）"))
         self.cls_keep_aspect_check.setChecked(True)
-        self.cls_keep_aspect_check.setToolTip("等比缩放后居中黑边填充到输入尺寸；关闭=直接拉伸到 W×H")
+        self.cls_keep_aspect_check.setToolTip(tr("等比缩放后居中黑边填充到输入尺寸；关闭=直接拉伸到 W×H"))
         cfl.addRow("", self.cls_keep_aspect_check)
-        self.cls_amp_check = QCheckBox("AMP (mixed precision)"); self.cls_amp_check.setChecked(True)
+        self.cls_amp_check = QCheckBox(tr("AMP（混合精度）")); self.cls_amp_check.setChecked(True)
         cfl.addRow("", self.cls_amp_check)
         self.cls_kfold_spin = QSpinBox(); self.cls_kfold_spin.setRange(1, 10); self.cls_kfold_spin.setValue(1)
-        self.cls_kfold_spin.setToolTip("1 = no cross-validation")
-        cfl.addRow("K-Fold:", self.cls_kfold_spin)
-        self.cls_resume_check = QCheckBox("Resume from last")
+        self.cls_kfold_spin.setToolTip(tr("1 = 不交叉验证"))
+        cfl.addRow(tr("K 折："), self.cls_kfold_spin)
+        self.cls_resume_check = QCheckBox(tr("从上次继续"))
         cfl.addRow("", self.cls_resume_check)
-        self.cls_balanced_check = QCheckBox("类别平衡权重（缓解样本不平衡）")
-        self.cls_balanced_check.setToolTip("按各类训练样本数反比加权损失，类别不平衡时通常能明显提升准确率")
+        self.cls_balanced_check = QCheckBox(tr("类别平衡权重（缓解样本不平衡）"))
+        self.cls_balanced_check.setToolTip(tr("按各类训练样本数反比加权损失，类别不平衡时通常能明显提升准确率"))
         cfl.addRow("", self.cls_balanced_check)
-        self.cls_ema_check = QCheckBox("EMA 权重平均（原生基线建议关闭）")
+        self.cls_ema_check = QCheckBox(tr("EMA 权重平均（原生基线建议关闭）"))
         self.cls_ema_check.setToolTip("开启后保存 EMA 平滑权重（训练更稳但偏离原始权重）；关闭=直接保存训练出的原始权重")
         cfl.addRow("", self.cls_ema_check)
 
         # --- Hyperparameters ---
         self.cls_wd_spin = QDoubleSpinBox(); self.cls_wd_spin.setRange(0, 0.1); self.cls_wd_spin.setSingleStep(0.0001)
         self.cls_wd_spin.setDecimals(5); self.cls_wd_spin.setValue(0.0001)
-        self.cls_wd_spin.setToolTip("L2 regularization strength (0 = off)")
-        cfl.addRow("Weight Decay:", self.cls_wd_spin)
+        self.cls_wd_spin.setToolTip(tr("L2 正则强度（0=关闭）"))
+        cfl.addRow(tr("权重衰减："), self.cls_wd_spin)
 
         self.cls_momentum_spin = QDoubleSpinBox(); self.cls_momentum_spin.setRange(0, 0.999); self.cls_momentum_spin.setSingleStep(0.1)
         self.cls_momentum_spin.setDecimals(3); self.cls_momentum_spin.setValue(0.9)
-        self.cls_momentum_spin.setToolTip("SGD momentum (ignored for Adam/AdamW)")
-        cfl.addRow("Momentum:", self.cls_momentum_spin)
+        self.cls_momentum_spin.setToolTip(tr("SGD 动量（Adam/AdamW 忽略）"))
+        cfl.addRow(tr("动量："), self.cls_momentum_spin)
 
         self.cls_ls_spin = QDoubleSpinBox(); self.cls_ls_spin.setRange(0, 0.5); self.cls_ls_spin.setSingleStep(0.05)
         self.cls_ls_spin.setDecimals(2); self.cls_ls_spin.setValue(0.1)
-        self.cls_ls_spin.setToolTip("Label smoothing epsilon (0 = hard labels)")
-        cfl.addRow("Label Smooth:", self.cls_ls_spin)
+        self.cls_ls_spin.setToolTip(tr("标签平滑 epsilon（0=硬标签）"))
+        cfl.addRow(tr("标签平滑："), self.cls_ls_spin)
 
         self.cls_focal_gamma_spin = QDoubleSpinBox(); self.cls_focal_gamma_spin.setRange(0.5, 5.0); self.cls_focal_gamma_spin.setSingleStep(0.5)
         self.cls_focal_gamma_spin.setDecimals(1); self.cls_focal_gamma_spin.setValue(2.0)
-        self.cls_focal_gamma_spin.setToolTip("Focal loss gamma (higher = more focus on hard samples)")
-        cfl.addRow("Focal Gamma:", self.cls_focal_gamma_spin)
+        self.cls_focal_gamma_spin.setToolTip(tr("Focal loss 的 gamma（越大越关注难样本）"))
+        cfl.addRow(tr("Focal gamma："), self.cls_focal_gamma_spin)
 
         self.cls_dropout_spin = QDoubleSpinBox(); self.cls_dropout_spin.setRange(0, 0.8); self.cls_dropout_spin.setSingleStep(0.1)
         self.cls_dropout_spin.setDecimals(2); self.cls_dropout_spin.setValue(0.0)
-        self.cls_dropout_spin.setToolTip("Dropout rate in classifier head (0 = off)")
-        cfl.addRow("Dropout:", self.cls_dropout_spin)
+        self.cls_dropout_spin.setToolTip(tr("分类头的 Dropout 比例（0=关闭）"))
+        cfl.addRow(tr("Dropout 比例："), self.cls_dropout_spin)
 
         self.cls_scheduler_combo = QComboBox()
         self.cls_scheduler_combo.addItems(["none", "step", "cosine", "plateau"])
-        self.cls_scheduler_combo.setToolTip("LR scheduler type")
-        cfl.addRow("LR Scheduler:", self.cls_scheduler_combo)
+        self.cls_scheduler_combo.setToolTip(tr("学习率调度器类型"))
+        cfl.addRow(tr("学习率调度器："), self.cls_scheduler_combo)
 
         self.cls_warmup_spin = QSpinBox(); self.cls_warmup_spin.setRange(0, 50); self.cls_warmup_spin.setValue(0)
-        self.cls_warmup_spin.setToolTip("Linear LR warmup epochs (0 = off)")
-        cfl.addRow("Warmup Epochs:", self.cls_warmup_spin)
+        self.cls_warmup_spin.setToolTip(tr("线性学习率预热轮数（0=关闭）"))
+        cfl.addRow(tr("预热轮数："), self.cls_warmup_spin)
 
         self.cls_early_stop_spin = QSpinBox(); self.cls_early_stop_spin.setRange(0, 200); self.cls_early_stop_spin.setValue(0)
-        self.cls_early_stop_spin.setToolTip("Stop if val loss not improved for N epochs (0 = off)")
-        cfl.addRow("Early Stop:", self.cls_early_stop_spin)
+        self.cls_early_stop_spin.setToolTip(tr("验证损失连续 N 轮未改善即停止（0=关闭）"))
+        cfl.addRow(tr("早停："), self.cls_early_stop_spin)
 
         self.cls_select_metric_combo = QComboBox()
         self.cls_select_metric_combo.addItems(["acc", "balanced_acc", "macro_f1", "ng_recall"])
@@ -2131,62 +2151,62 @@ class MainWindow(OcrOcvMixin, QMainWindow):
             "macro_f1 = 逐类 F1 平均\n"
             "ng_recall = 只看缺陷召回（最贴近『少漏检』）\n"
             "验证集很小时建议用 balanced_acc 或 macro_f1")
-        cfl.addRow("Best Metric:", self.cls_select_metric_combo)
+        cfl.addRow(tr("最佳指标："), self.cls_select_metric_combo)
 
         ctl.addLayout(cfl)
-        self.cls_recommend_btn = QPushButton("🧠 智能推荐训练参数", clicked=self._open_cls_recommend)
+        self.cls_recommend_btn = QPushButton(tr("🧠 智能推荐训练参数"), clicked=self._open_cls_recommend)
         self.cls_recommend_btn.setStyleSheet(
             "QPushButton { background:#7B2FBE; color:white; font-weight:bold; padding:6px; border:none; }"
             "QPushButton:hover { background:#B967FF; }")
         ctl.addWidget(self.cls_recommend_btn)
-        self.cls_native_btn = QPushButton("⚡ 原生基线参数（最简，无增强/EMA/类平衡）", clicked=self._apply_cls_native_params)
+        self.cls_native_btn = QPushButton(tr("⚡ 原生基线参数（最简，无增强/EMA/类平衡）"), clicked=self._apply_cls_native_params)
         self.cls_native_btn.setStyleSheet(
             "QPushButton { background:#00A86B; color:#061018; font-weight:bold; padding:6px; border:none; }"
             "QPushButton:hover { background:#00FF9C; }")
         ctl.addWidget(self.cls_native_btn)
-        self._cls_start_btn = QPushButton("Start Training", clicked=self._start_cls_training)
+        self._cls_start_btn = QPushButton(tr("开始训练"), clicked=self._start_cls_training)
         ctl.addWidget(self._cls_start_btn)
         # Loss/Acc curve now lives in an independent window
         self._cls_loss_window = LossCurveWindow(self)
-        self._cls_loss_open_btn = QPushButton("打开 Loss/Acc Curve Window", clicked=self._show_cls_loss_window)
+        self._cls_loss_open_btn = QPushButton(tr("打开 Loss/Acc Curve Window"), clicked=self._show_cls_loss_window)
         ctl.addWidget(self._cls_loss_open_btn)
         ctl.addStretch()
 
         # Panel 7: Classification Inference
         panel_cls_infer = QWidget(); cil = QVBoxLayout(panel_cls_infer); cil.setContentsMargins(4, 2, 2, 2)
-        cil.addWidget(QLabel("<b>Classification Inference</b>"))
+        cil.addWidget(QLabel(tr("<b>分类推理</b>")))
         self.cls_infer_model_combo = QComboBox()
-        self.cls_infer_model_combo.setToolTip("Select model checkpoint")
+        self.cls_infer_model_combo.setToolTip(tr("选择模型检查点"))
         cil.addWidget(self.cls_infer_model_combo)
         hl2 = QHBoxLayout()
-        hl2.addWidget(QLabel("Top-K:"))
+        hl2.addWidget(QLabel(tr("Top-K：")))
         self.cls_topk_spin = QSpinBox(); self.cls_topk_spin.setRange(1, 20); self.cls_topk_spin.setValue(5)
         hl2.addWidget(self.cls_topk_spin); cil.addLayout(hl2)
         self.cls_infer_progress = QProgressBar(); cil.addWidget(self.cls_infer_progress)
-        self.cls_infer_status = QLabel("Ready"); cil.addWidget(self.cls_infer_status)
+        self.cls_infer_status = QLabel(tr("就绪")); cil.addWidget(self.cls_infer_status)
         self.cls_result_label = QLabel(""); self.cls_result_label.setWordWrap(True)
         self.cls_result_label.setStyleSheet("QLabel { font-family: Consolas; font-size: 11px; padding: 4px; }")
         cil.addWidget(self.cls_result_label)
         ih = QHBoxLayout()
-        ih.addWidget(QPushButton("Single Inference", clicked=self._start_cls_inference))
-        ih.addWidget(QPushButton("Batch Inference", clicked=self._start_cls_batch_inference))
+        ih.addWidget(QPushButton(tr("单张推理"), clicked=self._start_cls_inference))
+        ih.addWidget(QPushButton(tr("批量推理"), clicked=self._start_cls_batch_inference))
         cil.addLayout(ih)
         hl3 = QHBoxLayout()
-        hl3.addWidget(QPushButton("Heatmap", clicked=self._generate_cls_heatmap))
-        self.cls_auto_heatmap = QCheckBox("Auto-heatmap after inference")
+        hl3.addWidget(QPushButton(tr("热力图"), clicked=self._generate_cls_heatmap))
+        self.cls_auto_heatmap = QCheckBox(tr("推理后自动生成热力图"))
         self.cls_auto_heatmap.setChecked(True)
         hl3.addWidget(self.cls_auto_heatmap)
         cil.addLayout(hl3)
-        self.cls_tta_check = QCheckBox("TTA 多裁剪投票（单张推理更稳）")
+        self.cls_tta_check = QCheckBox(tr("TTA 多裁剪投票（单张推理更稳）"))
         saved_tta = self._load_ui_setting("cls_tta", False)
         self.cls_tta_check.setChecked(saved_tta)
         self.cls_tta_check.toggled.connect(lambda v: self._save_ui_setting("cls_tta", v))
         cil.addWidget(self.cls_tta_check)
 
         # Confusion Matrix section
-        cil.addWidget(QLabel("<b>Confusion Matrix</b>"))
+        cil.addWidget(QLabel(tr("<b>混淆矩阵</b>")))
         eh = QHBoxLayout()
-        eh.addWidget(QPushButton("Evaluate", clicked=self._eval_cls_model))
+        eh.addWidget(QPushButton(tr("评估"), clicked=self._eval_cls_model))
         self.cls_eval_status = QLabel("")
         eh.addWidget(self.cls_eval_status)
         cil.addLayout(eh)
@@ -2196,63 +2216,63 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         self.cls_cm_table.verticalHeader().setDefaultAlignment(Qt.AlignCenter)
         cil.addWidget(self.cls_cm_table)
         # 模型版本管理
-        vgb = QGroupBox("模型版本")
+        vgb = QGroupBox(tr("模型版本"))
         vv = QVBoxLayout(vgb)
         self.cls_version_table = QTableWidget()
         self.cls_version_table.setColumnCount(6)
-        self.cls_version_table.setHorizontalHeaderLabels(["版本", "时间", "验证Acc", "批推Acc", "平均耗时", "模型"])
+        self.cls_version_table.setHorizontalHeaderLabels([tr("版本"), tr("时间"), tr("验证Acc"), tr("批推Acc"), tr("平均耗时"), tr("模型")])
         self.cls_version_table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.cls_version_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.cls_version_table.setMaximumHeight(150)
         self.cls_version_table.doubleClicked.connect(self._cls_version_activate)
         vv.addWidget(self.cls_version_table)
         vhb = QHBoxLayout()
-        vhb.addWidget(QPushButton("刷新版本", clicked=self._refresh_cls_versions))
-        vhb.addWidget(QPushButton("设为当前", clicked=self._cls_version_activate))
-        vhb.addWidget(QPushButton("导出ZIP", clicked=self._cls_version_export))
+        vhb.addWidget(QPushButton(tr("刷新版本"), clicked=self._refresh_cls_versions))
+        vhb.addWidget(QPushButton(tr("设为当前"), clicked=self._cls_version_activate))
+        vhb.addWidget(QPushButton(tr("导出ZIP"), clicked=self._cls_version_export))
         vv.addLayout(vhb)
         cil.addWidget(vgb)
         cil.addStretch()
 
         # Panel 8: OCR Inference
         panel_ocr = QWidget(); oil = QVBoxLayout(panel_ocr); oil.setContentsMargins(4, 2, 2, 2)
-        oil.addWidget(QLabel("<b>OCR Inference</b>"))
-        self.ocr_status = QLabel("Ready"); oil.addWidget(self.ocr_status)
+        oil.addWidget(QLabel(tr("<b>OCR 推理</b>")))
+        self.ocr_status = QLabel(tr("就绪")); oil.addWidget(self.ocr_status)
         self.ocr_progress = QProgressBar(); oil.addWidget(self.ocr_progress)
         oh = QHBoxLayout()
-        oh.addWidget(QPushButton("Run OCR (Single)", clicked=self._run_ocr_single))
-        oh.addWidget(QPushButton("Batch OCR", clicked=self._run_ocr_batch))
+        oh.addWidget(QPushButton(tr("运行 OCR（单张）"), clicked=self._run_ocr_single))
+        oh.addWidget(QPushButton(tr("批量 OCR"), clicked=self._run_ocr_batch))
         oil.addLayout(oh)
-        self.ocr_show_check = QCheckBox("Show OCR overlay on canvas")
+        self.ocr_show_check = QCheckBox(tr("在画布上显示 OCR 叠加"))
         self.ocr_show_check.setChecked(True)
         self.ocr_show_check.toggled.connect(lambda v: self._update_ocr_overlay())
         oil.addWidget(self.ocr_show_check)
         self.ocr_result_table = QTableWidget()
         self.ocr_result_table.setColumnCount(5)
-        self.ocr_result_table.setHorizontalHeaderLabels(["#", "Text", "Conf", "Pos", "Size"])
+        self.ocr_result_table.setHorizontalHeaderLabels(["#", tr("文本"), tr("置信度"), tr("位置"), tr("尺寸")])
         # 允许双击/再次单击选中文本（仅 Text 列可编辑，其他列仍只读），配合右键复制
         self.ocr_result_table.setEditTriggers(QTableWidget.DoubleClicked | QTableWidget.SelectedClicked)
         self.ocr_result_table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.ocr_result_table.customContextMenuRequested.connect(self._on_ocr_result_menu)
         oil.addWidget(self.ocr_result_table)
-        oil.addWidget(QPushButton("Export CSV", clicked=self._export_ocr_csv))
+        oil.addWidget(QPushButton(tr("导出 CSV"), clicked=self._export_ocr_csv))
         oil.addStretch()
 
         # Panel 9: OCV Inspection
         panel_ocv = QWidget(); ovl = QVBoxLayout(panel_ocv); ovl.setContentsMargins(4, 2, 2, 2)
-        ovl.addWidget(QLabel("<b>OCV Quality Inspection</b>"))
-        self.ocv_status = QLabel("Ready"); ovl.addWidget(self.ocv_status)
-        ovl.addWidget(QLabel("NG Threshold:"))
+        ovl.addWidget(QLabel(tr("<b>OCV 字符质检</b>")))
+        self.ocv_status = QLabel(tr("就绪")); ovl.addWidget(self.ocv_status)
+        ovl.addWidget(QLabel(tr("NG 阈值：")))
         self.ocv_threshold = QDoubleSpinBox()
         self.ocv_threshold.setRange(0.1, 50.0); self.ocv_threshold.setValue(3.0); self.ocv_threshold.setSingleStep(0.5)
         ovl.addWidget(self.ocv_threshold)
         ovh = QHBoxLayout()
-        ovh.addWidget(QPushButton("Build OCV Model", clicked=self._build_ocv_model))
-        ovh.addWidget(QPushButton("Load OCV Model", clicked=self._load_ocv_model))
+        ovh.addWidget(QPushButton(tr("构建 OCV 模型"), clicked=self._build_ocv_model))
+        ovh.addWidget(QPushButton(tr("加载 OCV 模型"), clicked=self._load_ocv_model))
         ovl.addLayout(ovh)
         ovh2 = QHBoxLayout()
-        ovh2.addWidget(QPushButton("Inspect Current", clicked=self._ocv_inspect_current))
-        ovh2.addWidget(QPushButton("Batch Inspect", clicked=self._ocv_batch_inspect))
+        ovh2.addWidget(QPushButton(tr("检测当前"), clicked=self._ocv_inspect_current))
+        ovh2.addWidget(QPushButton(tr("批量检测"), clicked=self._ocv_batch_inspect))
         ovl.addLayout(ovh2)
         self.ocv_result_label = QLabel(""); self.ocv_result_label.setWordWrap(True)
         ovl.addWidget(self.ocv_result_label)
@@ -2260,41 +2280,41 @@ class MainWindow(OcrOcvMixin, QMainWindow):
 
         # Panel 10: Height Map Controls
         panel_hm = QWidget(); hml = QVBoxLayout(panel_hm); hml.setContentsMargins(4, 2, 2, 2)
-        hml.addWidget(QLabel("<b>Height Map Colormap</b>"))
-        self.hm_status = QLabel("No height map loaded")
+        hml.addWidget(QLabel(tr("<b>高度图色图</b>")))
+        self.hm_status = QLabel(tr("未加载高度图"))
         self.hm_status.setStyleSheet("color: #8A93A6; font-size: 11px;")
         hml.addWidget(self.hm_status)
         self.hm_data_range = QLabel("")
         self.hm_data_range.setStyleSheet("color: #8A93A6; font-size: 10px;")
         hml.addWidget(self.hm_data_range)
-        hml.addWidget(QLabel("Mapping Range (mm):"))
+        hml.addWidget(QLabel(tr("映射范围（mm）：")))
         rng = QHBoxLayout()
         self.hm_vmin = QDoubleSpinBox()
         self.hm_vmin.setRange(-999, 999); self.hm_vmin.setDecimals(4)
         self.hm_vmin.setSingleStep(0.01)
-        self.hm_vmin.setToolTip("Min height (maps to blue/cold color)")
+        self.hm_vmin.setToolTip(tr("最小高度（映射到蓝/冷色）"))
         rng.addWidget(self.hm_vmin)
         rng.addWidget(QLabel("~"))
         self.hm_vmax = QDoubleSpinBox()
         self.hm_vmax.setRange(-999, 999); self.hm_vmax.setDecimals(4)
         self.hm_vmax.setSingleStep(0.01)
-        self.hm_vmax.setToolTip("Max height (maps to red/warm color)")
+        self.hm_vmax.setToolTip(tr("最大高度（映射到红/暖色）"))
         rng.addWidget(self.hm_vmax)
         hml.addLayout(rng)
         self.hm_colorbar = QLabel()
         self.hm_colorbar.setFixedHeight(20)
         self.hm_colorbar.setMinimumWidth(100)
         hml.addWidget(self.hm_colorbar)
-        hml.addWidget(QLabel("Color Scheme:"))
+        hml.addWidget(QLabel(tr("配色方案：")))
         self.hm_cmap_combo = QComboBox()
         self.hm_cmap_combo.addItems(["JET", "TURBO", "HOT", "RAINBOW", "VIRIDIS", "PLASMA", "INFERNO", "MAGMA", "HSV"])
         self.hm_cmap_combo.setCurrentText("JET")
         hml.addWidget(self.hm_cmap_combo)
         bth = QHBoxLayout()
-        auto_btn = QPushButton("Auto Range")
+        auto_btn = QPushButton(tr("自动范围"))
         auto_btn.clicked.connect(self._hm_auto_range)
         bth.addWidget(auto_btn)
-        apply_btn = QPushButton("Apply")
+        apply_btn = QPushButton(tr("应用"))
         apply_btn.clicked.connect(self._hm_apply)
         apply_btn.setStyleSheet("QPushButton { background-color: #0E3A52; color: #00E5FF; border: 1px solid #00E5FF; font-weight: bold; }")
         bth.addWidget(apply_btn)
@@ -2303,28 +2323,28 @@ class MainWindow(OcrOcvMixin, QMainWindow):
 
         # Panel 11: 数据增强（全局，所有训练任务共用）
         panel_aug = QWidget(); augl = QVBoxLayout(panel_aug); augl.setContentsMargins(4, 2, 2, 2)
-        augl.addWidget(QLabel("<b>数据增强（全局）</b>"))
-        aug_tip = QLabel("对所有训练任务生效：分割 / 分类 / 检测\n（随机应用已勾选的增强方式）")
+        augl.addWidget(QLabel(tr("<b>数据增强（全局）</b>")))
+        aug_tip = QLabel(tr("对所有训练任务生效：分割 / 分类 / 检测\n（随机应用已勾选的增强方式）"))
         aug_tip.setStyleSheet("color: #8A93A6; font-size: 11px;")
         aug_tip.setWordWrap(True)
         augl.addWidget(aug_tip)
-        self.aug_enabled_check = QCheckBox("启用数据增强")
+        self.aug_enabled_check = QCheckBox(tr("启用数据增强"))
         self.aug_enabled_check.toggled.connect(self._save_augment_ui)
         augl.addWidget(self.aug_enabled_check)
-        augl.addWidget(QLabel("<b>增强方式：</b>"))
+        augl.addWidget(QLabel(tr("<b>增强方式：</b>")))
         aug_grid = QGridLayout(); aug_grid.setHorizontalSpacing(10); aug_grid.setVerticalSpacing(2)
         self._aug_checks = {}
         from training.augment_config import AUGMENT_FLAG_LABELS
         for i, (key, label) in enumerate(AUGMENT_FLAG_LABELS):
-            cb = QCheckBox(label)
+            cb = QCheckBox(tr(label))
             cb.toggled.connect(self._save_augment_ui)
             self._aug_checks[key] = cb
             aug_grid.addWidget(cb, i // 2, i % 2)
         augl.addLayout(aug_grid)
         abtns = QHBoxLayout()
-        b_all = QPushButton("全选"); b_all.clicked.connect(lambda: self._set_aug_all(True))
-        b_none = QPushButton("全不选"); b_none.clicked.connect(lambda: self._set_aug_all(False))
-        b_def = QPushButton("恢复默认"); b_def.clicked.connect(self._set_aug_default)
+        b_all = QPushButton(tr("全选")); b_all.clicked.connect(lambda: self._set_aug_all(True))
+        b_none = QPushButton(tr("全不选")); b_none.clicked.connect(lambda: self._set_aug_all(False))
+        b_def = QPushButton(tr("恢复默认")); b_def.clicked.connect(self._set_aug_default)
         abtns.addWidget(b_all); abtns.addWidget(b_none); abtns.addWidget(b_def)
         augl.addLayout(abtns)
         self.aug_status = QLabel(""); self.aug_status.setWordWrap(True)
@@ -2336,7 +2356,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         # ===== Inference 段（按项目类型自动切换子页）=====
         #    标题与内容分开：标题留在滚动区**外面**（滚动时不会跟着滚没），
         #    只有内容区滚动。两段拼装见下面「Training + Inference 合并面板」。
-        self._infer_title = QLabel("推理 · 语义分割")
+        self._infer_title = QLabel(tr("推理 · 语义分割"))
         self._infer_title.setStyleSheet("font-weight: bold; color: #00E5FF;")
         self._infer_stack = ShrinkStack()
         self._infer_stack.addWidget(panel_infer)      # 0: seg / det (shared)
@@ -2345,7 +2365,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         self._infer_stack.addWidget(panel_ocv)        # 3: OCV
 
         # ===== Training 段（按项目类型自动切换子页）=====
-        self._train_title = QLabel("训练 · 语义分割")
+        self._train_title = QLabel(tr("训练 · 语义分割"))
         self._train_title.setStyleSheet("font-weight: bold; color: #FF2A6D;")
         self._train_stack = ShrinkStack()
         self._train_stack.addWidget(panel_train)      # 0: segmentation
@@ -2439,10 +2459,10 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         self._right_tab_btns = {}
         for icon_text, tooltip, key in tab_defs:
             idx = self._right_tab_index[key]
-            # 竖排：一个字一行。横排 4 个字塞进 40px 宽会溢出到按钮外面（用户截图就是那样）
-            btn = QPushButton("\n".join(icon_text))
+            # 竖排：中文一字一行；英文按 4 字符折行
+            btn = QPushButton(_vtab_text(icon_text))
             btn.setCheckable(True)
-            btn.setToolTip(tooltip + f"（{icon_text}）")
+            btn.setToolTip(tr(tooltip) + tr("（%s）") % tr(icon_text))
             btn.setMinimumHeight(56)
             # 高度策略 Expanding + 布局 stretch=1 -> 各块**均分并撑满**整条竖栏
             btn.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
@@ -2471,10 +2491,10 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         """
         box = QWidget()
         lay = QVBoxLayout(box); lay.setContentsMargins(0, 0, 0, 0); lay.setSpacing(0)
-        head = QPushButton("▍" + title)
+        head = QPushButton("▍" + tr(title))
         head.setCheckable(True); head.setChecked(True)
         head.setCursor(Qt.PointingHandCursor)
-        head.setToolTip("点击折叠 / 展开")
+        head.setToolTip(tr("点击折叠 / 展开"))
         head.setStyleSheet(
             "QPushButton { text-align:left; font-size:11px; font-weight:bold; color:#00E5FF;"
             " background:#101828; border:none; border-left:3px solid #00E5FF; padding:3px 6px; }"
@@ -2528,7 +2548,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         self.model_list_table = QTableWidget()
         self.model_list_table.setColumnCount(4)
         # 「来源」列：工程内 / 版本留档 / 链接（对应友商那句 GPU/CPU/iGPU 的信息位）
-        self.model_list_table.setHorizontalHeaderLabels(["模型", "来源", "大小", "时间"])
+        self.model_list_table.setHorizontalHeaderLabels([tr("模型"), tr("来源"), tr("大小"), tr("时间")])
         self.model_list_table.verticalHeader().setDefaultSectionSize(20)
         self.model_list_table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.model_list_table.setAlternatingRowColors(True)
@@ -2538,18 +2558,18 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         # ★ 2026-10-23：右键菜单（打开所在文件夹 / 复制路径 / 设为推理模型 / 移除链接）
         self.model_list_table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.model_list_table.customContextMenuRequested.connect(self._on_model_list_context_menu)
-        btn = QPushButton("刷新"); btn.setFixedWidth(46)
+        btn = QPushButton(tr("刷新")); btn.setFixedWidth(46)
         btn.clicked.connect(self._refresh_model_list)
         # ★ 2026-10-23：对标友商「模型管理」——支持把**工程外**的 .pth 链接进来
         #   （不复制文件，只登记绝对路径；友商标成 GPU/CPU/iGPU，我们标来源）
-        b_link = QPushButton("链接本地模型…")
-        b_link.setToolTip("把工程目录之外的 .pth 登记到本列表（只记录路径，不复制文件）")
+        b_link = QPushButton(tr("链接本地模型…"))
+        b_link.setToolTip(tr("把工程目录之外的 .pth 登记到本列表（只记录路径，不复制文件）"))
         b_link.clicked.connect(self._link_local_model)
-        b_batch = QPushButton("批量推理（全部图片）…")
-        b_batch.setToolTip("对工程内所有图片跑一遍推理，结果写到 outputs/")
+        b_batch = QPushButton(tr("批量推理（全部图片）…"))
+        b_batch.setToolTip(tr("对工程内所有图片跑一遍推理，结果写到 outputs/"))
         b_batch.clicked.connect(self._batch_inference)
         bar.addWidget(b_batch); bar.addWidget(b_link)
-        bar.addWidget(QLabel("双击设为推理模型"))
+        bar.addWidget(QLabel(tr("双击设为推理模型")))
         bar.addStretch(); bar.addWidget(btn)
         v.addWidget(self.model_list_table); v.addLayout(bar)
         return w
@@ -2597,10 +2617,10 @@ class MainWindow(OcrOcvMixin, QMainWindow):
     def _link_local_model(self):
         """把工程目录之外的 .pth 链接进模型列表（只登记路径）。"""
         if not self._project_dir:
-            return QMessageBox.information(self, "链接模型", "先打开一个工程。")
+            return QMessageBox.information(self, tr("链接模型"), tr("先打开一个工程。"))
         paths, _ = QFileDialog.getOpenFileNames(
-            self, "选择要链接的模型（可多选）", "",
-            "模型文件 (*.pth *.pt);;所有文件 (*)")
+            self, tr("选择要链接的模型（可多选）"), "",
+            tr("模型文件 (*.pth *.pt);;所有文件 (*)"))
         if not paths:
             return
         d = self._load_linked_models()
@@ -2629,7 +2649,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
                     ck_cls = [str(c) for c in (ck.get("classes") or [])]
                     if proj_cls and ck_cls and ck_cls != proj_cls:
                         QMessageBox.warning(
-                            self, "类别不一致",
+                            self, tr("类别不一致"),
                             "模型 %s 的类别与本工程不同：\n\n工程：%s\n模型：%s\n\n"
                             "仍会链接，但推理结果的类别语义会对不上，别拿它出正式结果。"
                             % (os.path.basename(p_), proj_cls, ck_cls))
@@ -2645,7 +2665,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
             return
         rows = sorted({i.row() for i in tbl.selectedIndexes()}, reverse=True)
         if not rows:
-            return QMessageBox.information(self, "移除链接", "先在列表里选中链接模型。")
+            return QMessageBox.information(self, tr("移除链接"), tr("先在列表里选中链接模型。"))
         d = self._load_linked_models()
         removed = 0
         for r in rows:
@@ -2752,7 +2772,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         """在资源管理器里打开该文件所在目录并选中它（跨平台给个兜底）。"""
         if not path or not os.path.exists(path):
             return QMessageBox.information(
-                self, "打开文件夹",
+                self, tr("打开文件夹"),
                 "文件不存在（可能被移动或删除）：\n%s" % (path or "—"))
         try:
             import subprocess
@@ -2764,7 +2784,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
             else:
                 subprocess.Popen(["xdg-open", os.path.dirname(path)])
         except Exception as e:
-            QMessageBox.warning(self, "打开文件夹失败", "%s: %s" % (type(e).__name__, e))
+            QMessageBox.warning(self, tr("打开文件夹失败"), "%s: %s" % (type(e).__name__, e))
 
     def _on_model_list_context_menu(self, pos):
         """模型列表右键菜单。"""
@@ -2779,11 +2799,11 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         is_link = name.startswith("🔗")
 
         m = QMenu(self)
-        a_open = m.addAction("打开所在文件夹")
-        a_copy = m.addAction("复制模型完整路径")
+        a_open = m.addAction(tr("打开所在文件夹"))
+        a_copy = m.addAction(tr("复制模型完整路径"))
         m.addSeparator()
-        a_use = m.addAction("设为推理模型")
-        a_unlink = m.addAction("移除链接（不删磁盘文件）") if is_link else None
+        a_use = m.addAction(tr("设为推理模型"))
+        a_unlink = m.addAction(tr("移除链接（不删磁盘文件）")) if is_link else None
         act = m.exec_(tbl.viewport().mapToGlobal(pos))
         if act is None:
             return
@@ -2840,13 +2860,13 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         """
         w = QWidget(); v = QVBoxLayout(w); v.setContentsMargins(0, 0, 0, 0); v.setSpacing(2)
         r1 = QHBoxLayout(); r1.setSpacing(3)
-        b1 = QPushButton("导出 JSON…"); b1.clicked.connect(self._export_json)
-        b2 = QPushButton("导出标注"); b2.clicked.connect(self._export_annotations)
+        b1 = QPushButton(tr("导出 JSON…")); b1.clicked.connect(self._export_json)
+        b2 = QPushButton(tr("导出标注")); b2.clicked.connect(self._export_annotations)
         r1.addWidget(b1); r1.addWidget(b2)
         r2 = QHBoxLayout(); r2.setSpacing(3)
-        b3 = QPushButton("清理碎标注(<10k px)…"); b3.setToolTip("把面积小于 1 万像素的标注块整块删掉")
+        b3 = QPushButton(tr("清理碎标注(<10k px)…")); b3.setToolTip(tr("把面积小于 1 万像素的标注块整块删掉"))
         b3.clicked.connect(self._clean_tiny_ann)
-        b4 = QPushButton("批量导入 JSON…"); b4.clicked.connect(self._batch_import_json)
+        b4 = QPushButton(tr("批量导入 JSON…")); b4.clicked.connect(self._batch_import_json)
         r2.addWidget(b3); r2.addWidget(b4)
         v.addLayout(r1); v.addLayout(r2)
         return w
@@ -3089,14 +3109,14 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         from training.augment_config import flags_to_level, AUGMENT_FLAG_LABELS
         flags = self._collect_augment_flags()
         if not flags["enabled"]:
-            self.aug_status.setText("当前：关闭（训练不使用数据增强）")
+            self.aug_status.setText(tr("当前：关闭（训练不使用数据增强）"))
             return
-        on = [label for key, label in AUGMENT_FLAG_LABELS if flags.get(key)]
-        text = f"级别：{flags_to_level(flags)}"
+        on = [tr(label) for key, label in AUGMENT_FLAG_LABELS if flags.get(key)]
+        text = tr("级别：%s") % flags_to_level(flags)
         if on:
-            text += "　已启用：" + "、".join(on)
+            text += tr("　已启用：") + tr("、").join(on)
         else:
-            text += "　已启用：无"
+            text += tr("　已启用：无")
         self.aug_status.setText(text)
 
     def _set_aug_all(self, checked):
@@ -3141,7 +3161,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
     def _update_height_controls(self):
         canvas = self.canvas
         if canvas._height_image is None:
-            self.hm_status.setText("No height map loaded")
+            self.hm_status.setText(tr("未加载高度图"))
             self.hm_data_range.setText("")
             self._update_height_colorbar()
             return
@@ -3342,23 +3362,23 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         if not name:
             return
         menu = QMenu(self)
-        open_action = menu.addAction("Open in Explorer")
+        open_action = menu.addAction(tr("在资源管理器中打开"))
         open_action.triggered.connect(lambda: os.startfile(str(self.pm.get_project_dir(name))))
         # 「输出目录」：右栏「图像管理」页删除（2026-10-14）后归到这里 ——
         # 与"打开工程目录"并列，而且**不需要先在图片列表里选中一行**（图片列表右键
         # 在没选中任何行时是不出菜单的，所以工程树这条才是随时可用的那个入口）。
-        act_out = menu.addAction("打开输出目录")
+        act_out = menu.addAction(tr("打开输出目录"))
         act_out.triggered.connect(
             lambda _c=False, n=name: self._open_output_dir(str(self.pm.get_project_dir(n))))
         menu.addSeparator()
-        del_action = menu.addAction("Delete Project")
+        del_action = menu.addAction(tr("删除工程"))
         del_action.triggered.connect(lambda: self._delete_project(name, item))
         menu.exec_(self.project_tree.viewport().mapToGlobal(pos))
 
     def _delete_project(self, name, item):
         """Delete a project after confirmation."""
         reply = QMessageBox.question(
-            self, "Confirm Delete",
+            self, tr("确认删除"),
             f"Delete project '{name}' and all its data?\nThis cannot be undone.",
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         if reply != QMessageBox.Yes:
@@ -3371,7 +3391,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
             self._refresh_projects()
             self.log(f"Deleted project: {name}")
         except Exception as e:
-            QMessageBox.warning(self, "Error", str(e))
+            QMessageBox.warning(self, tr("错误"), str(e))
 
     def _on_project_double_click(self, item):
         name = item.data(0, Qt.UserRole)
@@ -3382,13 +3402,16 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         from pathlib import Path
         from PyQt5.QtWidgets import QDialog, QFormLayout, QLineEdit, QDialogButtonBox, QLabel, QComboBox, QHBoxLayout, QPushButton, QFileDialog
         dlg = QDialog(self)
-        dlg.setWindowTitle("New Project")
+        dlg.setWindowTitle(tr("新建工程"))
         form = QFormLayout(dlg)
         name_edit = QLineEdit()
-        form.addRow("Project Name:", name_edit)
+        form.addRow(tr("工程名："), name_edit)
         task_combo = QComboBox()
-        task_combo.addItems(["语义分割", "目标检测", "图像分类", "混合分类", "OCR文字识别", "OCV字符质检"])
-        form.addRow("Task Type:", task_combo)
+        # 显示文本可翻译，userData 保留工程侧规范里的中文任务类型（project_manager 认这个）
+        for _task in ("语义分割", "目标检测", "图像分类", "混合分类",
+                      "OCR文字识别", "OCV字符质检"):
+            task_combo.addItem(tr(_task), _task)
+        form.addRow(tr("任务类型："), task_combo)
         # ── 输入类型（视图数）──
         # 只有语义分割需要：单张 = 3 通道，三视图 = 9 通道（漫反射/形状图1/形状图2）。
         # 声明写进 project.json 后，训练端自动识别，不必靠扫文件名去猜。
@@ -3403,18 +3426,18 @@ class MainWindow(OcrOcvMixin, QMainWindow):
              "掩膜只需标 te_0 一张，三视图共用。"),
         ]
         view_combo = QComboBox()
-        view_combo.addItems(["单张图像（1 视图 / 3 通道）",
-                             "双视图（2 视图 / 6 通道）",
-                             "三视图（3 视图 / 9 通道）"])
+        view_combo.addItems([tr("单张图像（1 视图 / 3 通道）"),
+                             tr("双视图（2 视图 / 6 通道）"),
+                             tr("三视图（3 视图 / 9 通道）")])
         view_combo.setCurrentIndex(2)   # 默认三视图：本项目主场景
-        form.addRow("Input Type:", view_combo)
+        form.addRow(tr("输入类型："), view_combo)
         view_hint = QLabel("")
         view_hint.setWordWrap(True)
         view_hint.setStyleSheet("color:#00E5FF;")
         form.addRow("", view_hint)
 
         def _sync_view_rows():
-            is_seg = (task_combo.currentText() == "语义分割")
+            is_seg = (task_combo.currentData() == "语义分割")
             for w in (view_combo, view_hint, form.labelForField(view_combo)):
                 if w is not None:
                     w.setVisible(is_seg)
@@ -3425,18 +3448,18 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         # Directory chooser
         dir_row = QHBoxLayout()
         dir_edit = QLineEdit()
-        dir_edit.setPlaceholderText("Default: workspace")
+        dir_edit.setPlaceholderText(tr("默认：工作空间"))
         dir_edit.setReadOnly(True)
-        dir_btn = QPushButton("Browse...")
+        dir_btn = QPushButton(tr("浏览…"))
         def choose_dir():
-            d = QFileDialog.getExistingDirectory(dlg, "Select Project Directory",
+            d = QFileDialog.getExistingDirectory(dlg, tr("选择工程目录"),
                                                   str(Path.home() / "Documents"))
             if d:
                 dir_edit.setText(d)
         dir_btn.clicked.connect(choose_dir)
         dir_row.addWidget(dir_edit)
         dir_row.addWidget(dir_btn)
-        form.addRow("Location:", dir_row)
+        form.addRow(tr("位置："), dir_row)
         btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         btns.accepted.connect(dlg.accept)
         btns.rejected.connect(dlg.reject)
@@ -3445,9 +3468,9 @@ class MainWindow(OcrOcvMixin, QMainWindow):
             return
         name = name_edit.text().strip()
         if not name:
-            return QMessageBox.warning(self, "Error", "Project name is required")
+            return QMessageBox.warning(self, tr("错误"), tr("工程名不能为空"))
         try:
-            task_type = task_combo.currentText()
+            task_type = task_combo.currentData()
             parent_dir = dir_edit.text().strip() or None
             # 仅语义分割且选了多视图时才声明；单张保持与既有工程完全一致
             mv_views, mv_names = None, None
@@ -3490,21 +3513,21 @@ class MainWindow(OcrOcvMixin, QMainWindow):
             self._refresh_projects()
             self.log(f"Created project: {name}")
         except Exception as e:
-            QMessageBox.warning(self, "Error", str(e))
+            QMessageBox.warning(self, tr("错误"), str(e))
     def _open_project(self):
         from pathlib import Path
         # 弹窗选择工程目录（含 project.json 的文件夹），支持打开工作区之外的工程
-        d = QFileDialog.getExistingDirectory(self, "Select Project Directory",
+        d = QFileDialog.getExistingDirectory(self, tr("选择工程目录"),
                                               str(Path.home()))
         if not d:
             return
         try:
             name = self.pm.register_external_project(d)
         except FileNotFoundError as e:
-            QMessageBox.warning(self, "Error", str(e))
+            QMessageBox.warning(self, tr("错误"), str(e))
             return
         except Exception as e:
-            QMessageBox.warning(self, "Error", f"Failed to open project: {e}")
+            QMessageBox.warning(self, tr("错误"), f"Failed to open project: {e}")
             return
         self._refresh_projects()
         self._open_project_by_name(name)
@@ -3605,7 +3628,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
             pass
         # ④ 计数与信息栏（"文件 --"，宽高/标注/耗时全部归零）
         try:
-            self.image_count_label.setText("Total: 0 images")
+            self.image_count_label.setText(tr("总计：0 张图"))
         except Exception:
             pass
         try:
@@ -3672,7 +3695,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
             self.setWindowTitle(f"{APP_NAME} - {name}")
         except Exception as e:
             self._hide_load_progress()
-            QMessageBox.warning(self, "Error", str(e))
+            QMessageBox.warning(self, tr("错误"), str(e))
 
     def _close_project(self):
         # Save classification training settings before closing
@@ -3798,8 +3821,8 @@ class MainWindow(OcrOcvMixin, QMainWindow):
             self._populate_det_class_list()
             self.det_toolbar.set_draw_active(True)
             self._sync_det_toolbar()
-            self._infer_title.setText("推理 · 目标检测")
-            self._train_title.setText("训练 · 目标检测")
+            self._infer_title.setText(tr("推理 · 目标检测"))
+            self._train_title.setText(tr("训练 · 目标检测"))
             self._show_task_panel(infer_idx=0, train_idx=1,
                                   prefer="infer" if self._task_model_exists("detection") else "train")
         elif task == "classification":
@@ -3818,8 +3841,8 @@ class MainWindow(OcrOcvMixin, QMainWindow):
             self._refresh_cls_model_list()
             self._filter_images(self.search_input.text())
             self._restore_confusion_matrix()
-            self._infer_title.setText("推理 · 图像分类")
-            self._train_title.setText("训练 · 图像分类")
+            self._infer_title.setText(tr("推理 · 图像分类"))
+            self._train_title.setText(tr("训练 · 图像分类"))
             self._show_task_panel(infer_idx=1, train_idx=2,
                                   prefer="infer" if self._task_model_exists("classification") else "train")
         elif task == "mixed_classification":
@@ -3839,8 +3862,8 @@ class MainWindow(OcrOcvMixin, QMainWindow):
             self._refresh_cls_model_list()
             self._filter_images(self.search_input.text())
             self._restore_confusion_matrix()
-            self._infer_title.setText("推理 · 混合分类")
-            self._train_title.setText("训练 · 混合分类")
+            self._infer_title.setText(tr("推理 · 混合分类"))
+            self._train_title.setText(tr("训练 · 混合分类"))
             self._show_task_panel(infer_idx=1, train_idx=2,
                                   prefer="infer" if self._task_model_exists("mixed_classification") else "train")
         elif task == "ocr":
@@ -3853,8 +3876,8 @@ class MainWindow(OcrOcvMixin, QMainWindow):
             self.canvas._cls_mode = False
             self.canvas._ocr_overlay = None
             self.canvas.update()
-            self._infer_title.setText("推理 · OCR 文字识别")
-            self._train_title.setText("训练 · OCR（无训练流程）")
+            self._infer_title.setText(tr("推理 · OCR 文字识别"))
+            self._train_title.setText(tr("训练 · OCR（无训练流程）"))
             # OCR/OCV 没有训练流程（train_idx=3 是"无训练流程"提示页），
             # 所以合并面板里当然重点给推理段
             self._show_task_panel(infer_idx=2, train_idx=3, prefer="infer")
@@ -3867,8 +3890,8 @@ class MainWindow(OcrOcvMixin, QMainWindow):
             self.canvas._det_overlay = None
             self.canvas._cls_mode = False
             self.canvas.update()
-            self._infer_title.setText("推理 · OCV 字符质检")
-            self._train_title.setText("训练 · OCV（无训练流程）")
+            self._infer_title.setText(tr("推理 · OCV 字符质检"))
+            self._train_title.setText(tr("训练 · OCV（无训练流程）"))
             self._show_task_panel(infer_idx=3, train_idx=3, prefer="infer")
         else:
             self._detection_mode = False
@@ -3881,8 +3904,8 @@ class MainWindow(OcrOcvMixin, QMainWindow):
             self.canvas.clear_heatmap()
             self.canvas._ocr_overlay = None
             self.canvas.update()
-            self._infer_title.setText("推理 · 语义分割")
-            self._train_title.setText("训练 · 语义分割")
+            self._infer_title.setText(tr("推理 · 语义分割"))
+            self._train_title.setText(tr("训练 · 语义分割"))
             self._show_task_panel(infer_idx=0, train_idx=0,
                                   prefer="infer" if self._task_model_exists("segmentation") else "train")
 
@@ -3925,7 +3948,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
 
 
     def _set_workspace(self):
-        path = QFileDialog.getExistingDirectory(self, "Select Workspace")
+        path = QFileDialog.getExistingDirectory(self, tr("选择工作空间"))
         if path:
             self.config["workspace"] = path
             save_config(self.config)
@@ -3936,7 +3959,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
     # ============ Image Management ============
     def _import_images(self):
         if not self.current_project:
-            return QMessageBox.information(self, "Hint", "Please open a project first")
+            return QMessageBox.information(self, tr("提示"), tr("请先打开工程"))
         # ★★ 2026-10-29 并发保护：
         #   原来连点两次「导入图片」会起**两个拷贝线程**，两个线程都先 exists()
         #   再 copy()，中间没有任何互斥 —— 完全可能同时往同一个目标文件写，
@@ -3944,7 +3967,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         #   加个标志挡住第二次。
         if getattr(self, "_importing", False):
             return QMessageBox.information(
-                self, "导入进行中",
+                self, tr("导入进行中"),
                 "上一次导入还没结束，请等它完成后再导。\n\n"
                 "现在再点会起第二个拷贝线程，两个线程可能同时写同一个文件，"
                 "导致图片损坏（这类损坏很难事后发现）。")
@@ -3959,8 +3982,8 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         except Exception as e:
             self.log(f"多视图检测失败，按单图流程处理: {type(e).__name__}: {e}")
         files, _ = QFileDialog.getOpenFileNames(
-            self, "Import Images", "",
-            "Images (*.png *.jpg *.jpeg *.bmp *.tif *.tiff)")
+            self, tr("导入图片"), "",
+            tr("图片 (*.png *.jpg *.jpeg *.bmp *.tif *.tiff)"))
         if files:
             self.log(f"Importing {len(files)} images...")
             img_dir = os.path.join(
@@ -4065,7 +4088,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         views, per_view = dlg.get_view_paths()
         n = min((len(x) for x in per_view), default=0)
         if n == 0:
-            return QMessageBox.warning(self, "提示", "没有可导入的图片组")
+            return QMessageBox.warning(self, tr("提示"), tr("没有可导入的图片组"))
         for info in dlg.dropped_info():
             self.log(f"未成组已剔除：{info}（缺少配对的其它视图）")
         img_dir = os.path.join(proj_dir, "images")
@@ -4500,7 +4523,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         try:
             classes = [c for c in (getattr(self, "_cached_classes", []) or [])
                        if c and str(c).lower() != "background"]
-            want = ["All Labels"] + classes
+            want = [tr("全部标签")] + classes
             cur = [self.label_filter.itemText(i) for i in range(self.label_filter.count())]
             if want != cur:
                 prev = self.label_filter.currentText()
@@ -4520,7 +4543,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
             self._img_scores = {}
         return {
             "text_lower": text.lower().strip(),
-            "split": self.split_filter.currentText(),
+            "split": self.split_filter.currentData() or "All Sets",
             "annotated_only": self.annotated_check.isChecked(),
             "label": lf_text,
             "recent": self.recent_check.isChecked(),
@@ -4842,7 +4865,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
                 if not label_match:
                     continue
             # 标注名字下拉：只看含该标注类别的图片
-            if lf_text and lf_text != "All Labels" and lf_text not in shape_labels:
+            if lf_text and lf_text != tr("全部标签") and lf_text not in shape_labels:
                 continue
 
             if annotated_only and not has_ann:
@@ -5027,7 +5050,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
             self._suppress_cell_change = False
             self._hide_load_progress()
             try:
-                self.stats_summary.setText("筛选失败")
+                self.stats_summary.setText(tr("筛选失败"))
                 self.statusBar().showMessage(f"列表构建失败：{payload['error']}", 8000)
             except Exception:
                 pass
@@ -5204,7 +5227,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
                     #    分类模式这一格是类别名（', '.join(shape_labels)），
                     #    而字符分类工程的类别名就叫 "0"/"1"，那一行会被挂上
                     #    "空标注"提示，实际它是有类别的。
-                    item.setToolTip("空标注：标注文件在、0 个框（通常表示「已确认无缺陷」）")
+                    item.setToolTip(tr("空标注：标注文件在、0 个框（通常表示「已确认无缺陷」）"))
                 self.image_list_widget.setItem(row, col, item)
             # Store path in first column
             self.image_list_widget.item(row, 0).setData(Qt.UserRole, data['path'])
@@ -5212,18 +5235,18 @@ class MainWindow(OcrOcvMixin, QMainWindow):
             mkind = data.get('mark') or ""
             mit = self.image_list_widget.item(row, 8)
             if mit is not None:
-                mit.setText(marks_mod.kind_label(mkind) or "")
+                mit.setText(tr(marks_mod.kind_label(mkind)) or "")
                 mit.setTextAlignment(Qt.AlignCenter)
                 if mkind:
                     # 只给这一个格子上底色（不改整行）：整行底色会和交替行色/主题表打架，
                     # 而标记是"这一格的属性"，格子底色反而更好定位。
                     mit.setBackground(QColor(marks_mod.kind_color(mkind)))
                     mit.setForeground(QColor("#FFFFFF"))
-                    tip = marks_mod.MARK_HINTS.get(mkind, "")
+                    tip = tr(marks_mod.MARK_HINTS.get(mkind, ""))
                     if data.get('mark_note'):
-                        tip += "\n备注：" + str(data['mark_note'])
+                        tip += "\n" + tr("备注：") + str(data['mark_note'])
                     if data.get('mark_by'):
-                        tip += "\n标记人：%s（%s）" % (data['mark_by'], data.get('mark_at', ''))
+                        tip += "\n" + (tr("标记人：%s（%s）") % (data['mark_by'], data.get('mark_at', '')))
                     mit.setToolTip(tip)
                     # ⚠️ 标记列在最右侧：左栏默认宽度装不下 9 列，人**不横向滚动就看不见它**
                     #    （真窗口截图确认过）。序号列永远在可视区里，同步上同色底，
@@ -5232,8 +5255,8 @@ class MainWindow(OcrOcvMixin, QMainWindow):
                     if sit is not None:
                         sit.setBackground(QColor(marks_mod.kind_color(mkind)))
                         sit.setForeground(QColor("#FFFFFF"))
-                        sit.setToolTip(marks_mod.MARK_LABELS.get(mkind, "") +
-                                       (("｜" + data['mark_note']) if data.get('mark_note') else ""))
+                        sit.setToolTip(tr(marks_mod.MARK_LABELS.get(mkind, "")) +
+                                       ((tr("｜") + data['mark_note']) if data.get('mark_note') else ""))
             # 默认整行白色；「标注」「结果」两列的类别名用 Class 表对应的类别颜色
             if getattr(self, "_mixed_cls_mode", False) and data.get('height_fname'):
                 self.image_list_widget.setRowHeight(row, 40)
@@ -5273,7 +5296,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
             # 不分页 = 整批一页装下。这里不再报行数：左边那行已经写了"共 N 组（M 张）"，
             # 是同一个数字的第二遍；而且窄面板下会被截成"全部 3"（2026-10-14 用户截图
             # 上就是这个样子）。只保留"没分页"这个状态提示。
-            self.page_info_label.setText("全部")
+            self.page_info_label.setText(tr("全部"))
         else:
             self.page_info_label.setText(f"Page {self._current_page + 1}/{total_pages}")
         self.page_prev_btn.setEnabled(self._current_page > 0)
@@ -5457,7 +5480,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         if self.canvas._show_heatmap:
             self.canvas._show_heatmap = False
             self.canvas.update()
-            self.statusBar().showMessage("Heatmap: OFF", 2000)
+            self.statusBar().showMessage(tr("热力图：关"), 2000)
         elif os.path.exists(hm_file):
             qimg = QImage(hm_file)
             if not qimg.isNull():
@@ -5467,9 +5490,9 @@ class MainWindow(OcrOcvMixin, QMainWindow):
                 self.canvas._heatmap_qimage = qimg.copy()
                 self.canvas._show_heatmap = True
                 self.canvas.update()
-                self.statusBar().showMessage("Heatmap: ON", 2000)
+                self.statusBar().showMessage(tr("热力图：开"), 2000)
             else:
-                self.statusBar().showMessage("Heatmap: failed to load", 2000)
+                self.statusBar().showMessage(tr("热力图加载失败"), 2000)
         else:
             self.statusBar().showMessage("No heatmap file: " + os.path.basename(hm_file), 2000)
 
@@ -5499,7 +5522,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         self.canvas._heatmap_qimage = qimg.copy()
         self.canvas._show_heatmap = True
         self.canvas.update()
-        self.statusBar().showMessage("Heatmap: ON", 2000)
+        self.statusBar().showMessage(tr("热力图：开"), 2000)
 
 
     def _on_image_item_clicked(self, row, col):
@@ -6373,69 +6396,69 @@ class MainWindow(OcrOcvMixin, QMainWindow):
 
         menu = QMenu(self)
         # ── 条目式筛选（原为面板上的「筛选…」按钮，2026-10-15 收进这里） ──
-        a_filter = menu.addAction("筛选（条件构建器）…")
-        a_filter.setToolTip("条目式筛选：字段 / 条件 / 值 + AND·OR（含「标记」字段）")
+        a_filter = menu.addAction(tr("筛选（条件构建器）…"))
+        a_filter.setToolTip(tr("条目式筛选：字段 / 条件 / 值 + AND·OR（含「标记」字段）"))
         a_filter.triggered.connect(self._open_filter_builder)
-        a_clear = menu.addAction("清除筛选")
+        a_clear = menu.addAction(tr("清除筛选"))
         a_clear.triggered.connect(self._clear_mark_filters)
         menu.addSeparator()
         # ── 标记（四态）：右键直接改，支持多选批量 ──
-        m_menu = menu.addMenu("标记")
+        m_menu = menu.addMenu(tr("标记"))
         for k in marks_mod.MARK_KINDS:
-            a = m_menu.addAction("标记为「%s」" % marks_mod.MARK_LABELS[k])
-            a.setToolTip(marks_mod.MARK_HINTS[k])
+            a = m_menu.addAction(tr("标记为「%s」") % tr(marks_mod.MARK_LABELS[k]))
+            a.setToolTip(tr(marks_mod.MARK_HINTS[k]))
             a.triggered.connect(lambda _c=False, kk=k: self._on_mark_requested(kk))
         m_menu.addSeparator()
-        a_note = m_menu.addAction("写备注…")
+        a_note = m_menu.addAction(tr("写备注…"))
         a_note.triggered.connect(self._on_mark_note)
-        a_clr = m_menu.addAction("清空标记")
+        a_clr = m_menu.addAction(tr("清空标记"))
         a_clr.triggered.connect(lambda: self._on_mark_requested(""))
         m_menu.addSeparator()
-        a_conv = m_menu.addAction("结果转标注（按标记闭环）…")
-        a_conv.setToolTip("过杀→扣成背景（负样本）；漏杀→重建掩膜（正样本）；正常→固化 AI 检出")
+        a_conv = m_menu.addAction(tr("结果转标注（按标记闭环）…"))
+        a_conv.setToolTip(tr("过杀→扣成背景（负样本）；漏杀→重建掩膜（正样本）；正常→固化 AI 检出"))
         a_conv.triggered.connect(self._run_convert_by_mark)
         menu.addSeparator()
         # ── 推理选中（2026-11-16，友商同款）：只跑勾选的这些图 ──
-        a_inf_sel = menu.addAction("推理选中的图像")
-        a_inf_sel.setToolTip("只对选中的图片跑一遍推理（结果写 outputs/，不改标注；进任务队列可取消）")
+        a_inf_sel = menu.addAction(tr("推理选中的图像"))
+        a_inf_sel.setToolTip(tr("只对选中的图片跑一遍推理（结果写 outputs/，不改标注；进任务队列可取消）"))
         a_inf_sel.triggered.connect(lambda: self._infer_selected_images(selected_rows, project_dir))
         menu.addSeparator()
         for label, key in [("Set as Train", "train"), ("Set as Val", "val"), ("Set as Test", "test")]:
             action = menu.addAction(label)
             action.triggered.connect(lambda checked, k=key: self._set_selected_split(selected_rows, k, project_dir, split_map))
 
-        action4 = menu.addAction("Open JSON Location")
+        action4 = menu.addAction(tr("打开 JSON 所在目录"))
         action4.triggered.connect(lambda: self._open_json_location(selected_rows, project_dir))
         # 「输出目录」原先在右栏「图像管理」页里（该页 2026-10-14 删除），挂到这里 ——
         # 与上面那条同属"打开某个目录"，放一起最顺。
-        a_out = menu.addAction("打开输出目录")
+        a_out = menu.addAction(tr("打开输出目录"))
         a_out.triggered.connect(lambda: self._open_output_dir(project_dir))
         # 「管理划分…」：原为左栏图片列表底部的一个按钮，维护者 2026-10-14 晚判定
         # 面板上那行冗余 ⇒ 删按钮、动作挂到这里（和上面的 Set as Train/Val/Test 同源，
         # 都是"划分"；也补上了它作为**唯一入口**不能丢的那条命）。
-        a_split = menu.addAction("管理数据集划分…")
-        a_split.setToolTip("按比例 / 手动把当前工程的图片划进 训练 / 验证 / 测试")
+        a_split = menu.addAction(tr("管理数据集划分…"))
+        a_split.setToolTip(tr("按比例 / 手动把当前工程的图片划进 训练 / 验证 / 测试"))
         a_split.triggered.connect(self._manage_split)
         menu.addSeparator()
         # 全选（列表已默认不分页，全选后可一次性批量操作/批量导入 JSON）
-        act_all = menu.addAction("Select All (全选)")
+        act_all = menu.addAction(tr("Select All (全选)"))
         act_all.setShortcut(QKeySequence.SelectAll)
         act_all.triggered.connect(self.image_list_widget.selectAll)
         menu.addSeparator()
         # 第 5 项：把选中的这批图片的 JSON 从外部目录批量导进来
         # （多视图工程会连同该组的 N 个视图 JSON 一起导，命名可带 _te_N 后缀）
-        action5 = menu.addAction("Import JSON for Selected...")
-        action5.setToolTip("从指定文件夹导入这批选中图片的 JSON 标注（按文件名匹配）")
+        action5 = menu.addAction(tr("为选中图片导入 JSON…"))
+        action5.setToolTip(tr("从指定文件夹导入这批选中图片的 JSON 标注（按文件名匹配）"))
         action5.triggered.connect(lambda: self._import_json_for_selected(selected_rows, project_dir))
         # 导出/清理：原来在「标注操作」区块里（该区块已去掉），改挂到这里 ——
         # 这几个都是"对这批图做点什么"，和上面的导入 JSON 是同一类操作。
         menu.addSeparator()
-        a_exp = menu.addAction("导出 JSON...")
+        a_exp = menu.addAction(tr("导出 JSON..."))
         a_exp.triggered.connect(self._export_json)
-        a_exp2 = menu.addAction("导出标注")
+        a_exp2 = menu.addAction(tr("导出标注"))
         a_exp2.triggered.connect(self._export_annotations)
-        a_tiny = menu.addAction("清理碎标注 (<10k px)...")
-        a_tiny.setToolTip("把面积小于 1 万像素的标注块整块删掉")
+        a_tiny = menu.addAction(tr("清理碎标注 (<10k px)..."))
+        a_tiny.setToolTip(tr("把面积小于 1 万像素的标注块整块删掉"))
         a_tiny.triggered.connect(self._clean_tiny_ann)
         # 删除 / 撤销：破坏性操作单独一组放最后，避免误点。
         # 删除走 core.file_ops（移到工程外备份目录 → 可撤销；索引同步清理）。
@@ -6445,7 +6468,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
             n_bak = len(_fo.list_backups(project_dir))
         except Exception:
             n_bak = 0
-        act_del = menu.addAction("🗑  删除选中图片…")
+        act_del = menu.addAction(tr("🗑  删除选中图片…"))
         act_del.setToolTip("删除选中图片（多视图按**整组**）：图片 + 标注 JSON + 掩膜一起移走，"
                            "并同步清理 train_test_split / class_labels / tile_index")
         act_del.triggered.connect(lambda: self._delete_selected_images(selected_rows, project_dir))
@@ -6482,18 +6505,18 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         paths = list(dict.fromkeys(paths))          # 去重但保留用户行的顺序
         if not paths:
             return QMessageBox.information(
-                self, "推理选中的图像", "选中的行里没有可推理的图片。")
+                self, tr("推理选中的图像"), tr("选中的行里没有可推理的图片。"))
 
         missing = [p for p in paths if not os.path.exists(p)]
         paths = [p for p in paths if os.path.exists(p)]
         if not paths:
             return QMessageBox.information(
-                self, "推理选中的图像",
+                self, tr("推理选中的图像"),
                 "选中的 %d 张图片都不存在（可能已被删除或移动）。" % len(missing))
 
         if self._cls_mode or self._ocr_mode:
             return QMessageBox.information(
-                self, "推理选中的图像",
+                self, tr("推理选中的图像"),
                 "当前工程类型暂不支持「只推理选中」（分类 / OCR 的批处理是按目录遍历的）。\n"
                 "请用「开始推理」跑全部。")
         if not self._detection_mode:
@@ -6501,7 +6524,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
                 from training.multiview_gui import is_multiview_project
                 if is_multiview_project(project_dir):
                     return QMessageBox.information(
-                        self, "推理选中的图像",
+                        self, tr("推理选中的图像"),
                         "多视图工程按「组」推理（三视图合成 9 通道），暂不支持只跑选中的几张。\n"
                         "请用「开始推理」跑全部组。")
             except Exception as e:  # noqa: BLE001
@@ -6532,7 +6555,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
             return
         tgt = fo.collect_targets(project_dir, bases)
         if not tgt["files"]:
-            QMessageBox.information(self, "删除", "选中项没有可删除的文件（可能已删除）。")
+            QMessageBox.information(self, tr("删除"), tr("选中项没有可删除的文件（可能已删除）。"))
             return
         preview = "\n".join("  • " + os.path.relpath(p, project_dir) for p in tgt["files"][:5])
         more = len(tgt["files"]) - 5
@@ -6542,7 +6565,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
                f"共 {len(tgt['files'])} 个文件（{len(tgt['groups'])} 组 / {len(tgt['bases'])} 个视图）。\n"
                f"图片、标注 JSON、掩膜会一起移走，划分与类别索引同步清理。\n"
                f"删除后可右键「撤销上次删除」还原。")
-        if QMessageBox.question(self, "确认删除", msg,
+        if QMessageBox.question(self, tr("确认删除"), msg,
                                 QMessageBox.Yes | QMessageBox.No,
                                 QMessageBox.No) != QMessageBox.Yes:
             return
@@ -6550,7 +6573,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         self._refresh_after_delete(rep)
         if rep.failed:
             QMessageBox.warning(
-                self, "部分文件未能删除",
+                self, tr("部分文件未能删除"),
                 "有 %d 个文件删除失败（可能正被推理/训练占用）：\n%s" % (
                     len(rep.failed),
                     "\n".join(f"  • {p}（{e}）" for p, e in rep.failed[:5])))
@@ -6559,10 +6582,10 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         """撤销最近一次删除（文件 + 索引一起还原）。"""
         from core import file_ops as fo
         if not fo.list_backups(project_dir):
-            QMessageBox.information(self, "撤销", "没有可撤销的删除记录。")
+            QMessageBox.information(self, tr("撤销"), tr("没有可撤销的删除记录。"))
             return
-        if QMessageBox.question(self, "撤销上次删除",
-                                "将还原最近一次删除的文件与索引，继续？",
+        if QMessageBox.question(self, tr("撤销上次删除"),
+                                tr("将还原最近一次删除的文件与索引，继续？"),
                                 QMessageBox.Yes | QMessageBox.No,
                                 QMessageBox.Yes) != QMessageBox.Yes:
             return
@@ -6572,7 +6595,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         except Exception:
             pass
         self._refresh_after_annotation_import()
-        QMessageBox.information(self, "撤销", "已还原 %d 个文件。" % r.get("restored", 0))
+        QMessageBox.information(self, tr("撤销"), "已还原 %d 个文件。" % r.get("restored", 0))
 
     def _refresh_after_delete(self, rep=None):
         """删除后刷新：图片列表 / 画布 / Class 表 / 统计。
@@ -6659,10 +6682,10 @@ class MainWindow(OcrOcvMixin, QMainWindow):
 
     def _on_mark_requested(self, kind):
         if not self.current_project:
-            return QMessageBox.information(self, "标记", "先打开一个工程。")
+            return QMessageBox.information(self, tr("标记"), tr("先打开一个工程。"))
         bases = self._selected_bases()
         if not bases:
-            return QMessageBox.information(self, "标记", "先在图片列表里选中一张或多张图。")
+            return QMessageBox.information(self, tr("标记"), tr("先在图片列表里选中一张或多张图。"))
         self._ensure_marks_loaded()
         if kind:
             marks_mod.set_mark(self._marks, bases, kind)
@@ -6675,15 +6698,15 @@ class MainWindow(OcrOcvMixin, QMainWindow):
 
     def _on_mark_note(self):
         if not self.current_project:
-            return QMessageBox.information(self, "备注", "先打开一个工程。")
+            return QMessageBox.information(self, tr("备注"), tr("先打开一个工程。"))
         bases = self._selected_bases()
         if not bases:
-            return QMessageBox.information(self, "备注", "先选中图片。")
+            return QMessageBox.information(self, tr("备注"), tr("先选中图片。"))
         self._ensure_marks_loaded()
         marked = [b for b in bases if marks_mod.get_mark(self._marks, b)["mark"]]
         if not marked:
             return QMessageBox.information(
-                self, "备注",
+                self, tr("备注"),
                 "选中的图还没有标记。\n\n先打标记再写理由 —— 没有标记的备注会成为孤儿数据，"
                 "统计和筛选中都看不到它。")
         cur = marks_mod.get_mark(self._marks, marked[0])["note"] if len(marked) == 1 else ""
@@ -6781,7 +6804,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         """难例闭环一键入口：把标记过的图按语义转成训练数据。"""
         pd = self._marks_dir()
         if not pd:
-            return QMessageBox.information(self, "结果转标注", "先打开一个工程。")
+            return QMessageBox.information(self, tr("结果转标注"), tr("先打开一个工程。"))
         self._ensure_marks_loaded()
         bases = self._selected_bases()
         if not bases:
@@ -6790,7 +6813,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         bases = [b for b in bases if marks_mod.get_mark(self._marks, b)["mark"]]
         if not bases:
             return QMessageBox.information(
-                self, "结果转标注",
+                self, tr("结果转标注"),
                 "选中范围里没有带标记的图。\n\n先给图打标记（正常/过杀/漏杀），再执行这个动作。")
         cnt = marks_mod.count_marks({b: self._marks[b] for b in bases})
         msg = ("将对 %d 张带标记的图执行闭环动作：\n\n"
@@ -6802,14 +6825,14 @@ class MainWindow(OcrOcvMixin, QMainWindow):
                "原标注会先经版本快照，可回滚。是否继续？"
                % (len(bases), cnt.get("overkill", 0), cnt.get("escape", 0),
                   cnt.get("normal", 0), cnt.get("doubt", 0)))
-        if QMessageBox.question(self, "确认结果转标注", msg,
+        if QMessageBox.question(self, tr("确认结果转标注"), msg,
                                 QMessageBox.Yes | QMessageBox.No,
                                 QMessageBox.Yes) != QMessageBox.Yes:
             return
         try:
             from annotation.convert import convert_by_mark, summarize_report
         except Exception as e:
-            return QMessageBox.critical(self, "结果转标注", "模块加载失败：%s" % e)
+            return QMessageBox.critical(self, tr("结果转标注"), "模块加载失败：%s" % e)
         src = "segment" if not self._detection_mode else "detect"
         rep = convert_by_mark(pd, bases, self._marks, source=src)
         self.log("[结果转标注] " + summarize_report(rep))
@@ -6836,9 +6859,9 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         """
         img_dir = os.path.join(project_dir, "images")
         if not os.path.isdir(img_dir):
-            return QMessageBox.warning(self, "Warning", "No images directory found")
+            return QMessageBox.warning(self, tr("警告"), tr("未找到图片目录"))
         last = getattr(self, "_last_json_import_dir", "") or ""
-        folder = QFileDialog.getExistingDirectory(self, "选择 JSON 所在文件夹", last)
+        folder = QFileDialog.getExistingDirectory(self, tr("选择 JSON 所在文件夹"), last)
         if not folder:
             return
         self._last_json_import_dir = folder
@@ -6856,7 +6879,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
             elif d.get("base"):
                 targets.append(d["base"])
         if not targets:
-            return QMessageBox.information(self, "Hint", "没有可导入的图片")
+            return QMessageBox.information(self, tr("提示"), tr("没有可导入的图片"))
         targets = list(dict.fromkeys(targets))     # 去重保序
 
         # 索引外部目录里的 JSON（递归，按文件名匹配）
@@ -6867,7 +6890,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
                     if fn.lower().endswith(".json"):
                         src.setdefault(os.path.splitext(fn)[0], os.path.join(root, fn))
         except Exception as e:
-            return QMessageBox.warning(self, "Error", f"扫描目录失败: {e}")
+            return QMessageBox.warning(self, tr("错误"), f"扫描目录失败: {e}")
 
         self.log(f"导入 JSON：选中 {len(selected_rows)} 行 / 需要 {len(targets)} 个标注文件，"
                  f"来源 {folder}")
@@ -6891,11 +6914,11 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         if missing:
             self.log("  未找到的（前 5 个）：" + "、".join(missing[:5]))
             QMessageBox.information(
-                self, "导入结果",
+                self, tr("导入结果"),
                 f"成功导入 {copied} 个 JSON。\n\n有 {len(missing)} 个在所选目录里没找到同名文件：\n"
                 + "、".join(missing[:5]) + ("..." if len(missing) > 5 else ""))
         else:
-            QMessageBox.information(self, "导入结果", f"成功导入 {copied} 个 JSON。")
+            QMessageBox.information(self, tr("导入结果"), f"成功导入 {copied} 个 JSON。")
         # 导入的 JSON 里可能有工程还没登记的类别 —— 类别表的真源就是这些 JSON，
         # 必须先补类别表，再刷新列表/预览/Class 表，否则 Class 表还是空的。
         if copied:
@@ -7209,7 +7232,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
 
     def _add_class(self):
         """Add a new class to the project."""
-        name, ok = QInputDialog.getText(self, "Add Class", "Class name:")
+        name, ok = QInputDialog.getText(self, tr("添加类别"), tr("类别名："))
         if not ok or not name.strip():
             return
         name = name.strip()
@@ -7267,7 +7290,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
                     "而已有标注是按编号存的、不会跟着改，"
                     "编号 ＞ %d 的区域此后会被当成别的类别（界面上看不出来）。"
                     % (name, n_tail, row))
-        reply = QMessageBox.question(self, "删除类别",
+        reply = QMessageBox.question(self, tr("删除类别"),
             "确定删除类别『%s』？\n\n%s\n\n（掩膜文件本身不会被改动；background 不能删）"
             % (name, warn),
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
@@ -7303,7 +7326,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         if row >= len(classes):
             return
         old_name = classes[row]
-        new_name, ok = QInputDialog.getText(self, "Rename Class", "New name:", text=old_name)
+        new_name, ok = QInputDialog.getText(self, tr("重命名类别"), tr("新名字："), text=old_name)
         if not ok or not new_name.strip() or new_name.strip() == old_name:
             return
         new_name = new_name.strip()
@@ -7607,7 +7630,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
             if hasattr(self, "tr_loss_combo"):
                 s["loss"] = self.tr_loss_combo.currentText()
             if hasattr(self, "tr_mode_combo"):
-                s["infer_mode"] = ("fast" if "快速" in self.tr_mode_combo.currentText()
+                s["infer_mode"] = ("fast" if self.tr_mode_combo.currentIndex() == 1
                                    else "fine")
             if hasattr(self, "tr_tile_check"):
                 s["tile"] = bool(self.tr_tile_check.isChecked())
@@ -7752,7 +7775,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
     def _open_cls_recommend(self):
         """打开智能推荐训练参数弹窗。"""
         if not self.current_project:
-            return QMessageBox.warning(self, "Warning", "Please open a project first")
+            return QMessageBox.warning(self, tr("警告"), tr("请先打开工程"))
         project_dir = str(self.pm.get_project_dir(self.current_project["name"]))
         try:
             from ui.recommend_dialog import RecommendationDialog
@@ -7844,7 +7867,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
     def _start_cls_training(self):
         """Start classification model training."""
         if not self.current_project:
-            return QMessageBox.warning(self, "Warning", "Please open a project first")
+            return QMessageBox.warning(self, tr("警告"), tr("请先打开工程"))
         project_dir = str(self.pm.get_project_dir(self.current_project["name"]))
         model_name = self.cls_model_combo.currentText()
         epochs = self.cls_epochs_spin.value()
@@ -7886,7 +7909,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         self.log(f"{mode_label}: {model_name}, {epochs} epochs, batch={batch_size}, lr={lr}")
         self.cls_train_progress.setVisible(True)
         self.cls_train_progress.setValue(0)
-        self.cls_train_status.setText("Preparing...")
+        self.cls_train_status.setText(tr("准备中…"))
         self._cls_stop_btn.setEnabled(True)
         self._cls_start_btn.setEnabled(False)
         # ★ 2026-11-11（P0-3）：这里原来有 `self._stop_flag = False`。
@@ -7967,7 +7990,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
                            run=run)
             # 前面已经有任务在跑 ⇒ 这一行只是排队，状态别写成 "Preparing..." 骗人
             if _q.running is not _t:
-                self.cls_train_status.setText("Queued...")
+                self.cls_train_status.setText(tr("已排队…"))
         else:
             self._stop_flag = False          # 老路径才用全局标志，起线程前清一次
             import threading
@@ -8031,7 +8054,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
                 for v in sorted(vers, key=lambda s: (len(s), s)):
                     self.cls_infer_model_combo.addItem(v)
         if self.cls_infer_model_combo.count() == 0:
-            self.cls_infer_model_combo.addItem("(no models found)")
+            self.cls_infer_model_combo.addItem(tr("（未找到模型）"))
         else:
             idx = self.cls_infer_model_combo.findText(prev)
             if idx >= 0:
@@ -8040,22 +8063,22 @@ class MainWindow(OcrOcvMixin, QMainWindow):
     def _start_cls_inference(self):
         """Run classification inference on current image."""
         if not self.current_project:
-            return QMessageBox.warning(self, "Warning", "Please open a project first")
+            return QMessageBox.warning(self, tr("警告"), tr("请先打开工程"))
         project_dir = str(self.pm.get_project_dir(self.current_project["name"]))
         self._refresh_cls_model_list()
         model_file = self.cls_infer_model_combo.currentText()
         if not model_file or "(no models" in model_file:
-            return QMessageBox.warning(self, "Error", "No classification model found.")
+            return QMessageBox.warning(self, tr("错误"), tr("未找到分类模型。"))
         current_path = getattr(self.canvas, "current_image_path", None)
         if not current_path or not os.path.exists(current_path):
-            return QMessageBox.warning(self, "Warning", "No image selected")
+            return QMessageBox.warning(self, tr("警告"), tr("未选择图片"))
         top_k = self.cls_topk_spin.value()
         mixed_mode = self.cls_mixed_check.isChecked()
         # ★ run() 跑在子线程，里面对控件的读取/写入都要先在主线程取快照
         tta_on = self.cls_tta_check.isChecked()
         auto_heatmap_on = (hasattr(self, "cls_auto_heatmap")
                            and self.cls_auto_heatmap.isChecked())
-        self.cls_infer_status.setText("Running...")
+        self.cls_infer_status.setText(tr("运行中…"))
         def run():
             import time
             try:
@@ -8121,12 +8144,12 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         """Run batch classification inference on all images."""
         stop = self._infer_stop(stop)   # 本次推理自己的停止判据（见 _infer_stop）
         if not self.current_project:
-            return QMessageBox.warning(self, "Warning", "Please open a project first")
+            return QMessageBox.warning(self, tr("警告"), tr("请先打开工程"))
         project_dir = str(self.pm.get_project_dir(self.current_project["name"]))
         self._refresh_cls_model_list()
         model_file = self.cls_infer_model_combo.currentText()
         if not model_file or "(no models" in model_file:
-            return QMessageBox.warning(self, "Error", "No classification model found.")
+            return QMessageBox.warning(self, tr("错误"), tr("未找到分类模型。"))
         img_dir = os.path.join(project_dir, "images")
         out_dir = os.path.join(project_dir, "outputs", "classification")
         os.makedirs(out_dir, exist_ok=True)
@@ -8136,13 +8159,13 @@ class MainWindow(OcrOcvMixin, QMainWindow):
             from classification.dual_dataset import _find_pairs
             pairs = _find_pairs(project_dir, "all", {})
             if not pairs:
-                return QMessageBox.warning(self, "Warning", "No paired gray+height images found")
+                return QMessageBox.warning(self, tr("警告"), tr("未找到成对的灰度+高度图"))
             images = [(gray, height) for gray, height, _ in pairs]
         else:
             images = [os.path.join(img_dir, f) for f in os.listdir(img_dir)
                       if f.lower().endswith((".bmp", ".png", ".jpg", ".jpeg"))]
             if not images:
-                return QMessageBox.warning(self, "Warning", "No images found")
+                return QMessageBox.warning(self, tr("警告"), tr("未找到图片"))
         total = len(images)
         top_k = self.cls_topk_spin.value()
         # ★ run() 跑在子线程，里面不能再读控件：这里先取快照。
@@ -8152,7 +8175,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         self.cls_infer_progress.setVisible(True)
         self.cls_infer_progress.setMaximum(total)
         self.cls_infer_progress.setValue(0)
-        self.cls_infer_status.setText("Running...")
+        self.cls_infer_status.setText(tr("运行中…"))
         self.log(f"Batch classification on {total} images...")
         def run():
             import time, json as _json
@@ -8410,7 +8433,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         current_path = getattr(self.canvas, "current_image_path", None)
         if not current_path or not os.path.exists(current_path):
             return
-        self.cls_infer_status.setText("Generating heatmap...")
+        self.cls_infer_status.setText(tr("正在生成热力图…"))
         import threading
         threading.Thread(target=self._do_generate_heatmap, daemon=True).start()
 
@@ -8571,31 +8594,31 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         """把选中版本复制为 best_model.pth 并设为推理下拉的当前项（回滚）。"""
         v = self._selected_cls_version()
         if not v:
-            return QMessageBox.warning(self, "提示", "请先在版本表选择一行")
+            return QMessageBox.warning(self, tr("提示"), tr("请先在版本表选择一行"))
         project_dir = str(self.pm.get_project_dir(self.current_project["name"]))
         src = os.path.join(project_dir, "models", "classification", "versions", v, "model.pth")
         dst = os.path.join(project_dir, "models", "classification", "best_model.pth")
         try:
             shutil.copy2(src, dst)
         except Exception as e:
-            return QMessageBox.warning(self, "错误", f"设为当前失败: {e}")
+            return QMessageBox.warning(self, tr("错误"), f"设为当前失败: {e}")
         idx = self.cls_infer_model_combo.findText(v)
         if idx >= 0:
             self.cls_infer_model_combo.setCurrentIndex(idx)
         self.log_signal.emit(f"[模型版本] {v} 已复制为 best_model.pth")
-        QMessageBox.information(self, "完成", f"{v} 已设为当前最佳模型（best_model.pth）。")
+        QMessageBox.information(self, tr("完成"), f"{v} 已设为当前最佳模型（best_model.pth）。")
 
     def _cls_version_export(self):
         """把选中版本打包为部署 zip（模型 + meta + history + 评估结果）。"""
         v = self._selected_cls_version()
         if not v:
-            return QMessageBox.warning(self, "提示", "请先在版本表选择一行")
+            return QMessageBox.warning(self, tr("提示"), tr("请先在版本表选择一行"))
         project_dir = str(self.pm.get_project_dir(self.current_project["name"]))
         vdir = os.path.join(project_dir, "models", "classification", "versions", v)
         if not os.path.isdir(vdir):
-            return QMessageBox.warning(self, "错误", f"版本目录不存在: {vdir}")
+            return QMessageBox.warning(self, tr("错误"), f"版本目录不存在: {vdir}")
         default_name = os.path.join(project_dir, f"{os.path.basename(project_dir)}_{v}.zip")
-        path, _ = QFileDialog.getSaveFileName(self, "导出部署包", default_name, "ZIP 文件 (*.zip)")
+        path, _ = QFileDialog.getSaveFileName(self, tr("导出部署包"), default_name, tr("ZIP 文件 (*.zip)"))
         if not path:
             return
         try:
@@ -8619,9 +8642,9 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         except Exception as e:
             import traceback
             self.log_signal.emit(traceback.format_exc())
-            return QMessageBox.warning(self, "错误", f"导出失败: {e}")
+            return QMessageBox.warning(self, tr("错误"), f"导出失败: {e}")
         self.log_signal.emit(f"[模型版本] 部署包已导出: {path}")
-        QMessageBox.information(self, "完成", f"部署包已导出:\n{path}")
+        QMessageBox.information(self, tr("完成"), f"部署包已导出:\n{path}")
 
     def _build_version_readme(self, v, meta, result):
         """生成部署包内的说明文本。"""
@@ -8699,9 +8722,9 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         self._refresh_cls_model_list()
         model_file = self.cls_infer_model_combo.currentText()
         if not model_file or "(no models" in model_file:
-            return QMessageBox.warning(self, "Error", "No classification model found.")
+            return QMessageBox.warning(self, tr("错误"), tr("未找到分类模型。"))
         mixed_mode = self.cls_mixed_check.isChecked()
-        self.cls_eval_status.setText("Evaluating...")
+        self.cls_eval_status.setText(tr("评估中…"))
         def run():
             try:
                 if mixed_mode:
@@ -9091,11 +9114,11 @@ class MainWindow(OcrOcvMixin, QMainWindow):
 
     def _start_training(self):
         if not self.current_project:
-            return QMessageBox.warning(self, "Warning", "Please open a project first")
+            return QMessageBox.warning(self, tr("警告"), tr("请先打开工程"))
         project_dir = str(self.pm.get_project_dir(self.current_project["name"]))
         images_dir = os.path.join(project_dir, "images")
         if not os.path.exists(images_dir):
-            return QMessageBox.warning(self, "Warning", "No images directory found")
+            return QMessageBox.warning(self, tr("警告"), tr("未找到图片目录"))
 
         # ★★ 2026-10-22：已经有训练在排队/执行时，别再起第二个。
         #   平台只有一个 self.trainer 槽位，同时开两个必然互相顶掉
@@ -9111,7 +9134,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
                 _busy = []
             if _busy:
                 return QMessageBox.information(
-                    self, "已有训练任务",
+                    self, tr("已有训练任务"),
                     "训练任务「%s」还在排队或执行中。\n\n"
                     "平台同一时间只挂一个训练器，同时开两个会互相顶掉"
                     "（表现就是 NoneType object has no attribute train）。\n\n"
@@ -9172,7 +9195,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         #   用户刚点的"取消"会被这一下悄悄抹掉。标志是全局的，任何一次复位都会波及别人。
         #   现在任务的停止标志跟着任务走，提交时不需要、也不该清任何东西。
         self.btn_train_stop.setEnabled(True)
-        self.train_status.setText("Training...")
+        self.train_status.setText(tr("训练中…"))
         self.train_progress.setVisible(True)
         self.train_progress.setValue(0)
 
@@ -9330,13 +9353,13 @@ class MainWindow(OcrOcvMixin, QMainWindow):
     def _start_det_training(self):
         """Start detection model training."""
         if not self.current_project:
-            return QMessageBox.warning(self, "Warning", "Please open a project first")
+            return QMessageBox.warning(self, tr("警告"), tr("请先打开工程"))
         # ★ 2026-11-16：检测训练是**直接起线程**（不走任务队列），连点两次就是两个
         #   训练同时跑：抢显存，而且第二个会把第一个正在读的 yolo_dataset 删掉重建
         #   （重建前清空旧产物）⇒ 第一个训练读着读着文件没了。先挡住。
         if getattr(self, "_det_training_running", False):
             return QMessageBox.information(
-                self, "训练还没结束",
+                self, tr("训练还没结束"),
                 "上一次目标检测训练还在跑。\n\n"
                 "等它结束或点 Stop 之后再开 —— 两个训练同时跑会抢显存，"
                 "而且会互相删掉对方正在读的数据集。")
@@ -9347,7 +9370,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         batch_size = self.det_batch_spin.value() if hasattr(self, 'det_batch_spin') else 16
         image_size = self.det_img_size_spin.value() if hasattr(self, 'det_img_size_spin') else 640
         self.btn_det_train_stop.setEnabled(True)
-        self.det_train_status.setText("Preparing...")
+        self.det_train_status.setText(tr("准备中…"))
         self.det_train_progress.setVisible(True)
         self.det_train_progress.setValue(0)
         def run():
@@ -9426,7 +9449,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         self._det_training_running = False      # 见 _start_det_training 的并发说明
         self.btn_det_train_stop.setEnabled(False)
         self.det_train_progress.setVisible(False)
-        self.det_train_status.setText("Ready")
+        self.det_train_status.setText(tr("就绪"))
 
     def _cleanup_trainer(self, trainer=None):
         """收尾：释放训练器与显存。
@@ -9471,13 +9494,13 @@ class MainWindow(OcrOcvMixin, QMainWindow):
 
     def _start_inference(self):
         if not self.current_project:
-            return QMessageBox.warning(self, "Warning", "Please open a project first")
+            return QMessageBox.warning(self, tr("警告"), tr("请先打开工程"))
         if self._cls_mode:
             return self._start_cls_inference()
         if self._ocr_mode:
             return self._run_ocr_single()
         if self.canvas.image is None:
-            return QMessageBox.warning(self, "Warning", "Please load an image first")
+            return QMessageBox.warning(self, tr("警告"), tr("请先加载图片"))
         project_dir = str(self.pm.get_project_dir(self.current_project["name"]))
         if self._detection_mode:
             self._run_det_inference_single(project_dir)
@@ -9549,12 +9572,12 @@ class MainWindow(OcrOcvMixin, QMainWindow):
                        for e in (".jpg", ".jpeg", ".png", ".bmp")) for v in views):
                 keys.append(key)
         if not keys:
-            return QMessageBox.warning(self, "Warning", "没有三视图齐全的组")
+            return QMessageBox.warning(self, tr("警告"), tr("没有三视图齐全的组"))
         total = len(keys)
         self.btn_infer_stop.setEnabled(True)
         self.infer_progress.setVisible(True)
         self.infer_progress.setMaximum(total); self.infer_progress.setValue(0)
-        self.infer_status.setText("Running...")
+        self.infer_status.setText(tr("运行中…"))
         self.log(f"多视图批处理：{total} 组（每组一次 {len(views)*3} 通道推理，按组不按文件）")
 
         def run():
@@ -9610,7 +9633,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         model_file = self._resolve_model_for_use(self.model_combo.currentText())
         model_path = os.path.join(project_dir, "models", model_file)
         if not os.path.exists(model_path):
-            return QMessageBox.warning(self, "Error",
+            return QMessageBox.warning(self, tr("错误"),
                 f"Model not found: {model_path}\nPlease train a model first.")
         self.log(f"Running inference: {model_file}")
         _t_infer = time.time()          # 单张推理耗时（回填列表「耗时」列）
@@ -9619,7 +9642,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
             predictor = Predictor(project_dir, model_file, backend=self._backend_key())
             # ★ 智能推理模式（快速/精细）
             try:
-                predictor._智能模式 = ("fast" if "快速" in self.tr_mode_combo.currentText()
+                predictor._智能模式 = ("fast" if self.tr_mode_combo.currentIndex() == 1
                                        else "fine")
             except Exception:
                 predictor._智能模式 = "fine"
@@ -9686,7 +9709,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         except Exception as e:
             import traceback
             self.log(traceback.format_exc())
-            QMessageBox.warning(self, "Error", f"Inference failed: {e}")
+            QMessageBox.warning(self, tr("错误"), f"Inference failed: {e}")
 
     def _apply_infer_params(self, pred, predictor=None, project_dir=None, prob=None):
         """按「推理参数」过滤分割结果，并把结果写日志/状态栏。
@@ -9749,7 +9772,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         """
         model_path = os.path.join(project_dir, "models", "detection", "best.pt")
         if not os.path.exists(model_path):
-            return QMessageBox.warning(self, "Error",
+            return QMessageBox.warning(self, tr("错误"),
                 f"Detection model not found: {model_path}\nPlease train a detection model first.")
         self.log(f"Running detection inference: {os.path.basename(model_path)}")
         try:
@@ -9805,7 +9828,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         except Exception as e:
             import traceback
             self.log(traceback.format_exc())
-            QMessageBox.warning(self, "Error", f"Detection inference failed: {e}")
+            QMessageBox.warning(self, tr("错误"), f"Detection inference failed: {e}")
 
     def _batch_inference(self):
         """批量推理入口（全部图片）：**先在任务队列登记一行**，再由队列串行执行。
@@ -9829,7 +9852,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
                   传子集会在那些实现里被忽略，所以入口处就拦住（见 `_infer_selected_images`）。
         """
         if not self.current_project:
-            return QMessageBox.warning(self, "Warning", "Please open a project first")
+            return QMessageBox.warning(self, tr("警告"), tr("请先打开工程"))
         project_dir = str(self.pm.get_project_dir(self.current_project["name"]))
         q = getattr(self, "_task_queue", None)
         if q is None:                       # 没有队列控件时按老路走（保持能用）
@@ -9882,7 +9905,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         model_file = self._resolve_model_for_use(self.model_combo.currentText())
         model_path = os.path.join(project_dir, "models", model_file)
         if not os.path.exists(model_path):
-            return QMessageBox.warning(self, "Error",
+            return QMessageBox.warning(self, tr("错误"),
                 "Model not found: %s\nPlease train a model first." % model_path)
         out_dir = os.path.join(project_dir, "outputs")
         os.makedirs(out_dir, exist_ok=True)
@@ -9895,7 +9918,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
                 if only:
                     # 三视图要按"组"喂 9 通道，单张挑出来喂进去必崩 —— 入口处已拦，双保险
                     return QMessageBox.information(
-                        self, "推理选中",
+                        self, tr("推理选中"),
                         "多视图工程按组推理，暂不支持只跑选中的几张。\n"
                         "请用「开始推理」跑全部组。")
                 return self._run_seg_batch_inference_mv(project_dir, model_file, out_dir, stop=stop)
@@ -9903,13 +9926,13 @@ class MainWindow(OcrOcvMixin, QMainWindow):
             self.log(f"[多视图批处理] 判定失败，退回单图流程: {type(e).__name__}: {e}")
         images = [p for p in only if os.path.exists(p)] if only else list_images(project_dir)
         if not images:
-            return QMessageBox.warning(self, "Warning", "No images found")
+            return QMessageBox.warning(self, tr("警告"), tr("未找到图片"))
         total = len(images)
         self.btn_infer_stop.setEnabled(True)
         self.infer_progress.setVisible(True)
         self.infer_progress.setMaximum(total)
         self.infer_progress.setValue(0)
-        self.infer_status.setText("Running...")
+        self.infer_status.setText(tr("运行中…"))
         self.log(f"Batch inference on {total} images...")
         flow = build_seg_flow(
             project_dir, model_file, out_dir=out_dir,
@@ -9990,7 +10013,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         stop = self._infer_stop(stop)   # 本次推理自己的停止判据（见 _infer_stop）
         model_path = os.path.join(project_dir, "models", "detection", "best.pt")
         if not os.path.exists(model_path):
-            return QMessageBox.warning(self, "Error",
+            return QMessageBox.warning(self, tr("错误"),
                 "Detection model not found: %s\nPlease train a detection model first." % model_path)
         out_dir = os.path.join(project_dir, "outputs")
         os.makedirs(out_dir, exist_ok=True)
@@ -9999,14 +10022,14 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         #    但这里再筛一次更保险（万一以后有别的调用方传进来）。顺序保持用户行的顺序。
         images = ([p for p in only if os.path.exists(p)] if only else list_images(project_dir))
         if not images:
-            return QMessageBox.warning(self, "Warning", "No images found")
+            return QMessageBox.warning(self, tr("警告"), tr("未找到图片"))
         classes = getattr(self, "_cached_classes", None) or ["background"]
         total = len(images)
         self.btn_infer_stop.setEnabled(True)
         self.infer_progress.setVisible(True)
         self.infer_progress.setMaximum(total)
         self.infer_progress.setValue(0)
-        self.infer_status.setText("Running...")
+        self.infer_status.setText(tr("运行中…"))
         self.log(f"Batch detection inference on {total} images...")
         flow = build_det_flow(project_dir, out_dir=out_dir, classes=",".join(classes))
         def run():
@@ -10054,10 +10077,10 @@ class MainWindow(OcrOcvMixin, QMainWindow):
 
     def _import_json(self):
         if not self.current_project:
-            return QMessageBox.warning(self, "Warning", "Please open a project first")
+            return QMessageBox.warning(self, tr("警告"), tr("请先打开工程"))
         project_dir = str(self.pm.get_project_dir(self.current_project["name"]))
-        json_file, _ = QFileDialog.getOpenFileName(self, "Import JSON Annotation", "",
-            "JSON Files (*.json);;All Files (*)")
+        json_file, _ = QFileDialog.getOpenFileName(self, tr("导入 JSON 标注"), "",
+            tr("JSON 文件 (*.json);;所有文件 (*)"))
         if not json_file:
             return
         try:
@@ -10082,9 +10105,9 @@ class MainWindow(OcrOcvMixin, QMainWindow):
 
     def _batch_import_json(self):
         if not self.current_project:
-            return QMessageBox.warning(self, "Warning", "Please open a project first")
+            return QMessageBox.warning(self, tr("警告"), tr("请先打开工程"))
         project_dir = str(self.pm.get_project_dir(self.current_project["name"]))
-        folder = QFileDialog.getExistingDirectory(self, "Select JSON Folder")
+        folder = QFileDialog.getExistingDirectory(self, tr("选择 JSON 目录"))
         if not folder:
             return
         import shutil
@@ -10174,8 +10197,8 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         if not os.path.exists(json_path):
             self.log("No annotation JSON to export")
             return
-        dest, _ = QFileDialog.getSaveFileName(self, "Export JSON", os.path.basename(json_path),
-            "JSON Files (*.json)")
+        dest, _ = QFileDialog.getSaveFileName(self, tr("导出 JSON"), os.path.basename(json_path),
+            tr("JSON 文件 (*.json)"))
         if dest:
             import shutil
             shutil.copy2(json_path, dest)
@@ -10185,7 +10208,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         if not self.current_project:
             return
         project_dir = str(self.pm.get_project_dir(self.current_project["name"]))
-        folder = QFileDialog.getExistingDirectory(self, "Export Annotations To")
+        folder = QFileDialog.getExistingDirectory(self, tr("导出标注到"))
         if not folder:
             return
         import shutil
@@ -10224,7 +10247,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
 
     def _manage_split(self):
         if not self.current_project:
-            return QMessageBox.warning(self, "Warning", "Please open a project first")
+            return QMessageBox.warning(self, tr("警告"), tr("请先打开工程"))
         from ui.split_dialog import SplitDialog
         pd = str(self.pm.get_project_dir(self.current_project["name"]))
         dlg = SplitDialog(pd, self)
@@ -10234,7 +10257,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
 
     def _manage_classes(self):
         if not self.current_project:
-            return QMessageBox.warning(self, "Warning", "Please open a project first")
+            return QMessageBox.warning(self, tr("警告"), tr("请先打开工程"))
         from ui.class_dialog import ClassDialog
         pd = str(self.pm.get_project_dir(self.current_project["name"]))
         dlg = ClassDialog(pd, self)
@@ -10341,7 +10364,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
             return
 
         reply = QMessageBox.question(
-            self, "预测转标注",
+            self, tr("预测转标注"),
             "把本图 %d 个预测框追加为标注？\n\n已有 %d 个框不受影响；"
             "重复位置的 %d 个会跳过。\n（转完可按 Ctrl+Z 整体撤销）"
             % (len(new), len(existing), skipped),
@@ -10368,8 +10391,8 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         """Delete all detection boxes."""
         if self._box_manager is None:
             return
-        reply = QMessageBox.question(self, "Clear All Boxes",
-            "Delete all bounding boxes?", QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        reply = QMessageBox.question(self, tr("清除全部框"),
+            tr("删除全部检测框？"), QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         if reply == QMessageBox.Yes:
             self._box_manager.delete_all()
             self.canvas.update()
@@ -10440,7 +10463,7 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         except Exception as e:
             import traceback
             traceback.print_exc()
-            QMessageBox.warning(self, "截图 OCR", f"启动失败: {e}")
+            QMessageBox.warning(self, tr("截图 OCR"), f"启动失败: {e}")
 
     def _register_screen_ocr_hotkey(self):
         """注册系统级全局热键 Shift+X。
@@ -10579,8 +10602,8 @@ class MainWindow(OcrOcvMixin, QMainWindow):
         """Clear current annotation mask and SAM state."""
         if self.canvas.image is None:
             return
-        reply = QMessageBox.question(self, "Clear Annotation",
-            "Clear all annotations for this image?", 
+        reply = QMessageBox.question(self, tr("清除标注"),
+            tr("清除本图的全部标注？"),
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         if reply == QMessageBox.Yes:
             h, w = self.canvas.mask.shape

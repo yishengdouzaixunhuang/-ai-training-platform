@@ -26,6 +26,7 @@ from PyQt5.QtGui import QColor
 from PyQt5.QtCore import Qt, pyqtSignal
 
 from core.config import CLASS_COLORS
+from core.i18n import tr
 from core.label_scan import scan_labels
 
 
@@ -64,7 +65,7 @@ class ClassTableView(QWidget):
     # 点击「训练集/测试集/验证集/空集」数字格子 -> (类别名, split_key)
     cell_filter_requested = pyqtSignal(str, str)
 
-    _HEADERS = ["序号", "类别名", "颜色", "训练集", "测试集", "验证集", "空集"]
+    _HEADER_KEYS = ["序号", "类别名", "颜色", "训练集", "测试集", "验证集", "空集"]
 
     # (top, mid, bottom, text) pastel gradients, one per toolbar pill.
     _PALETTES = [
@@ -137,8 +138,8 @@ class ClassTableView(QWidget):
         ]
         self._buttons = {}
         for key, text, tip, sig, palette_idx in specs:
-            btn = QPushButton(text)
-            btn.setToolTip(tip)
+            btn = QPushButton(tr(text))
+            btn.setToolTip(tr(tip))
             btn.setCursor(Qt.PointingHandCursor)
             btn.setStyleSheet(self._pill_qss(palette_idx))
             if sig is not None:
@@ -151,8 +152,9 @@ class ClassTableView(QWidget):
         layout.addLayout(tb)
 
         # ---- table ----
-        self.table = QTableWidget(0, len(self._HEADERS))
-        self.table.setHorizontalHeaderLabels(self._HEADERS)
+        self._headers = [tr(h) for h in self._HEADER_KEYS]
+        self.table = QTableWidget(0, len(self._headers))
+        self.table.setHorizontalHeaderLabels(self._headers)
         self.table.setStyleSheet(self._TABLE_QSS)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)

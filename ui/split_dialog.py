@@ -29,6 +29,7 @@ git 全历史里**从来没有**这个模块 ⇒ 菜单一点就是 ModuleNotFou
      没标注的组即使划了 split 也进不了训练。所以随机划分默认**只划已标注的组**，
      并且把"未标注 N 组"单独报出来。
 """
+from core.i18n import tr
 import json
 import os
 import random
@@ -95,7 +96,7 @@ class SplitDialog(QDialog):
         root.setSpacing(6)
 
         self.lbl_path = QLabel(self.pd)
-        self.lbl_path.setToolTip("划分表写到这个目录下的 train_test_split.json")
+        self.lbl_path.setToolTip(tr("划分表写到这个目录下的 train_test_split.json"))
         root.addWidget(self.lbl_path)
 
         note = QLabel(
@@ -116,24 +117,24 @@ class SplitDialog(QDialog):
         bar = QHBoxLayout()
         bar.setSpacing(4)
         self.ed_search = QLineEdit()
-        self.ed_search.setPlaceholderText("按组名过滤…")
+        self.ed_search.setPlaceholderText(tr("按组名过滤…"))
         self.ed_search.textChanged.connect(lambda *_: self._fill_table())
         bar.addWidget(self.ed_search, 1)
-        self.btn_reload = QPushButton("刷新")
-        self.btn_reload.setToolTip("重新扫描 images/ 与 train_test_split.json")
+        self.btn_reload = QPushButton(tr("刷新"))
+        self.btn_reload.setToolTip(tr("重新扫描 images/ 与 train_test_split.json"))
         self.btn_reload.clicked.connect(self.reload)
         bar.addWidget(self.btn_reload)
-        self.btn_all = QPushButton("全选")
+        self.btn_all = QPushButton(tr("全选"))
         self.btn_all.clicked.connect(lambda: self.table.selectAll())
         bar.addWidget(self.btn_all)
-        self.btn_inv = QPushButton("反选")
+        self.btn_inv = QPushButton(tr("反选"))
         self.btn_inv.clicked.connect(self._invert_selection)
         bar.addWidget(self.btn_inv)
         root.addLayout(bar)
 
         # 表
         self.table = QTableWidget(0, 4)
-        self.table.setHorizontalHeaderLabels(["组名", "视图", "已标注", "当前划分"])
+        self.table.setHorizontalHeaderLabels([tr("组名"), tr("视图"), tr("已标注"), tr("当前划分")])
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -153,7 +154,7 @@ class SplitDialog(QDialog):
         # 批量设置选中项
         row1 = QHBoxLayout()
         row1.setSpacing(4)
-        row1.addWidget(QLabel("选中项设为："))
+        row1.addWidget(QLabel(tr("选中项设为：")))
         for key in SPLIT_KEYS + ("",):
             b = QPushButton(SPLIT_LABEL[key] if key else "未划分")
             b.setToolTip("把选中的组设为「%s」（可 Ctrl/Shift 多选）" % SPLIT_LABEL[key])
@@ -161,9 +162,9 @@ class SplitDialog(QDialog):
             row1.addWidget(b)
         # 老工程升级用：以前"没划分"会被训练器偷偷当训练集，现在不了 ——
         # 划分表为空的工程一训练就停，这里给一条显式的迁移路径。
-        self.btn_unassigned_train = QPushButton("未划分 → 训练集")
+        self.btn_unassigned_train = QPushButton(tr("未划分 → 训练集"))
         self.btn_unassigned_train.setToolTip(
-            "把所有「未划分」的组一次性设为训练集（只动未划分的，已划好的不碰）")
+            tr("把所有「未划分」的组一次性设为训练集（只动未划分的，已划好的不碰）"))
         self.btn_unassigned_train.clicked.connect(self._assign_unassigned_train)
         row1.addWidget(self.btn_unassigned_train)
         row1.addStretch()
@@ -172,7 +173,7 @@ class SplitDialog(QDialog):
         # 按比例随机
         row2 = QHBoxLayout()
         row2.setSpacing(4)
-        row2.addWidget(QLabel("按比例随机："))
+        row2.addWidget(QLabel(tr("按比例随机：")))
         self.sp_train = self._ratio_spin(70)
         self.sp_val = self._ratio_spin(15)
         self.sp_test = self._ratio_spin(15)
@@ -181,14 +182,14 @@ class SplitDialog(QDialog):
             row2.addWidget(sp)
         self.sp_seed = QSpinBox()
         self.sp_seed.setRange(0, 999999)
-        self.sp_seed.setToolTip("同一个种子 + 同一批组 = 同一种划分（可复现）")
-        row2.addWidget(QLabel("种子"))
+        self.sp_seed.setToolTip(tr("同一个种子 + 同一批组 = 同一种划分（可复现）"))
+        row2.addWidget(QLabel(tr("种子")))
         row2.addWidget(self.sp_seed)
-        self.chk_ann = QCheckBox("只划分已标注的组")
+        self.chk_ann = QCheckBox(tr("只划分已标注的组"))
         self.chk_ann.setChecked(True)
-        self.chk_ann.setToolTip("没有 json / mask 的组进不了训练，划了也没用")
+        self.chk_ann.setToolTip(tr("没有 json / mask 的组进不了训练，划了也没用"))
         row2.addWidget(self.chk_ann)
-        self.btn_random = QPushButton("执行随机划分")
+        self.btn_random = QPushButton(tr("执行随机划分"))
         self.btn_random.clicked.connect(self._random_split)
         row2.addWidget(self.btn_random)
         row2.addStretch()
@@ -200,11 +201,11 @@ class SplitDialog(QDialog):
 
         bottom = QHBoxLayout()
         bottom.addStretch()
-        self.btn_save = QPushButton("保存")
+        self.btn_save = QPushButton(tr("保存"))
         self.btn_save.setDefault(True)
         self.btn_save.clicked.connect(self._on_save)
         bottom.addWidget(self.btn_save)
-        self.btn_cancel = QPushButton("取消")
+        self.btn_cancel = QPushButton(tr("取消"))
         self.btn_cancel.clicked.connect(self.reject)
         bottom.addWidget(self.btn_cancel)
         root.addLayout(bottom)
@@ -224,7 +225,7 @@ class SplitDialog(QDialog):
         """重扫目录 + 重读划分表，然后重画。未保存的改动会被丢弃（点刷新前有确认）。"""
         if self._dirty:
             r = QMessageBox.question(
-                self, "刷新", "还有未保存的改动，刷新会丢弃它们。继续？",
+                self, tr("刷新"), tr("还有未保存的改动，刷新会丢弃它们。继续？"),
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
             if r != QMessageBox.Yes:
                 return
@@ -393,14 +394,14 @@ class SplitDialog(QDialog):
             it_v = QTableWidgetItem(txt_views)
             it_v.setTextAlignment(Qt.AlignCenter)
             if self._mv and r["n_views"] < len(self._views):
-                it_v.setToolTip("缺视图，训练会跳过这一组")
+                it_v.setToolTip(tr("缺视图，训练会跳过这一组"))
                 it_v.setForeground(Qt.red)
             self.table.setItem(tr, 1, it_v)
 
             it_a = QTableWidgetItem("是" if r["has_ann"] else "否")
             it_a.setTextAlignment(Qt.AlignCenter)
             if not r["has_ann"]:
-                it_a.setToolTip("没有 json / mask ⇒ 训练不会取到这一组")
+                it_a.setToolTip(tr("没有 json / mask ⇒ 训练不会取到这一组"))
                 try:
                     from ui.themes import fg_muted
                     it_a.setForeground(fg_muted())
@@ -413,7 +414,7 @@ class SplitDialog(QDialog):
             if not r["split"]:
                 from PyQt5.QtGui import QColor
                 it_s.setForeground(QColor(COL_UNSET))
-                it_s.setToolTip("未划分：不属于任何集 —— 训练/验证/测试都不会取它")
+                it_s.setToolTip(tr("未划分：不属于任何集 —— 训练/验证/测试都不会取它"))
             self.table.setItem(tr, 3, it_s)
             if r["base"] in sel_bases:
                 restore.append(tr)
@@ -477,9 +478,8 @@ class SplitDialog(QDialog):
     def _set_selected(self, value):
         idx = self._selected_row_idx()
         if not idx:
-            QMessageBox.information(self, "数据集划分",
-                                    "先在表里选中要设置的组（Ctrl / Shift 可多选，"
-                                    "或点「全选」）。")
+            QMessageBox.information(self, tr("数据集划分"),
+                                    tr("先在表里选中要设置的组（Ctrl / Shift 可多选，或点「全选」）。"))
             return
         for i in idx:
             self._rows[i]["split"] = value
@@ -488,11 +488,11 @@ class SplitDialog(QDialog):
     def _assign_unassigned_train(self):
         rows = [r for r in self._rows if not r["split"]]
         if not rows:
-            QMessageBox.information(self, "未划分 → 训练集", "没有未划分的组，不用动。")
+            QMessageBox.information(self, tr("未划分 → 训练集"), tr("没有未划分的组，不用动。"))
             return
         n_noann = sum(1 for r in rows if not r["has_ann"])
         r = QMessageBox.question(
-            self, "未划分 → 训练集",
+            self, tr("未划分 → 训练集"),
             "把 %d 组「未划分」一次性设为训练集？\n\n"
             "· 只动未划分的，已划到训练/验证/测试的一律不碰；\n"
             "· 其中 %d 组没有标注，设了也进不了训练（取数要求有 json 或 mask）。"
@@ -507,7 +507,7 @@ class SplitDialog(QDialog):
     def _random_split(self):
         tr, va, te = self.sp_train.value(), self.sp_val.value(), self.sp_test.value()
         if tr + va + te != 100:
-            QMessageBox.warning(self, "比例不对",
+            QMessageBox.warning(self, tr("比例不对"),
                                 "训练 + 验证 + 测试 必须等于 100%%，当前是 %d%%。" %
                                 (tr + va + te))
             return
@@ -517,7 +517,7 @@ class SplitDialog(QDialog):
             targets = [r for r in targets if r["has_ann"]]
         n = len(targets)
         if n == 0:
-            QMessageBox.information(self, "没有可划分的组",
+            QMessageBox.information(self, tr("没有可划分的组"),
                                     "当前范围内没有%s组。" %
                                     ("已标注的" if self.chk_ann.isChecked() else ""))
             return
@@ -525,7 +525,7 @@ class SplitDialog(QDialog):
         changed = [r for r in targets if r["split"] and r["split"] != "train"]
         if changed:
             r = QMessageBox.question(
-                self, "会覆盖已有划分",
+                self, tr("会覆盖已有划分"),
                 "这次随机划分会覆盖 %d 组已有的划分，其中 %d 组现在在验证/测试里。\n\n"
                 "验证集/测试集是评测的唯一依据，被换掉之后新旧模型就没法公平对比了。\n"
                 "继续？" % (len(targets), len(changed)),
@@ -556,7 +556,7 @@ class SplitDialog(QDialog):
             r["split"] = "train"
         self._fill_table()
         QMessageBox.information(
-            self, "随机划分完成",
+            self, tr("随机划分完成"),
             "%d 组：训练 %d / 验证 %d / 测试 %d（种子 %d）\n\n"
             "还没写盘，确认无误后点「保存」。" %
             (n, n_tr, n_va, n_te, self.sp_seed.value()))
@@ -567,7 +567,7 @@ class SplitDialog(QDialog):
         try:
             n = self._save()
         except Exception as e:
-            QMessageBox.critical(self, "保存失败",
+            QMessageBox.critical(self, tr("保存失败"),
                                  "写 train_test_split.json 出错：\n%s: %s" %
                                  (type(e).__name__, e))
             return

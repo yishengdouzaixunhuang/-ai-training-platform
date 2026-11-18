@@ -16,6 +16,7 @@
         views, paths_per_view = dlg.get_view_paths()
 """
 from __future__ import annotations
+from core.i18n import tr
 
 import os
 
@@ -92,7 +93,7 @@ class _ViewColumn:
         self.box.addLayout(head)
 
         # ── 预览（对标友商的预览区）──
-        self.preview = QLabel("（未加载）")
+        self.preview = QLabel(tr("（未加载）"))
         self.preview.setAlignment(Qt.AlignCenter)
         self.preview.setFixedHeight(140)
         self.preview.setStyleSheet(
@@ -112,7 +113,7 @@ class _ViewColumn:
     def pick_files(self):
         fs, _ = QFileDialog.getOpenFileNames(
             self.dlg, f"选择 {self.label} 图像", "",
-            "Images (*.bmp *.png *.jpg *.jpeg *.tif *.tiff);;All (*)")
+            tr("图片 (*.bmp *.png *.jpg *.jpeg *.tif *.tiff);;全部 (*)"))
         if fs:
             self.add(fs)
 
@@ -171,7 +172,7 @@ class _ViewColumn:
         elif self.files:
             path = self.files[0]
         if not path:
-            self.preview.setText("（未加载）")
+            self.preview.setText(tr("（未加载）"))
             self.preview.setPixmap(QPixmap())
             self.preview.setToolTip("")
             return
@@ -228,7 +229,7 @@ class MultiViewAddDialog(QDialog):
         root.setContentsMargins(16, 12, 16, 16)
 
         top = QHBoxLayout()
-        self.bind_check = QCheckBox("绑定图片组")
+        self.bind_check = QCheckBox(tr("绑定图片组"))
         self.bind_check.setChecked(len(self.views) > 1)
         self.bind_check.setToolTip(
             "勾选后：各视图按文件名分组（xxx_te_0/1/2.jpg 归为一组），\n"
@@ -239,8 +240,8 @@ class MultiViewAddDialog(QDialog):
         tip.setStyleSheet("color:#8A93A6; font-size:12px;")
         top.addWidget(tip)
         top.addSpacing(12)
-        b_all = QPushButton("加载全部图像")
-        b_all.setToolTip("选一个文件夹，按 _te_N 后缀自动分到各视图槽位")
+        b_all = QPushButton(tr("加载全部图像"))
+        b_all.setToolTip(tr("选一个文件夹，按 _te_N 后缀自动分到各视图槽位"))
         b_all.clicked.connect(self.load_all)
         top.addWidget(b_all)
         root.addLayout(top)
@@ -261,11 +262,11 @@ class MultiViewAddDialog(QDialog):
 
         btns = QHBoxLayout()
         btns.addStretch()
-        self.ok = QPushButton("确认")
+        self.ok = QPushButton(tr("确认"))
         self.ok.setObjectName("ok_btn")
         self.ok.setMinimumWidth(90)
         self.ok.clicked.connect(self._on_ok)
-        cancel = QPushButton("取消")
+        cancel = QPushButton(tr("取消"))
         cancel.setObjectName("cancel_btn")
         cancel.setMinimumWidth(90)
         cancel.clicked.connect(self.reject)
@@ -360,7 +361,7 @@ class MultiViewAddDialog(QDialog):
 
     # ────────── 批量加载 ──────────
     def load_all(self):
-        d = QFileDialog.getExistingDirectory(self, "选择包含全部视图的文件夹")
+        d = QFileDialog.getExistingDirectory(self, tr("选择包含全部视图的文件夹"))
         if not d:
             return
         files = sorted(os.path.join(d, f) for f in os.listdir(d)
@@ -390,7 +391,7 @@ class MultiViewAddDialog(QDialog):
             self.on_columns_changed(repair=True)
         counts = [len(c.files) for c in self._cols]
         if not counts or min(counts) == 0:
-            self.err.setText("每个视图至少需要加载 1 张图片。")
+            self.err.setText(tr("每个视图至少需要加载 1 张图片。"))
             self.err.setVisible(True)
             return
         if len(self._cols) > 1 and self.bind_check.isChecked() and len(set(counts)) != 1:

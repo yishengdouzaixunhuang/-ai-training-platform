@@ -24,6 +24,7 @@
   · **改名要连带迁移推理参数**（`inference.params.rename_class_params`），
     否则新名字查不到参数、悄悄退回默认阈值；**删除要摘掉残项**（`drop_class_params`）。
 """
+from core.i18n import tr
 import json
 import os
 
@@ -62,7 +63,7 @@ class ClassDialog(QDialog):
         root.setSpacing(6)
 
         lbl_path = QLabel(self.pd)
-        lbl_path.setToolTip("类别表写到这个目录下的 project.json")
+        lbl_path.setToolTip(tr("类别表写到这个目录下的 project.json"))
         root.addWidget(lbl_path)
 
         note = QLabel(
@@ -95,7 +96,7 @@ class ClassDialog(QDialog):
 
         bottom = QHBoxLayout()
         bottom.addStretch()
-        self.btn_close = QPushButton("关闭")
+        self.btn_close = QPushButton(tr("关闭"))
         self.btn_close.setDefault(True)
         self.btn_close.clicked.connect(self._finish)
         bottom.addWidget(self.btn_close)
@@ -162,17 +163,17 @@ class ClassDialog(QDialog):
     # ────────────────────────── 四个动作 ──────────────────────────
 
     def _add(self):
-        name, ok = QInputDialog.getText(self, "添加类别", "类别名：")
+        name, ok = QInputDialog.getText(self, tr("添加类别"), tr("类别名："))
         if not ok:
             return
         name = (name or "").strip()
         if not name:
             return
         if name in self._classes:
-            QMessageBox.warning(self, "重复", "类别『%s』已经在表里了。" % name)
+            QMessageBox.warning(self, tr("重复"), "类别『%s』已经在表里了。" % name)
             return
         if name == "background":
-            QMessageBox.warning(self, "不能用", "background 是背景类，恒占 0 号位。")
+            QMessageBox.warning(self, tr("不能用"), tr("background 是背景类，恒占 0 号位。"))
             return
         self._classes = list(self._classes) + [name]
         self._save()
@@ -183,10 +184,10 @@ class ClassDialog(QDialog):
         row = self.table.currentRow()
         if row < 0:
             # ⚠️ "没选中"和"选中了 background"是两回事，不能都说成"background 不能删"
-            QMessageBox.information(self, "删除类别", "先在表里点一行，选中要删的类别。")
+            QMessageBox.information(self, tr("删除类别"), tr("先在表里点一行，选中要删的类别。"))
             return
         if row == 0:
-            QMessageBox.information(self, "删除类别", "background 是背景类，不能删除。")
+            QMessageBox.information(self, tr("删除类别"), tr("background 是背景类，不能删除。"))
             return
         classes = list(self._classes)
         if row >= len(classes):
@@ -201,7 +202,7 @@ class ClassDialog(QDialog):
                     "而已有标注是按编号存的、不会跟着改，"
                     "编号 ＞ %d 的区域此后会被当成别的类别（界面上看不出来）。"
                     % (name, n_tail, row))
-        reply = QMessageBox.question(self, "删除类别",
+        reply = QMessageBox.question(self, tr("删除类别"),
                                      "确定删除类别『%s』？\n\n%s\n\n"
                                      "（掩膜文件本身不会被改动；background 不能删）"
                                      % (name, warn),
@@ -223,20 +224,20 @@ class ClassDialog(QDialog):
     def _rename(self):
         row = self.table.currentRow()
         if row < 0:
-            QMessageBox.information(self, "重命名", "先在表里点一行，选中要改名的类别。")
+            QMessageBox.information(self, tr("重命名"), tr("先在表里点一行，选中要改名的类别。"))
             return
         classes = list(self._classes)
         if row >= len(classes):
             return
         old = classes[row]
-        new, ok = QInputDialog.getText(self, "重命名类别", "新名字：", text=old)
+        new, ok = QInputDialog.getText(self, tr("重命名类别"), tr("新名字："), text=old)
         if not ok:
             return
         new = (new or "").strip()
         if not new or new == old:
             return
         if new in classes:
-            QMessageBox.warning(self, "重复", "类别『%s』已经在表里了。" % new)
+            QMessageBox.warning(self, tr("重复"), "类别『%s』已经在表里了。" % new)
             return
         classes[row] = new
         self._classes = classes
@@ -257,7 +258,7 @@ class ClassDialog(QDialog):
         msg += ("\n\n注意：已有标注文件（labelme json）里写的还是旧名『%s』。"
                 "主窗下次「重读并重扫标注」时，旧名会被当成没登记的类别再补一行；"
                 "要彻底改掉，需要同步改标注里的 label（本对话框不动标注文件）。" % old)
-        QMessageBox.information(self, "重命名完成", msg)
+        QMessageBox.information(self, tr("重命名完成"), msg)
 
     def _move(self, delta):
         row = self.table.currentRow()
@@ -268,7 +269,7 @@ class ClassDialog(QDialog):
         if not (0 <= new_row < len(classes)):
             return
         if row == 0 or new_row == 0:
-            QMessageBox.information(self, "移动类别", "background 恒占 0 号位，不能动它。")
+            QMessageBox.information(self, tr("移动类别"), tr("background 恒占 0 号位，不能动它。"))
             return
         classes[row], classes[new_row] = classes[new_row], classes[row]
         self._classes = classes

@@ -14,6 +14,7 @@
    这里干脆只用 objectName + 主题表（见 themes.py），不在控件上写颜色。
 """
 from __future__ import annotations
+from core.i18n import tr
 
 from PyQt5.QtCore import Q_ARG, QMetaObject, Qt, QTimer, pyqtSignal
 from PyQt5.QtWidgets import (QComboBox, QHBoxLayout, QLabel, QProgressBar, QPushButton,
@@ -33,6 +34,20 @@ _STATE_TEXT = {
     TaskState.FAILED: "失败",
     TaskState.CANCELED: "已取消",
 }
+
+
+def _localize_status(text):
+    """把 `剩余 1小时02分03秒` 这类核心状态文本按当前语言显示。
+
+    任务队列核心（ui/task_queue.py）刻意只用中文，避免把 i18n 塞进无 Qt 的
+    队列逻辑；显示层在这里做单位替换。中文模式 tr() 恒等，不会改动原串。
+    """
+    if not text:
+        return text
+    return (text.replace("剩余 ", tr("剩余 "))
+                .replace("小时", tr("小时"))
+                .replace("分", tr("分"))
+                .replace("秒", tr("秒")))
 
 
 class TaskQueuePanel(QWidget):
@@ -58,14 +73,14 @@ class TaskQueuePanel(QWidget):
         # ── 顶部：筛选 + 清空（照友商那一行的位置）──
         top = QHBoxLayout(); top.setSpacing(4)
         self.filter_combo = QComboBox()
-        for text, _st in _FILTER_ITEMS:
-            self.filter_combo.addItem(text)
-        self.filter_combo.setToolTip("只看某一状态的任务")
+        for text, st in _FILTER_ITEMS:
+            self.filter_combo.addItem(tr(text), st)
+        self.filter_combo.setToolTip(tr("只看某一状态的任务"))
         self.filter_combo.currentIndexChanged.connect(self._on_filter_changed)
         top.addWidget(self.filter_combo, 1)
-        self.btn_clear = QPushButton("清空")
+        self.btn_clear = QPushButton(tr("清空"))
         self.btn_clear.setObjectName("taskClearBtn")
-        self.btn_clear.setToolTip("清掉已结束的任务（正在跑的会先请求取消）")
+        self.btn_clear.setToolTip(tr("清掉已结束的任务（正在跑的会先请求取消）"))
         self.btn_clear.clicked.connect(self.clear_requested.emit)
         top.addWidget(self.btn_clear)
         root.addLayout(top)
@@ -79,7 +94,7 @@ class TaskQueuePanel(QWidget):
         self._rows_box.addStretch(1)
         root.addLayout(self._rows_box, 1)
 
-        self.empty_label = QLabel("暂无任务\n\n在「标注管理 / 参数管理」里点训练或批量推理，\n任务会登记到这里（串行执行，可单独取消）")
+        self.empty_label = QLabel(tr("暂无任务\n\n在「标注管理 / 参数管理」里点训练或批量推理，\n任务会登记到这里（串行执行，可单独取消）"))
         self.empty_label.setAlignment(Qt.AlignCenter)
         self.empty_label.setWordWrap(True)
         self.empty_label.setObjectName("taskEmpty")
@@ -196,17 +211,17 @@ class TaskQueuePanel(QWidget):
         lay.setSpacing(2)
 
         line1 = QHBoxLayout(); line1.setSpacing(4)
-        kind = QLabel(KIND_LABEL.get(task.kind, "任务"))
+        kind = QLabel(tr(KIND_LABEL.get(task.kind, "任务")))
         kind.setObjectName("taskKind")
         title = QLabel(task.title)
         title.setObjectName("taskTitle")
         title.setToolTip(task.title + (("\n" + task.project) if task.project else ""))
-        state = QLabel(_STATE_TEXT.get(task.state, task.state.value))
+        state = QLabel(tr(_STATE_TEXT.get(task.state, task.state.value)))
         state.setObjectName("taskState")
         btn_x = QPushButton("×")
         btn_x.setObjectName("taskCancelBtn")
         btn_x.setFixedSize(20, 20)
-        btn_x.setToolTip("取消这个任务（正在跑的会在下一个检查点停下）")
+        btn_x.setToolTip(tr("取消这个任务（正在跑的会在下一个检查点停下）"))
         btn_x.clicked.connect(lambda _c=False, tid=task.id: self.cancel_requested.emit(tid))
         line1.addWidget(kind)
         line1.addWidget(title, 1)
@@ -239,7 +254,7 @@ class TaskQueuePanel(QWidget):
         r = row or self._rows.get(task.id)
         if r is None:
             return
-        r["state"].setText(_STATE_TEXT.get(task.state, task.state.value))
+        r["state"].setText(tr(_STATE_TEXT.get(task.state, task.state.value)))
         if task.total > 0:
             r["bar"].setMaximum(task.total)
             r["bar"].setValue(task.done)
@@ -249,7 +264,7 @@ class TaskQueuePanel(QWidget):
             # 刻意**不显示 0%** —— 那会让用户以为卡住了
             r["bar"].setRange(0, 0) if task.state is TaskState.RUNNING else r["bar"].setRange(0, 1)
             r["bar"].setValue(0)
-        r["status"].setText(task.status_line)
+        r["status"].setText(_localize_status(task.status_line))
         if task.error:
             r["detail"].setText("⚠ " + task.error)
             r["detail"].setToolTip(task.error)

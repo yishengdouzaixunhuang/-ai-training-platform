@@ -15,6 +15,7 @@
     - 线程内更新 UI 一律走 ui_call（见 ui/qt_thread.py）。
 """
 from __future__ import annotations
+from core.i18n import tr
 
 import json
 import os
@@ -40,7 +41,7 @@ class OcrOcvMixin:
         current_path = getattr(self.canvas, "current_image_path", None)
         if not current_path or not os.path.exists(current_path):
             return
-        self.ocr_status.setText("Running...")
+        self.ocr_status.setText(tr("运行中…"))
         def run():
             try:
                 from ocr.engine import get_ocr_engine
@@ -80,7 +81,7 @@ class OcrOcvMixin:
             return
         pd = str(self.pm.get_project_dir(self.current_project["name"]))
         out_dir = os.path.join(pd, "outputs", "ocr")
-        self.ocr_status.setText("Batch OCR running...")
+        self.ocr_status.setText(tr("批量 OCR 运行中…"))
         self.ocr_progress.setVisible(True)
         def run():
             import time as _time
@@ -173,7 +174,7 @@ class OcrOcvMixin:
         text_item = table.item(row, 1)
         text = text_item.text() if text_item else ""
         menu = QMenu(self)
-        act_copy = menu.addAction("复制 Text")
+        act_copy = menu.addAction(tr("复制 Text"))
         act_copy.setEnabled(bool(text))
         chosen = menu.exec_(table.viewport().mapToGlobal(pos))
         if chosen is act_copy and text:
@@ -228,7 +229,7 @@ class OcrOcvMixin:
             return
         out_path = os.path.join(pd, "models", "ocv_model.pkl")
         os.makedirs(os.path.dirname(out_path), exist_ok=True)
-        self.ocv_status.setText("Building OCV model...")
+        self.ocv_status.setText(tr("正在构建 OCV 模型…"))
         def run():
             try:
                 from ocv.inspector import train_ocv_model
@@ -302,7 +303,7 @@ class OcrOcvMixin:
         if not os.path.exists(model_path):
             self.log_signal.emit("No OCV model loaded. Build one first.")
             return
-        self.ocv_status.setText("Batch inspecting...")
+        self.ocv_status.setText(tr("批量检测中…"))
         # run() 是子线程：阈值先在主线程读好，别在线程里碰控件
         _ocv_thr = self.ocv_threshold.value()
         def run():
